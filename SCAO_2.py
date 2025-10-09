@@ -26,7 +26,6 @@ SOME ANSWERS:
 BUY THE TRAIN TICKET FOR AO SCHOOL
 """
 
-
 import matplotlib.pyplot as plt
 import numpy as np
 
