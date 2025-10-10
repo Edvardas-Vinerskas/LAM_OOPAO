@@ -48,7 +48,7 @@ from OOPAO.calibration.compute_KL_modal_basis import compute_KL_basis
 
 ##############################################################################################################
 #ALL GLOBALS HERE
-n_subaperture = 20 #basically the number of actuators og20
+n_subaperture = 50 #basically the number of actuators og20
 
 #the resolution is the telescope resolution? (you can check by changing it and seeing what the pupil and other masks output)
 resolution    = n_subaperture * 4 #n_subaperture * 4 (og)
@@ -81,7 +81,7 @@ post_process = "slopesMaps"
 zeroPaddingFactor = 6
 
 
-'''
+
 
 ##############################################################################################################
 
@@ -212,7 +212,7 @@ plt.imshow(dm.OPD)
 ##############################################################################################################
 print("detector !")
 
-pwfs = Pyramid(nSubap           = n_subaperture,   #resolution of the pwfs cam
+pwfs = Pyramid(nSubap           = n_subaperture,   #resolution of the pwfs cam (i.e. pupil diameter)
                telescope        = tel,
                modulation       = modulation_ratio,
                lightRatio       = light_ratio,
@@ -233,6 +233,33 @@ pwfs*pwfs.focal_plane_camera
 plt.figure()
 plt.imshow(pwfs.focal_plane_camera.frame)
 plt.title("PWFS focal plane (modulation)")
+
+
+
+##############################################################################################################
+
+#SHWFS
+
+##############################################################################################################
+
+SHWFS = ShackHartmann(nSubap       = n_subaperture,
+                      telescope    = tel,
+                      lightRatio   = light_ratio,
+                      is_geometric = False,
+                      shannon_sampling = True,
+                      threshold_cog= 0.1)
+
+
+plt.figure()
+plt.subplot(1,2,1)
+plt.imshow(SHWFS.valid_subapertures)
+plt.title("lenslets of SHWFS")
+
+plt.subplot(1,2,2)
+plt.imshow(SHWFS.cam.frame)
+plt.title("camera of SHWFS")
+
+
 
 
 ##############################################################################################################
@@ -284,7 +311,7 @@ calib_zonal = InteractionMatrix(ngs             = src,
                                 atm             = atm,
                                 tel             = tel,
                                 dm              = dm,
-                                wfs             = pwfs,
+                                wfs             = SHWFS,
                                 M2C             = M2C__,  #I assume these are zonal modes since I didn't apply anything
                                 stroke          = 1e-9,
                                 nMeasurements   = 1,    #they build up the interaction matrix using nMeasurements columns at a time
@@ -299,16 +326,16 @@ input_modes = np.random.randn(M2C__.shape[1]) * 1e-9
 
 
 dm.coefs = M2C__ @ input_modes #need this line for propagation
-src*tel*dm*pwfs
+src*tel*dm*SHWFS
 tel.print_optical_path() #sanity check
 
 
 plt.figure()
 plt.plot(input_modes, label = "input")
-plt.plot(calib_zonal.M @ pwfs.signal, label = "reconstructed")
+plt.plot(calib_zonal.M @ SHWFS.signal, label = "reconstructed")
 plt.ylabel("DM commands")
 plt.legend()
-#plt.show()
+
 
 
 ##############################################################################################################
@@ -327,7 +354,7 @@ tel+atm
 
 
 #dm commands
-src*tel*dm*pwfs
+src*tel*dm*SHWFS
 tel.print_optical_path()
 
 nLoop = 200
@@ -335,7 +362,7 @@ nLoop = 200
 SR        = np.zeros(nLoop)
 total     = np.zeros(nLoop)
 residual  = np.zeros(nLoop)
-pwfssignal = np.arange(0, pwfs.nSignal) * 0
+SHWFSsignal = np.arange(0, SHWFS.nSignal) * 0
 
 gain = 0.4
 
@@ -356,14 +383,14 @@ for i in range(nLoop):
     #turbulent phase
     turbphase = tel.src.phase
     #propagate through AO
-    src * tel * dm * pwfs
+    src * tel * dm * SHWFS
     #propagate to the source (dm commands are applied now)
     src * tel
     #update the dm commands (i.e. dm.coefs)
     #notice here that you can either use pwfs.signal (no delay) OR pwfssignal (some delay (how do we quantify it?))
-    dm.coefs = dm.coefs - gain * np.matmul(reconstructor, pwfssignal)
+    dm.coefs = dm.coefs - gain * np.matmul(reconstructor, SHWFSsignal)
     #store the slopes after computing the commands
-    pwfssignal = pwfs.signal
+    SHWFSsignal = SHWFS.signal
     #metrics
     SR[i] = np.exp(-np.var(tel.src.phase[np.where(tel.pupil == 1)]))
     residual [i] = np.std(tel.OPD[np.where(tel.pupil > 0)]) * 1e9
@@ -397,10 +424,10 @@ plt.ylabel("arcsec")
 plt.colorbar()
 
 
-np.save("SR_subap_50.npy", SR)
+np.save("SR_SHWFS_subap_50.npy", SR)
+plt.show()
 
-
-
+'''
 time_1000 = np.arange(0, 200 * 1/1000, 1/1000)
 time__ = np.arange(0, 200, 1)
 

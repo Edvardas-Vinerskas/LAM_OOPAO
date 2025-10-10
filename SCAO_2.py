@@ -12,15 +12,19 @@ LIST OF ARGUMENTS TO TEST:
 * Calculate the spatial cutoff frequency
 * WHAT DOES THIS REPRESENT/??? print(np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])).shape)
 * plot running averages of SR (compare marechal approximation with the PSF estimate)
-*
+* PLOT DIFFERENCE BETWEEN ORIGINAL AND CORRECTED WAVEFRONT
+* test the increasing subaperture number for shwfs
+
 
 
 SOME ANSWERS:
-* actuators number = n_subap
+* actuators number = n_subap (or at least when you use it for the dm)
 * for zonal you just use the identity of M2C
 * What is the Z.modesFullRes vs Z.modes?
     these store the zernike polynomial values
     Z.modesFullRes just reformats the polynomial valules according to the mirror resolution
+* test the nsubap influence on what outputs you get for the pwfs
+    resolution of the pwfs cam
 
 
 BUY THE TRAIN TICKET FOR AO SCHOOL
