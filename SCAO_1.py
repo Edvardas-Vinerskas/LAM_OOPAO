@@ -48,10 +48,10 @@ from OOPAO.calibration.compute_KL_modal_basis import compute_KL_basis
 
 ##############################################################################################################
 #ALL GLOBALS HERE
-n_subaperture = 50 #basically the number of actuators og20
+n_subaperture = 20 #basically the number of actuators og20
 
 #the resolution is the telescope resolution? (you can check by changing it and seeing what the pupil and other masks output)
-resolution    = n_subaperture * 4 #n_subaperture * 4 (og)
+resolution    = n_subaperture * 8 #n_subaperture * 4 (og) (4 represents the number of pixels per subaperture)
 sampling_time = 1/1000 #1/1000 og
 diameter = 8
 central_obstruction = 0.1
@@ -79,7 +79,6 @@ modulation_ratio = 3 #full cycle needs to happen in one frame of the pyramid cam
 light_ratio = 0.1 #flux criterion for subaperture pixel consideration (below the threshlod the dm does not react?)
 post_process = "slopesMaps"
 zeroPaddingFactor = 6
-
 
 
 
@@ -241,7 +240,7 @@ plt.title("PWFS focal plane (modulation)")
 #SHWFS
 
 ##############################################################################################################
-
+"""
 SHWFS = ShackHartmann(nSubap       = n_subaperture,
                       telescope    = tel,
                       lightRatio   = light_ratio,
@@ -274,7 +273,7 @@ plt.title("camera of SHWFS")
 M2C_KL = compute_KL_basis(tel = tel, atm = atm, dm = dm)
 M2C_KL = M2C_KL[:, :300]
 print(M2C_KL.shape)
-
+"""
 from OOPAO.Zernike import Zernike
 
 ##############################################################################################################
@@ -295,9 +294,10 @@ Z.computeZernike(tel)
 M2C_Z = np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])) @ Z.modes
 
 
-#print(np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])).shape)
-#print(Z.modes.shape)
-#error
+print("inverse of dm.modes shape", np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])).shape)
+print("Z modes matrix shape", Z.modes.shape)
+print("Z modes but 2D shape", Z.modesFullRes.shape)
+error
 
 
 #test for zonal coefficients (does not work for now, I am not sure if the M2C_zonal matrix is correct)
@@ -311,11 +311,11 @@ calib_zonal = InteractionMatrix(ngs             = src,
                                 atm             = atm,
                                 tel             = tel,
                                 dm              = dm,
-                                wfs             = SHWFS,
+                                wfs             = pwfs,
                                 M2C             = M2C__,  #I assume these are zonal modes since I didn't apply anything
                                 stroke          = 1e-9,
                                 nMeasurements   = 1,    #they build up the interaction matrix using nMeasurements columns at a time
-                                noise           ="off") #noise of the wfs measurements
+                                noise           = "off") #noise of the wfs measurements
 
 
 #phase reconstruction using the interaction/reconstruction matrix
@@ -326,13 +326,13 @@ input_modes = np.random.randn(M2C__.shape[1]) * 1e-9
 
 
 dm.coefs = M2C__ @ input_modes #need this line for propagation
-src*tel*dm*SHWFS
+src*tel*dm*pwfs
 tel.print_optical_path() #sanity check
 
 
 plt.figure()
 plt.plot(input_modes, label = "input")
-plt.plot(calib_zonal.M @ SHWFS.signal, label = "reconstructed")
+plt.plot(calib_zonal.M @ pwfs.signal, label = "reconstructed")
 plt.ylabel("DM commands")
 plt.legend()
 
@@ -354,7 +354,7 @@ tel+atm
 
 
 #dm commands
-src*tel*dm*SHWFS
+src*tel*dm*pwfs
 tel.print_optical_path()
 
 nLoop = 200
@@ -362,7 +362,7 @@ nLoop = 200
 SR        = np.zeros(nLoop)
 total     = np.zeros(nLoop)
 residual  = np.zeros(nLoop)
-SHWFSsignal = np.arange(0, SHWFS.nSignal) * 0
+pwfssignal = np.arange(0, pwfs.nSignal) * 0
 
 gain = 0.4
 
@@ -383,14 +383,14 @@ for i in range(nLoop):
     #turbulent phase
     turbphase = tel.src.phase
     #propagate through AO
-    src * tel * dm * SHWFS
+    src * tel * dm * pwfs
     #propagate to the source (dm commands are applied now)
     src * tel
     #update the dm commands (i.e. dm.coefs)
     #notice here that you can either use pwfs.signal (no delay) OR pwfssignal (some delay (how do we quantify it?))
-    dm.coefs = dm.coefs - gain * np.matmul(reconstructor, SHWFSsignal)
+    dm.coefs = dm.coefs - gain * np.matmul(reconstructor, pwfssignal)
     #store the slopes after computing the commands
-    SHWFSsignal = SHWFS.signal
+    pwfssignal = pwfs.signal
     #metrics
     SR[i] = np.exp(-np.var(tel.src.phase[np.where(tel.pupil == 1)]))
     residual [i] = np.std(tel.OPD[np.where(tel.pupil > 0)]) * 1e9
@@ -424,7 +424,7 @@ plt.ylabel("arcsec")
 plt.colorbar()
 
 
-np.save("SR_SHWFS_subap_50.npy", SR)
+np.save("SR_PWFS_subap_40x8.npy", SR)
 plt.show()
 
 '''
@@ -528,28 +528,26 @@ plt.xlabel("time s")
 plt.ylabel("Strehl ratio")
 plt.title("SR comparison for different wind directions")
 plt.savefig("SR_wind_direction.png", dpi = 200)'''
-"""
+'''
 time_1000 = np.arange(0, 200 * 1/1000, 1/1000)
-SR_subap_10 = np.load("SR_subap_10.npy")
-SR_subap_15 = np.load("SR_subap_15.npy")
-SR_subap_20 = np.load("SR_subap_20.npy")
-SR_subap_30 = np.load("SR_subap_30.npy")
-SR_subap_40 = np.load("SR_subap_40.npy")
-SR_subap_50 = np.load("SR_subap_50.npy")
+SR_SHWFS_subap_10 = np.load("SR_SHWFS_subap_10.npy")
+SR_SHWFS_subap_20 = np.load("SR_SHWFS_subap_20.npy")
+SR_SHWFS_subap_30 = np.load("SR_SHWFS_subap_30.npy")
+SR_SHWFS_subap_40 = np.load("SR_SHWFS_subap_40.npy")
+SR_SHWFS_subap_50 = np.load("SR_SHWFS_subap_50.npy")
 
 plt.figure()
-plt.plot(time_1000, SR_subap_10, label = "n_subaperture = 10 px")
-plt.plot(time_1000, SR_subap_15, label = "n_subaperture = 15 px")
-plt.plot(time_1000, SR_subap_20, label = "n_subaperture = 20 px")
-plt.plot(time_1000, SR_subap_30, label = "n_subaperture = 30 px")
-plt.plot(time_1000, SR_subap_40, label = "n_subaperture = 40 px")
-plt.plot(time_1000, SR_subap_50, label = "n_subaperture = 50 px")
+plt.plot(time_1000, SR_SHWFS_subap_10, label = "n_subaperture = 10 px")
+plt.plot(time_1000, SR_SHWFS_subap_20, label = "n_subaperture = 20 px")
+plt.plot(time_1000, SR_SHWFS_subap_30, label = "n_subaperture = 30 px")
+plt.plot(time_1000, SR_SHWFS_subap_40, label = "n_subaperture = 40 px")
+plt.plot(time_1000, SR_SHWFS_subap_50, label = "n_subaperture = 50 px")
 plt.legend()
 plt.xlabel("time s")
 plt.ylabel("Strehl ratio")
-plt.title("SR comparison for different number of subapertures")
+plt.title("SR comparison for different number of subapertures (SHWFS)")
 plt.savefig("SR_subaperture.png", dpi = 200)
 
 
 
-plt.show()"""
+plt.show()'''

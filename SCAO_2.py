@@ -13,7 +13,7 @@ LIST OF ARGUMENTS TO TEST:
 * WHAT DOES THIS REPRESENT/??? print(np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])).shape)
 * plot running averages of SR (compare marechal approximation with the PSF estimate)
 * PLOT DIFFERENCE BETWEEN ORIGINAL AND CORRECTED WAVEFRONT
-* test the increasing subaperture number for shwfs
+* test the increasing subaperture number for shwfs (same result)
 
 
 
@@ -22,12 +22,12 @@ SOME ANSWERS:
 * for zonal you just use the identity of M2C
 * What is the Z.modesFullRes vs Z.modes?
     these store the zernike polynomial values
-    Z.modesFullRes just reformats the polynomial valules according to the mirror resolution
+    Z.modesFullRes just reformats the polynomial values according to the mirror resolution
 * test the nsubap influence on what outputs you get for the pwfs
     resolution of the pwfs cam
 
 
-BUY THE TRAIN TICKET FOR AO SCHOOL
+REGARDING THE SUBAPERTURE THING, YOU CAN TEST FOR TEMPORAL ERROR BY REMOVING IT
 """
 
 import matplotlib.pyplot as plt
@@ -85,7 +85,7 @@ TEL = Telescope(resolution          = RESOLUTION,
                 fov                 = FOV)
 
 NGS*TEL
-"""
+
 #ATMOSPHERE#
 ATMOSPHERE = Atmosphere(telescope    = TEL,
                         r0           = R_0,
@@ -112,7 +112,7 @@ PWFS = Pyramid(nSubap         = N_SUBAPERTURE,
                modulation     = MODULATION,
                lightRatio     = LIGHT_RATIO,
                postProcessing = POST_PROCESS)
-"""
+
 #ZONAL/MODAL FUNCTIONS#
 ZERNIKE = Zernike(telObject = TEL,
                   J         = 300)
@@ -122,6 +122,8 @@ print(ZERNIKE.modes)
 print(ZERNIKE.modes.shape)
 print(ZERNIKE.modesFullRes.shape) #[TEL.resolution, TEL.resolution, J]
 error
+
+M2C = np.linalg.pinv(np.squeeze(DM.modes[TEL.pupilLogical, :])) @ ZERNIKE.modes
 #INTERACTION MATRIX#
 
 CALIBRATION_MATRIX = InteractionMatrix(ngs            = NGS,
