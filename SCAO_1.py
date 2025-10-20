@@ -151,7 +151,7 @@ plt.colorbar()
 ##############################################################################################################
 
 atm = Atmosphere(telescope     = tel,
-                 r0            = r_0,
+                 r0            = r_0, #defined at 550nm
                  L0            = L_0,
                  windSpeed     = wind_speed,
                  windDirection = wind_direction,

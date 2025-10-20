@@ -16,6 +16,9 @@ LIST OF ARGUMENTS TO TEST:
 * test the increasing subaperture number for shwfs (same result)
 
 
+* reproject residual phase on Zernike modes
+* plot PSD vs modes/frequency
+
 
 SOME ANSWERS:
 * actuators number = n_subap (or at least when you use it for the dm)
@@ -32,6 +35,7 @@ REGARDING THE SUBAPERTURE THING, YOU CAN TEST FOR TEMPORAL ERROR BY REMOVING IT
 
 import matplotlib.pyplot as plt
 import numpy as np
+from numpy.fft import fftshift, fft2 #need to shift just because of formatting
 
 import OOPAO
 from OOPAO.Source import Source
