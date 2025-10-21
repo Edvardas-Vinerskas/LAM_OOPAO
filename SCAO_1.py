@@ -32,7 +32,11 @@ Play around with light ratio parameter on the pwfs
 """
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import SymLogNorm
 import numpy as np
+from matplotlib.patches import Circle
+from functions import *
+from numpy.fft import fft, ifft, fft2, fftshift
 
 
 import OOPAO
@@ -49,10 +53,13 @@ from OOPAO.calibration.compute_KL_modal_basis import compute_KL_basis
 ##############################################################################################################
 #ALL GLOBALS HERE
 n_subaperture = 20 #basically the number of actuators og20
+n_subaperture_dm = n_subaperture
+rad2arcsec = 180 * 60 * 60 / np.pi
 
 #the resolution is the telescope resolution? (you can check by changing it and seeing what the pupil and other masks output)
 resolution    = n_subaperture * 8 #n_subaperture * 4 (og) (4 represents the number of pixels per subaperture)
-sampling_time = 1/1000 #1/1000 og
+loop_frequency = 1000
+sampling_time = 1/loop_frequency #1/1000 og
 diameter = 8
 central_obstruction = 0.1
 r_0 = 0.15 #0.15
@@ -68,14 +75,14 @@ else:
 
 L_0 = 20
 wind_speed = [5, 50] #og 5, 50
-fractional_R0 = [0.6, 0.4]
+fractional_R0 = [0.85, 0.15]
 wind_direction = [30, 60] #in deg 30, 60 og
 alt = [0, 10000]
 
 
 mechanical_coupling = 0.4
 #in terms of lambda/D
-modulation_ratio = 3 #full cycle needs to happen in one frame of the pyramid camera to successfully average it out
+modulation_ratio = 5 #full cycle needs to happen in one frame of the pyramid camera to successfully average it out
 light_ratio = 0.1 #flux criterion for subaperture pixel consideration (below the threshlod the dm does not react?)
 post_process = "slopesMaps"
 zeroPaddingFactor = 6
@@ -91,6 +98,9 @@ zeroPaddingFactor = 6
 ##############################################################################################################
 src = Source(optBand   = "I",
              magnitude = 2)
+
+wvl = 550e-9
+r_0_src = r_0 * (src.wavelength / wvl) ** (6/5)
 
 print(src.type)
 
@@ -127,16 +137,25 @@ tel.print_optical_path()
 tel.computePSF(zeroPaddingFactor)
 #we just rescale to the resolution size to zoom into the PSF
 size_pixel_arcsec = 206265 * (tel.src.wavelength/tel.D) / zeroPaddingFactor
-N                 = 200
+N                 = 370
 zoomed_PSF        = tel.PSF[N:-N, N: -N]
-zoomed_PSF        = zoomed_PSF/zoomed_PSF.max()
+zoomed_PSF        = zoomed_PSF/np.sum(zoomed_PSF)
 fov               = zoomed_PSF.shape[0] * size_pixel_arcsec
+
+
+#OTF calculation
+OTF_dl = fftshift(fft2(fftshift(tel.PSF)))
+
+x_axis, OTF_dl_averaged = circular_average((np.abs(OTF_dl)).shape, np.abs(OTF_dl))
+#unfinished calculation of the relative spatial frequency (maybe do absolute frequency)
+#np.arange(len(OTF_dl_averaged))*sampling/OTF_dl.shape[0]
 
 
 
 
 plt.figure()
-plt.imshow(np.log10(zoomed_PSF), extent = [ -fov/2, fov/2, -fov/2, fov/2])
+#plt.imshow(np.log10(zoomed_PSF), extent = [ -fov/2, fov/2, -fov/2, fov/2])
+plt.imshow(zoomed_PSF, norm = SymLogNorm(1e-4), extent = [ -fov/2, fov/2, -fov/2, fov/2])
 plt.title("Source PSF")
 plt.xlabel("arcsec")
 plt.ylabel("arcsec")
@@ -160,7 +179,9 @@ atm = Atmosphere(telescope     = tel,
 
 
 atm.initializeAtmosphere(telescope = tel)
-atm.display_atm_layers() #just a print out (NOT just a print out, just need to plt.show())
+
+
+#atm.display_atm_layers() #just a print out (NOT just a print out, just need to plt.show())
 
 
 
@@ -189,10 +210,15 @@ atm.display_atm_layers() #just a print out (NOT just a print out, just need to p
 
 
 dm = DeformableMirror(telescope      = tel,
-                      nSubap         = n_subaperture,
+                      nSubap         = n_subaperture_dm,
                       mechCoupling   = mechanical_coupling)
 
+#control radius calculation for the dm
+control_radius = (n_subaperture_dm * src.wavelength) /(2 * tel.D) * rad2arcsec
+corr_zone_1 = Circle([0,0], control_radius, fc='none', ec='k', ls=':')
+corr_zone_2 = Circle([0,0], control_radius, fc='none', ec='k', ls=':')
 
+"""
 plt.figure()
 plt.title("dm OPD")
 plt.imshow(dm.OPD)
@@ -201,7 +227,7 @@ plt.imshow(dm.OPD)
 dm.coefs = np.random.rand(dm.nValidAct)
 plt.figure()
 plt.title("dm OPD with random actuator position")
-plt.imshow(dm.OPD)
+plt.imshow(dm.OPD)"""
 
 ##############################################################################################################
 
@@ -220,7 +246,7 @@ pwfs = Pyramid(nSubap           = n_subaperture,   #resolution of the pwfs cam (
                n_pix_edge       = 5
                )
 print("detector !!")
-plt.figure()
+"""plt.figure()
 plt.imshow(pwfs.cam.frame)
 plt.title("PWFS camera")
 
@@ -231,7 +257,7 @@ plt.title("PWFS mask")
 pwfs*pwfs.focal_plane_camera
 plt.figure()
 plt.imshow(pwfs.focal_plane_camera.frame)
-plt.title("PWFS focal plane (modulation)")
+plt.title("PWFS focal plane (modulation)")"""
 
 
 
@@ -297,7 +323,7 @@ M2C_Z = np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])) @ Z.modes
 print("inverse of dm.modes shape", np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])).shape)
 print("Z modes matrix shape", Z.modes.shape)
 print("Z modes but 2D shape", Z.modesFullRes.shape)
-error
+
 
 
 #test for zonal coefficients (does not work for now, I am not sure if the M2C_zonal matrix is correct)
@@ -333,6 +359,7 @@ tel.print_optical_path() #sanity check
 plt.figure()
 plt.plot(input_modes, label = "input")
 plt.plot(calib_zonal.M @ pwfs.signal, label = "reconstructed")
+plt.title("Reconstructed vs input dm modes")
 plt.ylabel("DM commands")
 plt.legend()
 
@@ -357,9 +384,10 @@ tel+atm
 src*tel*dm*pwfs
 tel.print_optical_path()
 
-nLoop = 200
+nLoop = 1000
 
 SR        = np.zeros(nLoop)
+SR_running = np.zeros(nLoop)
 total     = np.zeros(nLoop)
 residual  = np.zeros(nLoop)
 pwfssignal = np.arange(0, pwfs.nSignal) * 0
@@ -380,7 +408,7 @@ for i in range(nLoop):
     atm.update()
     #phase variance
     total[i] = np.std(tel.OPD[np.where(tel.pupil > 0)]) * 1e9
-    #turbulent phase
+    #turbulent phase (residual phase left after correction, for corrected phase pls do dm.OPD)
     turbphase = tel.src.phase
     #propagate through AO
     src * tel * dm * pwfs
@@ -398,6 +426,8 @@ for i in range(nLoop):
     print(f"strehl {SR[i]}")
 
 
+SR_running = np.convolve(SR, np.ones(30) / 30, mode = "same")
+
 
 time = np.arange(0, nLoop * sampling_time, sampling_time)
 plt.figure()
@@ -409,22 +439,86 @@ plt.legend()
 
 plt.figure()
 plt.plot(time, SR, label = "strehl")
+plt.plot(time, SR_running, label = "running_strehl")
 plt.title("Strehl ratio")
 plt.xlabel("time s")
+plt.legend()
 
 plt.figure()
 tel.computePSF(zeroPaddingFactor)
 
 AO_PSF = tel.PSF[N: -N, N: -N]
-AO_PSF = AO_PSF/AO_PSF.max()
-plt.imshow(np.log10(AO_PSF), extent = [-fov/2, fov/2, -fov/2, fov/2])
+AO_PSF = AO_PSF/np.sum(AO_PSF)
+plt.imshow(AO_PSF, norm = SymLogNorm(1e-4), extent = [-fov/2, fov/2, -fov/2, fov/2])
 plt.title("AO corrected PSF")
+plt.gca().add_artist(corr_zone_1)
 plt.xlabel("arcsec")
 plt.ylabel("arcsec")
 plt.colorbar()
 
 
-np.save("SR_PWFS_subap_40x8.npy", SR)
+
+
+plt.figure()
+diff = np.abs(AO_PSF - zoomed_PSF) #to avoid zero values
+diff = np.clip(diff, 1e-10, None)
+plt.plot(diff[diff.shape[0] // 2, :], label = "residual")
+plt.plot(AO_PSF[AO_PSF.shape[0] // 2, :], label = "AO PSF")
+plt.title("PSF 1D")
+plt.xlabel("arcsec")
+plt.ylabel("arcsec")
+plt.legend()
+
+
+OTF_AO = fftshift(fft2(fftshift(tel.PSF)))
+x_axis___, OTF_AO_averaged = circular_average(np.abs(OTF_AO).shape, np.abs(OTF_AO))
+
+plt.figure()
+plt.plot(x_axis, OTF_dl_averaged, label = "diffraction limited")
+plt.plot(x_axis___, OTF_AO_averaged, label = "AO corrected")
+plt.title("OTF magnitude diffraction limited")
+plt.xlabel("Frequency domain")
+plt.ylabel("MTF")
+plt.xscale("log")
+plt.yscale("log")
+plt.legend()
+
+
+corrected_phase = tel.src.phase
+PSD_corrected = np.abs(fftshift(fft2(corrected_phase))) ** 2 / ((tel.D / 2) ** 2 * np.pi)
+x_axis_PSD_residual, PSD_corrected_averaged = circular_average(np.abs(PSD_corrected).shape, np.abs(PSD_corrected))
+
+atmosphere_phase = 2*np.pi * atm.OPD / src.wavelength
+atmosphere_residual = np.abs(fftshift(fft2(atmosphere_phase))) ** 2 / ((tel.D / 2) ** 2 * np.pi)
+x_axis_PSD_atmosphere_residual, atmosphere_residual_averaged = circular_average(np.abs(atmosphere_residual).shape, np.abs(atmosphere_residual))
+
+dm_phase = 2*np.pi * dm.OPD / src.wavelength
+
+plt.figure()
+plt.subplot(131)
+plt.imshow(tel.src.phase)
+plt.subplot(132)
+plt.imshow(atmosphere_phase)
+plt.subplot(133)
+plt.imshow(dm_phase)
+plt.colorbar()
+
+
+
+plt.figure()
+plt.plot(x_axis_PSD_residual, PSD_corrected_averaged, label = "PSD_residual")
+plt.plot(x_axis_PSD_atmosphere_residual, atmosphere_residual_averaged, label = "atmosphere_PSD")
+plt.title("PSD residual vs atmosphere comparison")
+plt.xlabel("Frequency domain")
+plt.ylabel("PSD")
+plt.xscale("log")
+plt.yscale("log")
+plt.legend()
+
+
+
+np.save("SR_PWFS_og.npy", SR)
+#plt.savefig("SR_PWFS_og.png", dpi = 300)
 plt.show()
 
 '''

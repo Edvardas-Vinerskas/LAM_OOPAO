@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LogNorm
 from numpy.fft import fft2, fftshift
-
+from functions import *
 
 import OOPAO
 from OOPAO.Source import Source
@@ -17,18 +17,14 @@ from OOPAO.calibration.compute_KL_modal_basis import compute_KL_basis
 from OOPAO.tools.displayTools import displayMap, makeSquareAxes
 
 
+pupil = np.zeros((101, 101))
+radius_array = circle_radius(pupil.shape)
 
 
-# Create a simple image
-pupil = np.zeros((100, 100))
-
-x, y = np.indices(pupil.shape) #x is the index of each row and y is the index of each column
-center = [pupil.shape[0] // 2, pupil.shape[1] // 2]
-print(x)
-print(y)
-
-r = np.sqrt((x - center[1]) ** 2 + (y - center[0]) ** 2)
-print(r)
+#we calculate here for a circular pupil
+#also maybe redo it using oopao
+print(radius_array)
+error
 
 pupil[40:60, 40:60] = 1  # white square
 
@@ -48,9 +44,13 @@ plt.imshow(psf)
 plt.colorbar()
 
 otf = fftshift(fft2(fftshift(psf)))
+
+x_axis, otf_averaged = circular_average((np.abs(otf)).shape, np.abs(otf))
 print(otf.shape)
 plt.figure()
-plt.plot(np.abs(otf[:, (100 - 1) // 2]))
+plt.plot(x_axis, otf_averaged)
+plt.yscale('log')
+plt.xscale('log')
 
 
 
