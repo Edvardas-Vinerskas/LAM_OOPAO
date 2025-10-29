@@ -49,7 +49,6 @@ from OOPAO.ShackHartmann import ShackHartmann
 from OOPAO.calibration.InteractionMatrix import InteractionMatrix
 from OOPAO.calibration.compute_KL_modal_basis import compute_KL_basis
 
-
 ##############################################################################################################
 #ALL GLOBALS HERE
 n_subaperture = 20 #basically the number of actuators og20
@@ -61,7 +60,7 @@ resolution    = n_subaperture * 8 #n_subaperture * 4 (og) (4 represents the numb
 loop_frequency = 1000
 sampling_time = 1/loop_frequency #1/1000 og
 diameter = 8
-central_obstruction = 0.1
+central_obstruction = 0
 r_0 = 0.15 #0.15
 
 #always check whether there are enough pixels for r_0
@@ -266,13 +265,11 @@ plt.title("PWFS focal plane (modulation)")"""
 #SHWFS
 
 ##############################################################################################################
-"""
-SHWFS = ShackHartmann(nSubap       = n_subaperture,
+
+"""SHWFS = ShackHartmann(nSubap       = n_subaperture,
                       telescope    = tel,
                       lightRatio   = light_ratio,
-                      is_geometric = False,
-                      shannon_sampling = True,
-                      threshold_cog= 0.1)
+                      is_geometric = False)
 
 
 plt.figure()
@@ -284,6 +281,7 @@ plt.subplot(1,2,2)
 plt.imshow(SHWFS.cam.frame)
 plt.title("camera of SHWFS")
 
+pwfs = SHWFS"""
 
 
 
@@ -299,7 +297,7 @@ plt.title("camera of SHWFS")
 M2C_KL = compute_KL_basis(tel = tel, atm = atm, dm = dm)
 M2C_KL = M2C_KL[:, :300]
 print(M2C_KL.shape)
-"""
+
 from OOPAO.Zernike import Zernike
 
 ##############################################################################################################
@@ -307,17 +305,37 @@ from OOPAO.Zernike import Zernike
 #ZERNIKE
 #Zernike.modesFullRes - has all of the modes of Zernike that you can later plot
 #can use displayMap to plot ALL of the modes
-#Z.modes takes in modes and outputs the OPD
+#Z.modes takes in modes and outputs the phase/OPD
+#1st and 2nd moodes should be tip tilt
+
 
 ##############################################################################################################
 
 
 #if you use too many zerniked coefficients and the DM does not have the resolution to reconstruct
 #them, then you will have an unstable and incorrect system
-Z = Zernike(tel, 400)
+Z = Zernike(tel, 250)
 Z.computeZernike(tel)
 #figure out what the following line actually does (converts the default dm.modes into Z.modes)
 M2C_Z = np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])) @ Z.modes
+print(Z.modes[:, 0])
+print(Z.modes.T[0, :].shape)
+print(Z.modes.T[1, :] @ Z.modes[:, 1])
+tel+atm
+print(tel.pupil.shape)
+print(tel.src.phase[np.where(tel.pupil > 0)].shape)
+print(tel.OPD.shape)
+
+Z_coefficient = Z.modes.T[0, :] @ tel.src.phase[np.where(tel.pupil > 0)] / (Z.modes.T[0, :] @ Z.modes[:, 0])
+print(Z_coefficient)
+
+
+plt.figure()
+
+plt.imshow(tel.src.phase)
+plt.show()
+print(Z.modes.T @ Z.modes)
+error
 
 
 print("inverse of dm.modes shape", np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])).shape)
@@ -326,19 +344,19 @@ print("Z modes but 2D shape", Z.modesFullRes.shape)
 
 
 
-#test for zonal coefficients (does not work for now, I am not sure if the M2C_zonal matrix is correct)
+
 #just need to input an identity matrix - the first zonal function moves the first actuator (that is the logic)
 
 M2C_zonal = np.identity(dm.nValidAct)
 
-M2C__ = M2C_zonal
+M2C__ = M2C_Z
 #interaction matrix that takes in DM modes
 calib_zonal = InteractionMatrix(ngs             = src,
                                 atm             = atm,
                                 tel             = tel,
                                 dm              = dm,
                                 wfs             = pwfs,
-                                M2C             = M2C__,  #I assume these are zonal modes since I didn't apply anything
+                                M2C             = M2C__,
                                 stroke          = 1e-9,
                                 nMeasurements   = 1,    #they build up the interaction matrix using nMeasurements columns at a time
                                 noise           = "off") #noise of the wfs measurements
@@ -349,6 +367,8 @@ calib_zonal = InteractionMatrix(ngs             = src,
 #calib_zonal.M @ pwfs.signal - reconstructed Zernike coefficients
 
 input_modes = np.random.randn(M2C__.shape[1]) * 1e-9
+print(f"M2C__ shape {M2C__.shape}")
+
 
 
 dm.coefs = M2C__ @ input_modes #need this line for propagation
@@ -384,7 +404,7 @@ tel+atm
 src*tel*dm*pwfs
 tel.print_optical_path()
 
-nLoop = 1000
+nLoop = 50
 
 SR        = np.zeros(nLoop)
 SR_running = np.zeros(nLoop)
@@ -473,15 +493,24 @@ plt.legend()
 OTF_AO = fftshift(fft2(fftshift(tel.PSF)))
 x_axis___, OTF_AO_averaged = circular_average(np.abs(OTF_AO).shape, np.abs(OTF_AO))
 
+
+OTF_AO_averaged_shwfs = np.load("OTF_magnitude_SHWFS.npy")
+
 plt.figure()
 plt.plot(x_axis, OTF_dl_averaged, label = "diffraction limited")
-plt.plot(x_axis___, OTF_AO_averaged, label = "AO corrected")
+plt.plot(x_axis___, OTF_AO_averaged, label = "AO corrected pwfs")
+plt.plot(x_axis___, OTF_AO_averaged_shwfs, label = "AO corrected shwfs")
 plt.title("OTF magnitude diffraction limited")
 plt.xlabel("Frequency domain")
 plt.ylabel("MTF")
 plt.xscale("log")
 plt.yscale("log")
 plt.legend()
+
+
+
+
+#np.save("OTF_magnitude_SHWFS.npy", OTF_AO_averaged)
 
 
 corrected_phase = tel.src.phase
@@ -503,10 +532,12 @@ plt.subplot(133)
 plt.imshow(dm_phase)
 plt.colorbar()
 
+PSD_residual_shwfs = np.load("PSD_residual_SHWFS.npy")
 
 
 plt.figure()
-plt.plot(x_axis_PSD_residual, PSD_corrected_averaged, label = "PSD_residual")
+plt.plot(x_axis_PSD_residual, PSD_corrected_averaged, label = "PSD_residual_pwfs")
+plt.plot(x_axis_PSD_residual, PSD_residual_shwfs, label = "PSD_residual_shwfs")
 plt.plot(x_axis_PSD_atmosphere_residual, atmosphere_residual_averaged, label = "atmosphere_PSD")
 plt.title("PSD residual vs atmosphere comparison")
 plt.xlabel("Frequency domain")
@@ -515,10 +546,39 @@ plt.xscale("log")
 plt.yscale("log")
 plt.legend()
 
+#np.save("PSD_residual_SHWFS.npy", PSD_corrected_averaged)
 
 
-np.save("SR_PWFS_og.npy", SR)
-#plt.savefig("SR_PWFS_og.png", dpi = 300)
+
+
+
+
+fitting_error = 0.28 * ( dm.pitch/ r_0_src) ** (5 / 3)
+
+aliasing_error = 0.08 * fitting_error
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 plt.show()
 
 '''
