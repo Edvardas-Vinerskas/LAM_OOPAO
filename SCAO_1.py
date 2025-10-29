@@ -1,20 +1,8 @@
 """
-
-Build a simple AO system simulation
-Test the different parameters
-Optimize for resolution and potentially other parameters
-
 NGS/SRC -> atmosphere -> telescope -> dm -> wfs -> camera
 split somewhere for src/ngs
 
 figure out what is cam and cam.binned
-
-How do I change the dm actuator number? n_subapertures
-
-What is the Z.modesFullRes vs Z.modes?
-
-
-WHAT DOES THIS REPRESENT/??? print(np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])).shape)
 
 
 NEXT TASK: prepare slides, do ALL tutorials, make some graphs how SR (and other parameters) change when you change:
@@ -24,8 +12,6 @@ actuator number +
 wind speed +
 r_0 +
 sampling time +
-
-Compare PSFs before correction and after correction (so basically SR calculation)
 calculate cutoff frequency (formula in PhDs potentially)
 
 Play around with light ratio parameter on the pwfs
@@ -35,6 +21,8 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import SymLogNorm
 import numpy as np
 from matplotlib.patches import Circle
+
+from OOPAO.Zernike import Zernike
 from functions import *
 from numpy.fft import fft, ifft, fft2, fftshift
 
@@ -60,14 +48,15 @@ resolution    = n_subaperture * 8 #n_subaperture * 4 (og) (4 represents the numb
 loop_frequency = 1000
 sampling_time = 1/loop_frequency #1/1000 og
 diameter = 8
-central_obstruction = 0
+central_obstruction = 0.1
 r_0 = 0.15 #0.15
+nLoop = 100
 
 #always check whether there are enough pixels for r_0
 pixel_size = diameter / resolution
 
-if 3 * pixel_size >= r_0:
-    print("PIXELS ARE SMALL ENOUGH")
+if 3 * pixel_size <= r_0:
+    print(f"PIXELS ARE SMALL ENOUGH, number of pixels per r_0 {r_0 / pixel_size}")
 else:
     print("YOUR PIXELS ARE TOO BIG!!!")
 
@@ -84,6 +73,10 @@ mechanical_coupling = 0.4
 modulation_ratio = 5 #full cycle needs to happen in one frame of the pyramid camera to successfully average it out
 light_ratio = 0.1 #flux criterion for subaperture pixel consideration (below the threshlod the dm does not react?)
 post_process = "slopesMaps"
+
+
+#the factor increases your image size by zeroPaddingFactor, allowing for finer frequency bins in the fft
+#so for 6, you image size is increased 6 times
 zeroPaddingFactor = 6
 
 
@@ -101,7 +94,6 @@ src = Source(optBand   = "I",
 wvl = 550e-9
 r_0_src = r_0 * (src.wavelength / wvl) ** (6/5)
 
-print(src.type)
 
 ##############################################################################################################
 
@@ -110,13 +102,23 @@ print(src.type)
 #resoolution - describes the resolution of the simulation
 
 """
-_ tel.OPD       - optical path difference
-_ tel.src.phase - 2D map of the phase difference (tel.OPD scaled to src wavelength)  
+- tel.OPD       - optical path difference
+- tel.src.phase - 2D map of the phase difference (tel.OPD scaled to src wavelength)  
+- fun fact: tel.src.phase is a 3D matrix before doing the tel+atm and just stores actuator influence functions for each actuator
 
 zeroPaddingFactor refers to the ratio between original and padded signal in FFT
 i.e. we just add zeros to the original signal
 this helps in doing the numerical FFT - smoother and less choppy?
 prevents aliasing
+
+In fact when calculating the PSF, the zeroPaddingFactor acts as the number of pixels per diffraction limited angular resolution
+so the tel.PSF is then ffted onto a camera that has a resolution of zeroPaddingFactor number of pixels per diffraction limited angular resolution
+
+NOT TO BE CONFUSED WITH THE telescope resolution parameter which is the resolution of the pupil
+In conclusion the pupil resolution is increased by zeroPaddingFactor number of times for the PSF camera
+
+Fun fact: since we are increasing the pixel density, we get less photons per pixel and basically waste them
+that is why optimal sampling is key here
 """
 
 
@@ -135,15 +137,17 @@ tel.print_optical_path()
 
 tel.computePSF(zeroPaddingFactor)
 #we just rescale to the resolution size to zoom into the PSF
-size_pixel_arcsec = 206265 * (tel.src.wavelength/tel.D) / zeroPaddingFactor
-N                 = 370
+#the arcsec_per_pixel code assumes that we are sampling the diffraction limit per zeroPaddingFactor number of pixels (so 6 pixels per diffraction limited angular resolution)
+#zeroPaddingFactor effectively acts as a camera with denser/more pixels in the focal plane
+arcsec_per_pixel  = 206265 * (tel.src.wavelength/tel.D) / zeroPaddingFactor
+N                 = 300
 zoomed_PSF        = tel.PSF[N:-N, N: -N]
 zoomed_PSF        = zoomed_PSF/np.sum(zoomed_PSF)
-fov               = zoomed_PSF.shape[0] * size_pixel_arcsec
+fov               = zoomed_PSF.shape[0] * arcsec_per_pixel
 
 
-#OTF calculation
-OTF_dl = fftshift(fft2(fftshift(tel.PSF)))
+#OTF calculation (DON'T FORGET TO NORMALISE THE PSF)
+OTF_dl = fftshift(fft2(fftshift(tel.PSF / np.sum(tel.PSF))))
 
 x_axis, OTF_dl_averaged = circular_average((np.abs(OTF_dl)).shape, np.abs(OTF_dl))
 #unfinished calculation of the relative spatial frequency (maybe do absolute frequency)
@@ -153,8 +157,7 @@ x_axis, OTF_dl_averaged = circular_average((np.abs(OTF_dl)).shape, np.abs(OTF_dl
 
 
 plt.figure()
-#plt.imshow(np.log10(zoomed_PSF), extent = [ -fov/2, fov/2, -fov/2, fov/2])
-plt.imshow(zoomed_PSF, norm = SymLogNorm(1e-4), extent = [ -fov/2, fov/2, -fov/2, fov/2])
+plt.imshow(zoomed_PSF, norm = SymLogNorm(1e-7), extent = [ -fov/2, fov/2, -fov/2, fov/2])
 plt.title("Source PSF")
 plt.xlabel("arcsec")
 plt.ylabel("arcsec")
@@ -165,6 +168,9 @@ plt.colorbar()
 #ATMOSPHERE
 #how does the atmosphere look for different object? (surely it is different turbulence or do you make multiple atmosphere object?)
 #always initialize atm.initializeAtmosphere(telescope = tel)
+#atm.display_atm_layers() #just a print out (NOT just a print out, just need to plt.show())
+#combining atm + telescope (always compare diffraction limited case with the aosystem corrected case)
+#tel+atm
 
 ##############################################################################################################
 
@@ -178,14 +184,6 @@ atm = Atmosphere(telescope     = tel,
 
 
 atm.initializeAtmosphere(telescope = tel)
-
-
-#atm.display_atm_layers() #just a print out (NOT just a print out, just need to plt.show())
-
-
-
-#combining atm + telescope (always compare diffraction limited case with the aosystem corrected case)
-#tel+atm
 
 
 ##############################################################################################################
@@ -213,20 +211,12 @@ dm = DeformableMirror(telescope      = tel,
                       mechCoupling   = mechanical_coupling)
 
 #control radius calculation for the dm
-control_radius = (n_subaperture_dm * src.wavelength) /(2 * tel.D) * rad2arcsec
-corr_zone_1 = Circle([0,0], control_radius, fc='none', ec='k', ls=':')
-corr_zone_2 = Circle([0,0], control_radius, fc='none', ec='k', ls=':')
-
-"""
-plt.figure()
-plt.title("dm OPD")
-plt.imshow(dm.OPD)
+control_radius = ((n_subaperture_dm + 1) * src.wavelength) /(2 * tel.D) * rad2arcsec
+k_spatial_dm   = 2 * np.pi * ((n_subaperture_dm + 1)) /(2 * tel.D)
+corr_zone_1 = Circle([0,0], control_radius, fc='none', ec='w', ls=':')
+corr_zone_2 = Circle([0,0], control_radius, fc='none', ec='w', ls=':')
 
 
-dm.coefs = np.random.rand(dm.nValidAct)
-plt.figure()
-plt.title("dm OPD with random actuator position")
-plt.imshow(dm.OPD)"""
 
 ##############################################################################################################
 
@@ -234,7 +224,7 @@ plt.imshow(dm.OPD)"""
 #pwfs.cam (a child detector class which shows the pyramid sides)
 
 ##############################################################################################################
-print("detector !")
+
 
 pwfs = Pyramid(nSubap           = n_subaperture,   #resolution of the pwfs cam (i.e. pupil diameter)
                telescope        = tel,
@@ -244,19 +234,7 @@ pwfs = Pyramid(nSubap           = n_subaperture,   #resolution of the pwfs cam (
                n_pix_separation = 10,
                n_pix_edge       = 5
                )
-print("detector !!")
-"""plt.figure()
-plt.imshow(pwfs.cam.frame)
-plt.title("PWFS camera")
 
-plt.figure()
-plt.imshow(pwfs.m)
-plt.title("PWFS mask")
-
-pwfs*pwfs.focal_plane_camera
-plt.figure()
-plt.imshow(pwfs.focal_plane_camera.frame)
-plt.title("PWFS focal plane (modulation)")"""
 
 
 
@@ -293,12 +271,11 @@ pwfs = SHWFS"""
 #calib_zonal.nTrunc = 10 (truncate the 10 last singular values)
 
 ##############################################################################################################
-
+'''
 M2C_KL = compute_KL_basis(tel = tel, atm = atm, dm = dm)
 M2C_KL = M2C_KL[:, :300]
-print(M2C_KL.shape)
+'''
 
-from OOPAO.Zernike import Zernike
 
 ##############################################################################################################
 
@@ -306,41 +283,20 @@ from OOPAO.Zernike import Zernike
 #Zernike.modesFullRes - has all of the modes of Zernike that you can later plot
 #can use displayMap to plot ALL of the modes
 #Z.modes takes in modes and outputs the phase/OPD
-#1st and 2nd moodes should be tip tilt
+#1st and 2nd modes is tip tilt (no piston)
 
 
 ##############################################################################################################
 
 
-#if you use too many zerniked coefficients and the DM does not have the resolution to reconstruct
+#if you use too many zernike coefficients and the DM does not have the resolution to reconstruct
 #them, then you will have an unstable and incorrect system
 Z = Zernike(tel, 250)
 Z.computeZernike(tel)
-#figure out what the following line actually does (converts the default dm.modes into Z.modes)
 M2C_Z = np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])) @ Z.modes
-print(Z.modes[:, 0])
-print(Z.modes.T[0, :].shape)
-print(Z.modes.T[1, :] @ Z.modes[:, 1])
-tel+atm
-print(tel.pupil.shape)
-print(tel.src.phase[np.where(tel.pupil > 0)].shape)
-print(tel.OPD.shape)
-
-Z_coefficient = Z.modes.T[0, :] @ tel.src.phase[np.where(tel.pupil > 0)] / (Z.modes.T[0, :] @ Z.modes[:, 0])
-print(Z_coefficient)
 
 
-plt.figure()
 
-plt.imshow(tel.src.phase)
-plt.show()
-print(Z.modes.T @ Z.modes)
-error
-
-
-print("inverse of dm.modes shape", np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])).shape)
-print("Z modes matrix shape", Z.modes.shape)
-print("Z modes but 2D shape", Z.modesFullRes.shape)
 
 
 
@@ -350,7 +306,7 @@ print("Z modes but 2D shape", Z.modesFullRes.shape)
 M2C_zonal = np.identity(dm.nValidAct)
 
 M2C__ = M2C_Z
-#interaction matrix that takes in DM modes
+#interaction matrix that takes in DM coefs and outputs phase/slopes
 calib_zonal = InteractionMatrix(ngs             = src,
                                 atm             = atm,
                                 tel             = tel,
@@ -363,11 +319,9 @@ calib_zonal = InteractionMatrix(ngs             = src,
 
 
 #phase reconstruction using the interaction/reconstruction matrix
-#input_modes - Zernike coefficients?
 #calib_zonal.M @ pwfs.signal - reconstructed Zernike coefficients
 
 input_modes = np.random.randn(M2C__.shape[1]) * 1e-9
-print(f"M2C__ shape {M2C__.shape}")
 
 
 
@@ -382,6 +336,23 @@ plt.plot(calib_zonal.M @ pwfs.signal, label = "reconstructed")
 plt.title("Reconstructed vs input dm modes")
 plt.ylabel("DM commands")
 plt.legend()
+
+
+
+
+
+
+
+
+Z_coefficient_matrix_atmosphere_test = Z.modes.T @ atm.OPD[np.where(tel.pupil > 0)] / (np.diag(Z.modes.T @ Z.modes))
+
+
+
+
+dm.coefs = M2C__ @ Z_coefficient_matrix_atmosphere_test
+fitting_error = atm.OPD - dm.OPD
+simulational_fitting_error = np.std(fitting_error[np.where(tel.pupil > 0)]) * 1e9
+
 
 
 
@@ -404,28 +375,31 @@ tel+atm
 src*tel*dm*pwfs
 tel.print_optical_path()
 
-nLoop = 50
 
-SR        = np.zeros(nLoop)
-SR_running = np.zeros(nLoop)
-total     = np.zeros(nLoop)
-residual  = np.zeros(nLoop)
-pwfssignal = np.arange(0, pwfs.nSignal) * 0
+
+SR                  = np.zeros(nLoop)
+SR_running          = np.zeros(nLoop)
+total               = np.zeros(nLoop)
+residual            = np.zeros(nLoop)
+pwfssignal          = np.arange(0, pwfs.nSignal) * 0
+atm_OPD_list        = []
 
 gain = 0.4
 
 #takes in pwfs signal and outputs dm controls (coefficients)
 reconstructor = M2C__ @ calib_zonal.M
 
-r_0_range = [0.05, 0.1, 0.15, 0.2, 0.3]
-wind_speed_range_1 = [3, 5, 10, 20, 40] #first layer
+r_0_range              = [0.05, 0.1, 0.15, 0.2, 0.3]
+wind_speed_range_1     = [3, 5, 10, 20, 40] #first layer
 wind_direction_range_1 = [0, 30, 60, 120, 240]
-sampling_time_range = [1/5000, 1/1000, 1/500, 1/100]
-resolution_range = [20 * 4, 20 * 6, 20 * 8, 20 * 12]
+sampling_time_range    = [1/5000, 1/1000, 1/500, 1/100]
+resolution_range       = [20 * 4, 20 * 6, 20 * 8, 20 * 12]
 
 for i in range(nLoop):
     #update phase screen
     atm.update()
+
+    atm_OPD_list.append(atm.OPD)
     #phase variance
     total[i] = np.std(tel.OPD[np.where(tel.pupil > 0)]) * 1e9
     #turbulent phase (residual phase left after correction, for corrected phase pls do dm.OPD)
@@ -441,9 +415,27 @@ for i in range(nLoop):
     pwfssignal = pwfs.signal
     #metrics
     SR[i] = np.exp(-np.var(tel.src.phase[np.where(tel.pupil == 1)]))
-    residual [i] = np.std(tel.OPD[np.where(tel.pupil > 0)]) * 1e9
+    residual[i] = np.std(tel.OPD[np.where(tel.pupil > 0)]) * 1e9
     print("Loop" + str(i) + "/" + str(nLoop) + "AO residual: " + str(residual[i]) + "nm")
     print(f"strehl {SR[i]}")
+
+
+
+########CHECK CODE HERE
+simulational_temporal_error = np.zeros(len(atm_OPD_list))
+for i in range(len(atm_OPD_list)):
+    simulational_temporal_error[i] = np.std((atm_OPD_list[0] - atm_OPD_list[i])[np.where(tel.pupil > 0)]) * 1e9
+
+
+simulational_fitting_error = np.ones(len(simulational_temporal_error)) * simulational_fitting_error
+
+plt.figure()
+plt.subplot(121)
+plt.title("simulational temporal error")
+plt.plot(simulational_temporal_error, label = "simulational temporal error")
+plt.subplot(122)
+plt.title("simulational fitting error")
+plt.plot(simulational_fitting_error, label = "simulational fitting error")
 
 
 SR_running = np.convolve(SR, np.ones(30) / 30, mode = "same")
@@ -469,7 +461,7 @@ tel.computePSF(zeroPaddingFactor)
 
 AO_PSF = tel.PSF[N: -N, N: -N]
 AO_PSF = AO_PSF/np.sum(AO_PSF)
-plt.imshow(AO_PSF, norm = SymLogNorm(1e-4), extent = [-fov/2, fov/2, -fov/2, fov/2])
+plt.imshow(AO_PSF, norm = SymLogNorm(1e-7), extent = [-fov/2, fov/2, -fov/2, fov/2])
 plt.title("AO corrected PSF")
 plt.gca().add_artist(corr_zone_1)
 plt.xlabel("arcsec")
@@ -483,6 +475,7 @@ plt.figure()
 diff = np.abs(AO_PSF - zoomed_PSF) #to avoid zero values
 diff = np.clip(diff, 1e-10, None)
 plt.plot(diff[diff.shape[0] // 2, :], label = "residual")
+plt.plot(zoomed_PSF[zoomed_PSF.shape[0] // 2, :], label = "diffraction_limited")
 plt.plot(AO_PSF[AO_PSF.shape[0] // 2, :], label = "AO PSF")
 plt.title("PSF 1D")
 plt.xlabel("arcsec")
@@ -490,7 +483,7 @@ plt.ylabel("arcsec")
 plt.legend()
 
 
-OTF_AO = fftshift(fft2(fftshift(tel.PSF)))
+OTF_AO = fftshift(fft2(fftshift(tel.PSF / np.sum(tel.PSF))))
 x_axis___, OTF_AO_averaged = circular_average(np.abs(OTF_AO).shape, np.abs(OTF_AO))
 
 
@@ -499,7 +492,7 @@ OTF_AO_averaged_shwfs = np.load("OTF_magnitude_SHWFS.npy")
 plt.figure()
 plt.plot(x_axis, OTF_dl_averaged, label = "diffraction limited")
 plt.plot(x_axis___, OTF_AO_averaged, label = "AO corrected pwfs")
-plt.plot(x_axis___, OTF_AO_averaged_shwfs, label = "AO corrected shwfs")
+#plt.plot(x_axis___, OTF_AO_averaged_shwfs, label = "AO corrected shwfs")
 plt.title("OTF magnitude diffraction limited")
 plt.xlabel("Frequency domain")
 plt.ylabel("MTF")
@@ -512,32 +505,55 @@ plt.legend()
 
 #np.save("OTF_magnitude_SHWFS.npy", OTF_AO_averaged)
 
-
+#NEED TO DO NORMALISATION OF THE PSDs
 corrected_phase = tel.src.phase
 PSD_corrected = np.abs(fftshift(fft2(corrected_phase))) ** 2 / ((tel.D / 2) ** 2 * np.pi)
 x_axis_PSD_residual, PSD_corrected_averaged = circular_average(np.abs(PSD_corrected).shape, np.abs(PSD_corrected))
 
 atmosphere_phase = 2*np.pi * atm.OPD / src.wavelength
-atmosphere_residual = np.abs(fftshift(fft2(atmosphere_phase))) ** 2 / ((tel.D / 2) ** 2 * np.pi)
-x_axis_PSD_atmosphere_residual, atmosphere_residual_averaged = circular_average(np.abs(atmosphere_residual).shape, np.abs(atmosphere_residual))
+PSD_atmosphere = np.abs(fftshift(fft2(atmosphere_phase))) ** 2 / ((tel.D / 2) ** 2 * np.pi)
+x_axis_PSD_atmosphere_residual, atmosphere_residual_averaged = circular_average(np.abs(PSD_atmosphere).shape, np.abs(PSD_atmosphere))
 
 dm_phase = 2*np.pi * dm.OPD / src.wavelength
+
+Z_coefficient_matrix = Z.modes.T @ tel.src.phase[np.where(tel.pupil > 0)] / (np.diag(Z.modes.T @ Z.modes))
+Z_coefficient_matrix_atmosphere = Z.modes.T @ atmosphere_phase[np.where(tel.pupil > 0)] / (np.diag(Z.modes.T @ Z.modes))
+zernike_names = []
+for i in range(len(Z_coefficient_matrix)):
+    zernike_names.append(f"z{i+1}")
+
+
+
+
 
 plt.figure()
 plt.subplot(131)
 plt.imshow(tel.src.phase)
+plt.title("DM_Corrected phase")
 plt.subplot(132)
 plt.imshow(atmosphere_phase)
+plt.title("Atmosphere phase")
 plt.subplot(133)
 plt.imshow(dm_phase)
+plt.title("DM phase")
 plt.colorbar()
+
+plt.figure(figsize = (16,10))
+plt.bar(zernike_names, Z_coefficient_matrix, color = "red", label = "Zernike coeffs for residual phase")
+plt.title("Zernike coefficients for corrected phase")
+plt.bar(zernike_names,Z_coefficient_matrix_atmosphere, color = "black", alpha = 0.4, label = "Zernike coeffs for atmospheric phase")
+plt.title("Zernike coefficients for atmosphere phase")
+plt.tight_layout()
+
 
 PSD_residual_shwfs = np.load("PSD_residual_SHWFS.npy")
 
 
+#for the x_axis I am just using the length of the PSD so it is not related to any real frequencies
+#might want to mitigate that
 plt.figure()
 plt.plot(x_axis_PSD_residual, PSD_corrected_averaged, label = "PSD_residual_pwfs")
-plt.plot(x_axis_PSD_residual, PSD_residual_shwfs, label = "PSD_residual_shwfs")
+#plt.plot(x_axis_PSD_residual, PSD_residual_shwfs, label = "PSD_residual_shwfs")
 plt.plot(x_axis_PSD_atmosphere_residual, atmosphere_residual_averaged, label = "atmosphere_PSD")
 plt.title("PSD residual vs atmosphere comparison")
 plt.xlabel("Frequency domain")
@@ -551,11 +567,16 @@ plt.legend()
 
 
 
+####'analytical' error calculation and subsequent comparison
 
+fitting_error = 0.23 * (dm.pitch/ r_0_src) ** (5 / 3)
 
-fitting_error = 0.28 * ( dm.pitch/ r_0_src) ** (5 / 3)
+#aliasing_error = 0.08 * fitting_error
 
-aliasing_error = 0.08 * fitting_error
+wind_speed = np.array(wind_speed)
+fractional_R0 = np.array(fractional_R0)
+v_avg = np.sum(wind_speed * fractional_R0)
+temporal_error = 6.88 * ( 2 * v_avg * sampling_time / r_0_src) ** (5 / 3)
 
 
 
