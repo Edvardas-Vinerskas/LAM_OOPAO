@@ -40,14 +40,15 @@ from OOPAO.calibration.compute_KL_modal_basis import compute_KL_basis
 ##############################################################################################################
 #ALL GLOBALS HERE
 n_subaperture = 20 #basically the number of actuators og20
-n_subaperture_dm = n_subaperture
 rad2arcsec = 180 * 60 * 60 / np.pi
 
 #the resolution is the telescope resolution? (you can check by changing it and seeing what the pupil and other masks output)
 resolution    = n_subaperture * 8 #n_subaperture * 4 (og) (4 represents the number of pixels per subaperture)
+Z_coefs = 280
+
 loop_frequency = 1000
 sampling_time = 1/loop_frequency #1/1000 og
-diameter = 8
+diameter = 0.8
 central_obstruction = 0.1
 r_0 = 0.15 #0.15
 nLoop = 100
@@ -77,7 +78,7 @@ post_process = "slopesMaps"
 
 #the factor increases your image size by zeroPaddingFactor, allowing for finer frequency bins in the fft
 #so for 6, you image size is increased 6 times
-zeroPaddingFactor = 6
+zeroPaddingFactor = 2
 
 
 
@@ -99,7 +100,7 @@ r_0_src = r_0 * (src.wavelength / wvl) ** (6/5)
 
 #TELESCOPE
 #tel.print_optical_path()
-#resoolution - describes the resolution of the simulation
+#resolution - describes the resolution of the simulation
 
 """
 - tel.OPD       - optical path difference
@@ -127,7 +128,7 @@ that is why optimal sampling is key here
 
 
 tel =  Telescope(resolution           = resolution,
-                 diameter             = 8,
+                 diameter             = diameter,
                  samplingTime         = sampling_time,
                  centralObstruction   = central_obstruction
                  )
@@ -140,7 +141,7 @@ tel.computePSF(zeroPaddingFactor)
 #the arcsec_per_pixel code assumes that we are sampling the diffraction limit per zeroPaddingFactor number of pixels (so 6 pixels per diffraction limited angular resolution)
 #zeroPaddingFactor effectively acts as a camera with denser/more pixels in the focal plane
 arcsec_per_pixel  = 206265 * (tel.src.wavelength/tel.D) / zeroPaddingFactor
-N                 = 300
+N                 = 100
 zoomed_PSF        = tel.PSF[N:-N, N: -N]
 zoomed_PSF        = zoomed_PSF/np.sum(zoomed_PSF)
 fov               = zoomed_PSF.shape[0] * arcsec_per_pixel
@@ -207,14 +208,16 @@ atm.initializeAtmosphere(telescope = tel)
 
 
 dm = DeformableMirror(telescope      = tel,
-                      nSubap         = n_subaperture_dm,
+                      nSubap         = n_subaperture,
                       mechCoupling   = mechanical_coupling)
 
 #control radius calculation for the dm
-control_radius = ((n_subaperture_dm + 1) * src.wavelength) /(2 * tel.D) * rad2arcsec
-k_spatial_dm   = 2 * np.pi * ((n_subaperture_dm + 1)) /(2 * tel.D)
+control_radius = ((n_subaperture + 1) * src.wavelength) /(2 * tel.D) * rad2arcsec
+k_spatial_dm   = 2 * np.pi * ((n_subaperture + 1)) /(2 * tel.D)
 corr_zone_1 = Circle([0,0], control_radius, fc='none', ec='w', ls=':')
 corr_zone_2 = Circle([0,0], control_radius, fc='none', ec='w', ls=':')
+print(f"dm pitch {dm.pitch} vs {r_0_src} r_0 value")
+
 
 
 
@@ -291,7 +294,7 @@ M2C_KL = M2C_KL[:, :300]
 
 #if you use too many zernike coefficients and the DM does not have the resolution to reconstruct
 #them, then you will have an unstable and incorrect system
-Z = Zernike(tel, 250)
+Z = Zernike(tel, Z_coefs)
 Z.computeZernike(tel)
 M2C_Z = np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])) @ Z.modes
 
@@ -421,21 +424,47 @@ for i in range(nLoop):
 
 
 
-########CHECK CODE HERE
+
+
+
 simulational_temporal_error = np.zeros(len(atm_OPD_list))
 for i in range(len(atm_OPD_list)):
     simulational_temporal_error[i] = np.std((atm_OPD_list[0] - atm_OPD_list[i])[np.where(tel.pupil > 0)]) * 1e9
 
 
-simulational_fitting_error = np.ones(len(simulational_temporal_error)) * simulational_fitting_error
+simulational_fitting_error_plot    = np.ones(len(simulational_temporal_error)) * simulational_fitting_error
+simulational_temporal_error_plot_2 = np.ones(len(simulational_temporal_error)) * simulational_temporal_error[2]
+simulational_temporal_error_plot_1 = np.ones(len(simulational_temporal_error)) * simulational_temporal_error[1]
+sum_fitting_temporal               = simulational_temporal_error_plot_1 + simulational_fitting_error_plot
+
+fitting_error_analytical = 0.23 * (dm.pitch/ r_0_src) ** (5 / 6) * src.wavelength / (2 * np.pi) * 1e9
+print(f"fitting error {fitting_error_analytical}")
+wind_speed = np.array(wind_speed)
+fractional_R0 = np.array(fractional_R0)
+v_avg = np.sum(wind_speed * fractional_R0)
+temporal_error_analytical = 6.88 * ( 2 * v_avg * sampling_time / r_0_src) ** (5 / 6) * src.wavelength / (2 * np.pi) * 1e9
+print(f"temporal error {temporal_error_analytical}")
+
+
+temporal_error_analytical_plot = np.ones(len(simulational_temporal_error)) * temporal_error_analytical
+fitting_error_analytical_plot  = np.ones(len(simulational_temporal_error)) * fitting_error_analytical
+
+
+
 
 plt.figure()
-plt.subplot(121)
+plt.subplot(221)
 plt.title("simulational temporal error")
 plt.plot(simulational_temporal_error, label = "simulational temporal error")
-plt.subplot(122)
+plt.subplot(222)
 plt.title("simulational fitting error")
-plt.plot(simulational_fitting_error, label = "simulational fitting error")
+plt.plot(simulational_fitting_error_plot, label = "simulational fitting error")
+plt.subplot(223)
+plt.title("analytic temporal error")
+plt.plot(temporal_error_analytical_plot, label = "analytic temporal error")
+plt.subplot(224)
+plt.title("analytic fitting error")
+plt.plot(fitting_error_analytical_plot, label = "analytic fitting error")
 
 
 SR_running = np.convolve(SR, np.ones(30) / 30, mode = "same")
@@ -443,10 +472,14 @@ SR_running = np.convolve(SR, np.ones(30) / 30, mode = "same")
 
 time = np.arange(0, nLoop * sampling_time, sampling_time)
 plt.figure()
-plt.plot(time, total, label = "total")
 plt.plot(time, residual, label = "residual")
-plt.title("total and residual (nm)")
+plt.plot(time, simulational_fitting_error_plot, label = "simulational fitting error")
+plt.plot(time, simulational_temporal_error_plot_2, label = "simulational temporal error 2 frame delay")
+plt.plot(time, simulational_temporal_error_plot_1, label = "simulational temporal error 1 frame delay")
+plt.plot(time, sum_fitting_temporal, label = "sum of fitting + temporal error 1")
+plt.title("residual and other error components (nm)")
 plt.xlabel("time s")
+plt.yscale("log")
 plt.legend()
 
 plt.figure()
@@ -474,9 +507,11 @@ plt.colorbar()
 plt.figure()
 diff = np.abs(AO_PSF - zoomed_PSF) #to avoid zero values
 diff = np.clip(diff, 1e-10, None)
-plt.plot(diff[diff.shape[0] // 2, :], label = "residual")
-plt.plot(zoomed_PSF[zoomed_PSF.shape[0] // 2, :], label = "diffraction_limited")
-plt.plot(AO_PSF[AO_PSF.shape[0] // 2, :], label = "AO PSF")
+PSF1D_x_axis = np.arange(- fov / 2, fov / 2, fov / zoomed_PSF.shape[0])
+
+plt.plot(PSF1D_x_axis, diff[diff.shape[0] // 2, :], label = "residual")
+plt.plot(PSF1D_x_axis, zoomed_PSF[zoomed_PSF.shape[0] // 2, :], label = "diffraction_limited")
+plt.plot(PSF1D_x_axis, AO_PSF[AO_PSF.shape[0] // 2, :], label = "AO PSF")
 plt.title("PSF 1D")
 plt.xlabel("arcsec")
 plt.ylabel("arcsec")
@@ -563,20 +598,6 @@ plt.yscale("log")
 plt.legend()
 
 #np.save("PSD_residual_SHWFS.npy", PSD_corrected_averaged)
-
-
-
-
-####'analytical' error calculation and subsequent comparison
-
-fitting_error = 0.23 * (dm.pitch/ r_0_src) ** (5 / 3)
-
-#aliasing_error = 0.08 * fitting_error
-
-wind_speed = np.array(wind_speed)
-fractional_R0 = np.array(fractional_R0)
-v_avg = np.sum(wind_speed * fractional_R0)
-temporal_error = 6.88 * ( 2 * v_avg * sampling_time / r_0_src) ** (5 / 3)
 
 
 

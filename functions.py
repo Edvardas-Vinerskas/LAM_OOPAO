@@ -36,8 +36,7 @@ def circular_average(shape, psf_or_otf):
     pixel_sum_at_r = np.bincount(radius.ravel(), psf_or_otf.ravel())  # weighted sum of pixels at the same radius
     number_of_pixels_at_r = np.bincount(radius.ravel())
     average_sum = pixel_sum_at_r / number_of_pixels_at_r
-    radial_number = np.arange(len(average_sum))
-    #radial_number = radial_number * arcsec_per_pixel
+    radial_number = np.arange(len(average_sum)) / len(average_sum)
     return radial_number, average_sum
 
 
