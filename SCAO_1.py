@@ -51,7 +51,7 @@ sampling_time = 1/loop_frequency #1/1000 og
 diameter = 0.8
 central_obstruction = 0.1
 r_0 = 0.15 #0.15
-nLoop = 100
+nLoop = 1000
 
 #always check whether there are enough pixels for r_0
 pixel_size = diameter / resolution
@@ -397,6 +397,9 @@ wind_speed_range_1     = [3, 5, 10, 20, 40] #first layer
 wind_direction_range_1 = [0, 30, 60, 120, 240]
 sampling_time_range    = [1/5000, 1/1000, 1/500, 1/100]
 resolution_range       = [20 * 4, 20 * 6, 20 * 8, 20 * 12]
+final_residual_phase   = 0
+final_atmosphere_OPD   = 0
+final_dm_OPD           = 0
 
 for i in range(nLoop):
     #update phase screen
@@ -421,8 +424,10 @@ for i in range(nLoop):
     residual[i] = np.std(tel.OPD[np.where(tel.pupil > 0)]) * 1e9
     print("Loop" + str(i) + "/" + str(nLoop) + "AO residual: " + str(residual[i]) + "nm")
     print(f"strehl {SR[i]}")
-
-
+    if i == (nLoop - 1):
+        final_residual_phase   = tel.src.phase
+        final_atmosphere_OPD   = atm.OPD
+        final_dm_OPD           = dm.OPD
 
 
 
@@ -540,18 +545,18 @@ plt.legend()
 
 #np.save("OTF_magnitude_SHWFS.npy", OTF_AO_averaged)
 
-#NEED TO DO NORMALISATION OF THE PSDs
-corrected_phase = tel.src.phase
+
+corrected_phase = final_residual_phase
 PSD_corrected = np.abs(fftshift(fft2(corrected_phase))) ** 2 / ((tel.D / 2) ** 2 * np.pi)
 x_axis_PSD_residual, PSD_corrected_averaged = circular_average(np.abs(PSD_corrected).shape, np.abs(PSD_corrected))
 
-atmosphere_phase = 2*np.pi * atm.OPD / src.wavelength
+atmosphere_phase = 2*np.pi * final_atmosphere_OPD / src.wavelength
 PSD_atmosphere = np.abs(fftshift(fft2(atmosphere_phase))) ** 2 / ((tel.D / 2) ** 2 * np.pi)
 x_axis_PSD_atmosphere_residual, atmosphere_residual_averaged = circular_average(np.abs(PSD_atmosphere).shape, np.abs(PSD_atmosphere))
 
-dm_phase = 2*np.pi * dm.OPD / src.wavelength
+dm_phase = 2*np.pi * final_dm_OPD / src.wavelength
 
-Z_coefficient_matrix = Z.modes.T @ tel.src.phase[np.where(tel.pupil > 0)] / (np.diag(Z.modes.T @ Z.modes))
+Z_coefficient_matrix = Z.modes.T @ final_residual_phase[np.where(tel.pupil > 0)] / (np.diag(Z.modes.T @ Z.modes))
 Z_coefficient_matrix_atmosphere = Z.modes.T @ atmosphere_phase[np.where(tel.pupil > 0)] / (np.diag(Z.modes.T @ Z.modes))
 zernike_names = []
 for i in range(len(Z_coefficient_matrix)):
@@ -561,17 +566,25 @@ for i in range(len(Z_coefficient_matrix)):
 
 
 
-plt.figure()
-plt.subplot(131)
-plt.imshow(tel.src.phase)
-plt.title("DM_Corrected phase")
-plt.subplot(132)
-plt.imshow(atmosphere_phase)
-plt.title("Atmosphere phase")
-plt.subplot(133)
-plt.imshow(dm_phase)
-plt.title("DM phase")
-plt.colorbar()
+fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+# Find global min/max for consistent color scaling
+vmin = min(corrected_phase.min(), atmosphere_phase.min(), dm_phase.min())
+vmax = max(corrected_phase.max(), atmosphere_phase.max(), dm_phase.max())
+
+# Plot with shared color scale
+im1 = axes[0].imshow(corrected_phase, vmin=vmin, vmax=vmax)
+axes[0].set_title("DM_Corrected phase")
+
+im2 = axes[1].imshow(atmosphere_phase, vmin=vmin, vmax=vmax)
+axes[1].set_title("Atmosphere phase")
+
+im3 = axes[2].imshow(dm_phase, vmin=vmin, vmax=vmax)
+axes[2].set_title("DM phase")
+
+# Add a single colorbar for all plots
+fig.colorbar(im3, ax=axes, fraction=0.046, pad=0.04)
+plt.tight_layout()
 
 plt.figure(figsize = (16,10))
 plt.bar(zernike_names, Z_coefficient_matrix, color = "red", label = "Zernike coeffs for residual phase")
