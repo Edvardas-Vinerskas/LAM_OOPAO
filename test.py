@@ -16,10 +16,16 @@ from OOPAO.calibration.InteractionMatrix import InteractionMatrix
 from OOPAO.calibration.compute_KL_modal_basis import compute_KL_basis
 from OOPAO.tools.displayTools import displayMap, makeSquareAxes
 
-zernike_names = []
-for i in range(10):
-    zernike_names.append(f"z{i+1}")
-print(zernike_names)
+import torch
+
+#z, x, y
 
 
+arrrr = torch.ones((5, (1+2)))
+for i in range(5):
+    arrrr[i] = arrrr[i] * i
+print(arrrr)
+arr = torch.roll(arrrr, 1, 0)
+
+print(arr)
 

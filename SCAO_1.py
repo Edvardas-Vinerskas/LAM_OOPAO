@@ -44,14 +44,15 @@ rad2arcsec = 180 * 60 * 60 / np.pi
 
 #the resolution is the telescope resolution? (you can check by changing it and seeing what the pupil and other masks output)
 resolution    = n_subaperture * 8 #n_subaperture * 4 (og) (4 represents the number of pixels per subaperture)
-Z_coefs = 280
+Z_coefs = 300
 
 loop_frequency = 1000
 sampling_time = 1/loop_frequency #1/1000 og
-diameter = 0.8
+diameter = 1.52
 central_obstruction = 0.1
 r_0 = 0.15 #0.15
 nLoop = 1000
+frame_delay = 2
 
 #always check whether there are enough pixels for r_0
 pixel_size = diameter / resolution
@@ -240,7 +241,6 @@ pwfs = Pyramid(nSubap           = n_subaperture,   #resolution of the pwfs cam (
 
 
 
-
 ##############################################################################################################
 
 #SHWFS
@@ -299,8 +299,8 @@ Z.computeZernike(tel)
 M2C_Z = np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])) @ Z.modes
 
 
-
-
+print(Z.modes[:, :2].shape)
+error
 
 
 
@@ -344,9 +344,6 @@ plt.legend()
 
 
 
-
-
-
 Z_coefficient_matrix_atmosphere_test = Z.modes.T @ atm.OPD[np.where(tel.pupil > 0)] / (np.diag(Z.modes.T @ Z.modes))
 
 
@@ -379,12 +376,12 @@ src*tel*dm*pwfs
 tel.print_optical_path()
 
 
-
+delay = frame_delay #I don't think you need to add a +1 here because there is already in built delay in the loop
 SR                  = np.zeros(nLoop)
 SR_running          = np.zeros(nLoop)
 total               = np.zeros(nLoop)
 residual            = np.zeros(nLoop)
-pwfssignal          = np.arange(0, pwfs.nSignal) * 0
+pwfssignal          = [np.zeros(pwfs.nSignal) for i in range(delay)]
 atm_OPD_list        = []
 
 gain = 0.4
@@ -410,15 +407,16 @@ for i in range(nLoop):
     total[i] = np.std(tel.OPD[np.where(tel.pupil > 0)]) * 1e9
     #turbulent phase (residual phase left after correction, for corrected phase pls do dm.OPD)
     turbphase = tel.src.phase
-    #propagate through AO
+    #propagate through AO with the dm commands applied
     src * tel * dm * pwfs
-    #propagate to the source (dm commands are applied now)
+    #propagate to the source with the dm commands applied
     src * tel
+
+    pwfssignal.pop(0)
+    pwfssignal.append(pwfs.signal)
+    delayed_signal = pwfssignal[0]
     #update the dm commands (i.e. dm.coefs)
-    #notice here that you can either use pwfs.signal (no delay) OR pwfssignal (some delay (how do we quantify it?))
-    dm.coefs = dm.coefs - gain * np.matmul(reconstructor, pwfssignal)
-    #store the slopes after computing the commands
-    pwfssignal = pwfs.signal
+    dm.coefs = dm.coefs - gain * np.matmul(reconstructor, delayed_signal)
     #metrics
     SR[i] = np.exp(-np.var(tel.src.phase[np.where(tel.pupil == 1)]))
     residual[i] = np.std(tel.OPD[np.where(tel.pupil > 0)]) * 1e9
@@ -440,15 +438,15 @@ for i in range(len(atm_OPD_list)):
 simulational_fitting_error_plot    = np.ones(len(simulational_temporal_error)) * simulational_fitting_error
 simulational_temporal_error_plot_2 = np.ones(len(simulational_temporal_error)) * simulational_temporal_error[2]
 simulational_temporal_error_plot_1 = np.ones(len(simulational_temporal_error)) * simulational_temporal_error[1]
-sum_fitting_temporal               = simulational_temporal_error_plot_1 + simulational_fitting_error_plot
+sum_fitting_temporal               = simulational_temporal_error_plot_2 + simulational_fitting_error_plot
 
 fitting_error_analytical = 0.23 * (dm.pitch/ r_0_src) ** (5 / 6) * src.wavelength / (2 * np.pi) * 1e9
-print(f"fitting error {fitting_error_analytical}")
+print(f"analytical fitting error {fitting_error_analytical}")
 wind_speed = np.array(wind_speed)
 fractional_R0 = np.array(fractional_R0)
 v_avg = np.sum(wind_speed * fractional_R0)
 temporal_error_analytical = 6.88 * ( 2 * v_avg * sampling_time / r_0_src) ** (5 / 6) * src.wavelength / (2 * np.pi) * 1e9
-print(f"temporal error {temporal_error_analytical}")
+print(f"analytical temporal error {temporal_error_analytical}")
 
 
 temporal_error_analytical_plot = np.ones(len(simulational_temporal_error)) * temporal_error_analytical
@@ -481,7 +479,7 @@ plt.plot(time, residual, label = "residual")
 plt.plot(time, simulational_fitting_error_plot, label = "simulational fitting error")
 plt.plot(time, simulational_temporal_error_plot_2, label = "simulational temporal error 2 frame delay")
 plt.plot(time, simulational_temporal_error_plot_1, label = "simulational temporal error 1 frame delay")
-plt.plot(time, sum_fitting_temporal, label = "sum of fitting + temporal error 1")
+plt.plot(time, sum_fitting_temporal, label = "sum of fitting + temporal error 2")
 plt.title("residual and other error components (nm)")
 plt.xlabel("time s")
 plt.yscale("log")
@@ -582,9 +580,10 @@ axes[1].set_title("Atmosphere phase")
 im3 = axes[2].imshow(dm_phase, vmin=vmin, vmax=vmax)
 axes[2].set_title("DM phase")
 
-# Add a single colorbar for all plots
-fig.colorbar(im3, ax=axes, fraction=0.046, pad=0.04)
-plt.tight_layout()
+# ✅ Add a single shared colorbar on the right side
+cbar = fig.colorbar(im3, ax=axes.ravel().tolist(), location='right', fraction=0.02, pad=0.04)
+cbar.set_label('Phase value')
+
 
 plt.figure(figsize = (16,10))
 plt.bar(zernike_names, Z_coefficient_matrix, color = "red", label = "Zernike coeffs for residual phase")

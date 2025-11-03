@@ -19,7 +19,6 @@ class OOPAO(gym.Env):
     metadata = {'render.modes': ['rgb_array']}
 
     #--------------------------Core gym funtions--------------------------------
-    # init BASICALLY CREATES THE ENVIRONMENT YOUR RL WILL TRAIN IN? I.E. THE SIMULATION
     def __init__(self, T=5, seed=0):
 
         # Load in configuration file
@@ -126,7 +125,7 @@ class OOPAO(gym.Env):
         self.d = self.args.delay
         self.action_buffer = [torch.zeros((self.args.nModes)).to(device=self.device, dtype=torch.float32)] * self.d
 
-    #reset IS THE FUNCTION RUN AFTER COMPLETING THE MAX NUMBER OF EXPLORATORY STEPS OR SMTH? BASICALLY PUTS YOU BACK AT THE START TO EXPLORE NEW PATHS
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
@@ -156,7 +155,7 @@ class OOPAO(gym.Env):
 
         return obs.cpu().numpy(), info
     
-    #step IS A FUNCTION THAT IS RUN EVERY TIME YOU EXECUTE A NEWLY SELECTED ACTINO
+
     def step(self, action):
 
         self.t += 1
