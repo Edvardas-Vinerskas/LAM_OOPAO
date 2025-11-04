@@ -79,7 +79,7 @@ post_process = "slopesMaps"
 
 #the factor increases your image size by zeroPaddingFactor, allowing for finer frequency bins in the fft
 #so for 6, you image size is increased 6 times
-zeroPaddingFactor = 2
+zeroPaddingFactor = 6
 
 
 
@@ -142,7 +142,7 @@ tel.computePSF(zeroPaddingFactor)
 #the arcsec_per_pixel code assumes that we are sampling the diffraction limit per zeroPaddingFactor number of pixels (so 6 pixels per diffraction limited angular resolution)
 #zeroPaddingFactor effectively acts as a camera with denser/more pixels in the focal plane
 arcsec_per_pixel  = 206265 * (tel.src.wavelength/tel.D) / zeroPaddingFactor
-N                 = 100
+N                 = 300
 zoomed_PSF        = tel.PSF[N:-N, N: -N]
 zoomed_PSF        = zoomed_PSF/np.sum(zoomed_PSF)
 fov               = zoomed_PSF.shape[0] * arcsec_per_pixel
@@ -221,7 +221,6 @@ print(f"dm pitch {dm.pitch} vs {r_0_src} r_0 value")
 
 
 
-
 ##############################################################################################################
 
 #PYRAMID
@@ -246,8 +245,8 @@ pwfs = Pyramid(nSubap           = n_subaperture,   #resolution of the pwfs cam (
 #SHWFS
 
 ##############################################################################################################
-
-"""SHWFS = ShackHartmann(nSubap       = n_subaperture,
+"""
+SHWFS = ShackHartmann(nSubap       = n_subaperture,
                       telescope    = tel,
                       lightRatio   = light_ratio,
                       is_geometric = False)
@@ -299,8 +298,6 @@ Z.computeZernike(tel)
 M2C_Z = np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])) @ Z.modes
 
 
-print(Z.modes[:, :2].shape)
-error
 
 
 
@@ -319,6 +316,7 @@ calib_zonal = InteractionMatrix(ngs             = src,
                                 stroke          = 1e-9,
                                 nMeasurements   = 1,    #they build up the interaction matrix using nMeasurements columns at a time
                                 noise           = "off") #noise of the wfs measurements
+
 
 
 #phase reconstruction using the interaction/reconstruction matrix
@@ -340,16 +338,15 @@ plt.title("Reconstructed vs input dm modes")
 plt.ylabel("DM commands")
 plt.legend()
 
-
-
-
-
 Z_coefficient_matrix_atmosphere_test = Z.modes.T @ atm.OPD[np.where(tel.pupil > 0)] / (np.diag(Z.modes.T @ Z.modes))
 
 
 
 
 dm.coefs = M2C__ @ Z_coefficient_matrix_atmosphere_test
+
+
+
 fitting_error = atm.OPD - dm.OPD
 simulational_fitting_error = np.std(fitting_error[np.where(tel.pupil > 0)]) * 1e9
 
@@ -376,12 +373,12 @@ src*tel*dm*pwfs
 tel.print_optical_path()
 
 
-delay = frame_delay #I don't think you need to add a +1 here because there is already in built delay in the loop
+#delay = frame_delay #I don't think you need to add a +1 here because there is already in built delay in the loop
 SR                  = np.zeros(nLoop)
 SR_running          = np.zeros(nLoop)
 total               = np.zeros(nLoop)
 residual            = np.zeros(nLoop)
-pwfssignal          = [np.zeros(pwfs.nSignal) for i in range(delay)]
+pwfssignal          = np.arange(0, pwfs.nSignal) * 0#[np.zeros(pwfs.nSignal) for i in range(delay)]
 atm_OPD_list        = []
 
 gain = 0.4
@@ -412,11 +409,12 @@ for i in range(nLoop):
     #propagate to the source with the dm commands applied
     src * tel
 
-    pwfssignal.pop(0)
+    """pwfssignal.pop(0)
     pwfssignal.append(pwfs.signal)
-    delayed_signal = pwfssignal[0]
+    delayed_signal = pwfssignal[0]"""
     #update the dm commands (i.e. dm.coefs)
-    dm.coefs = dm.coefs - gain * np.matmul(reconstructor, delayed_signal)
+    dm.coefs = dm.coefs - gain * np.matmul(reconstructor, pwfssignal)
+    pwfssignal = pwfs.signal
     #metrics
     SR[i] = np.exp(-np.var(tel.src.phase[np.where(tel.pupil == 1)]))
     residual[i] = np.std(tel.OPD[np.where(tel.pupil > 0)]) * 1e9
@@ -468,6 +466,7 @@ plt.plot(temporal_error_analytical_plot, label = "analytic temporal error")
 plt.subplot(224)
 plt.title("analytic fitting error")
 plt.plot(fitting_error_analytical_plot, label = "analytic fitting error")
+plt.tight_layout()
 
 
 SR_running = np.convolve(SR, np.ones(30) / 30, mode = "same")
@@ -580,7 +579,7 @@ axes[1].set_title("Atmosphere phase")
 im3 = axes[2].imshow(dm_phase, vmin=vmin, vmax=vmax)
 axes[2].set_title("DM phase")
 
-# ✅ Add a single shared colorbar on the right side
+# Add a single shared colorbar on the right side
 cbar = fig.colorbar(im3, ax=axes.ravel().tolist(), location='right', fraction=0.02, pad=0.04)
 cbar.set_label('Phase value')
 
