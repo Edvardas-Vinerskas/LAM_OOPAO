@@ -262,13 +262,13 @@ class OOPAO_environment(gym.Env):
         self.DM.coefs = 0
         self.DM_prev_coefs = self.DM.coefs.copy()
 
-        self.TEL + self.ATM
+        #self.TEL + self.ATM
 
         tt_modes_residual = torch.tensor(self.CALIBRATION_MATRIX.M[:2, :] @ self.PWFS.signal, dtype=torch.float32).to(
             self.device) * self.SCALE_UP
 
-        self.SRC * self.TEL * self.DM * self.PWFS
-        self.SRC * self.TEL
+        #self.SRC * self.TEL * self.DM * self.PWFS
+        #self.SRC * self.TEL
 
 
         self.PWFS.signal = 0  # state
@@ -277,7 +277,8 @@ class OOPAO_environment(gym.Env):
 
 
         OBSERVATION = self.N_HISTORY_BUFFER.clone().detach().cpu().numpy() #self.PWFS.signal + previous DM commands
-        INFO        = {"tt_modes are": tt_modes_residual.cpu().numpy()} #tip tilt zernike coefs
+        #change to "tt_modes"
+        INFO        = {"tt_modes": tt_modes_residual.cpu().numpy()} #tip tilt zernike coefs
 
         return OBSERVATION, INFO
 
@@ -317,8 +318,8 @@ class OOPAO_environment(gym.Env):
 
         TERMINATED = 0
         TRUNCATED = self.CURRENT_STEPS >= self.nLOOP
-
-        INFO = {"tt modes residual": tt_modes_residual.cpu().numpy(), "strehl": STREHL}
+        # change to "tt_modes" and then change it in RL_model_test too
+        INFO = {"tt_modes": tt_modes_residual.cpu().numpy(), "strehl": STREHL}
 
         if TRUNCATED:
             self.CURRENT_STEPS = 0

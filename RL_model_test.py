@@ -27,7 +27,7 @@ envs = gym.vector.SyncVectorEnv([make_env()])
 
 actor = Actor(envs)
 
-
+#load the model from the models directory
 actor.load_state_dict(torch.load("./models/best_model_delay_run_0.pth", map_location=torch.device('cpu'))["model_state_dict"])
 # %%
 burn_in = 200
@@ -39,15 +39,16 @@ obs, info = env.reset(seed=0)
 residuals_turbulence = []
 
 # Start the loop
-for i in range(env.args.nLoop + burn_in):
+for i in range(env.nLOOP + burn_in):
     # Take a step in the environment
+    #
     obs, reward, terminated, truncated, info = env.step(np.zeros_like(info["tt_modes"]))
 
     if i >= burn_in:
         residuals_turbulence.append(info["tt_modes"][0])
 
     if (i + 1) % 100 == 0:
-        print(f"Step {i + 1}/{env.args.nLoop + burn_in}")
+        print(f"Step {i + 1}/{env.nLOOP + burn_in}")
 
 
 # Reset the environment
@@ -59,9 +60,16 @@ residuals_integrator = []
 rmse_integrator = []
 
 
-
-for i in range(env.args.nLoop + burn_in):
+#HOW DOES THIS INTEGRATOR WORK
+for i in range(env.nLOOP + burn_in):
     #Integrator action
+    #so here the integrator_action receives the tt_modes of the residual phase
+    #this is then converted into action by multiplying it by 0.5
+    #and a step is taken
+    #the step converts the tt_modes into dm.coefs via the reconstruction matrix
+    #new tt_modes are calculated via the reconstruction matrix and the pwfs.signal
+    #the new tt_modes are then reused in the next cycle to calculate the dm.coefficients
+    #so this seems to work like a regular integrator
     integrator_action = info["tt_modes"]
     action = -0.5 * integrator_action
     # Take a step in the environment
@@ -73,7 +81,7 @@ for i in range(env.args.nLoop + burn_in):
         rmse_integrator.append(np.sqrt(-reward))
 
     if (i + 1) % 100 == 0:
-        print(f"Step {i + 1}/{env.args.nLoop + burn_in}")
+        print(f"Step {i + 1}/{env.nLOOP + burn_in}")
 
 
 # Residuals with actor
@@ -84,7 +92,7 @@ residuals_actor = []
 rmse_actor = []
 
 # Start the loop
-for i in range(env.args.nLoop + burn_in):
+for i in range(env.nLOOP + burn_in):
     # Take a step in the environment
     actions, _, _ = actor.get_action(torch.Tensor(obs[np.newaxis, :]))
 
@@ -95,12 +103,12 @@ for i in range(env.args.nLoop + burn_in):
         rmse_actor.append(np.sqrt(-reward))
 
     if (i + 1) % 100 == 0:
-        print(f"Step {i + 1}/{env.args.nLoop + burn_in}")
+        print(f"Step {i + 1}/{env.nLOOP + burn_in}")
 
 
 # %%
 
-x = np.arange(env.args.nLoop)
+x = np.arange(env.nLOOP)
 rl = residuals_actor
 integrator = residuals_integrator
 no_correction = residuals_turbulence
@@ -113,37 +121,38 @@ axs[0].plot(x, rl, color='orangered', linewidth=2)
 axs[0].axhline(0, color='black', linestyle='--', linewidth=1.5)
 axs[0].set_title("RL agent")
 axs[0].set_ylim(-0.1, 0.1)
-axs[0].set_xlim(0, env.args.nLoop + 50)
+axs[0].set_xlim(0, env.nLOOP + 50)
 
 # Integrator
 axs[1].plot(x, integrator, color='navy', linewidth=2)
 axs[1].axhline(0, color='black', linestyle='--', linewidth=1.5)
 axs[1].set_title("Integrator")
 axs[1].set_ylim(-0.1, 0.1)
-axs[1].set_xlim(0, env.args.nLoop + 50)
+axs[1].set_xlim(0, env.nLOOP + 50)
 
 # No correction
 axs[2].plot(x, no_correction, color='black', linewidth=2)
 axs[2].axhline(0, color='black', linestyle='--', linewidth=1.5)
 axs[2].set_title("No correction")
 axs[2].set_ylim(-0.1, 0.1)
-axs[2].set_xlim(0, env.args.nLoop + 50)
+axs[2].set_xlim(0, env.nLOOP + 50)
 
 # Shared y-axis label
+#I am not sure this is correct units, but the qualitative thing seems to be correct
 fig.text(0.04, 0.5, r'Residuals $(\lambda/D)$', va='center', rotation='vertical', fontsize=12)
 
 # Shared x-axis label
 plt.xlabel("Iteration")
 
 plt.tight_layout(rect=[0.05, 0.05, 1, 0.97])
-plt.show()
+
 
 # %%
 
 from scipy.signal import welch
 
 # Sampling frequency in Hz (adjust this to match your real system)
-fs = 500  # For example, 1000 Hz
+fs = 1000  # For example, 1000 Hz
 
 # Calculate the Power Spectral Density using Welch's method
 f_rl, psd_rl = welch(rl, fs=fs, nperseg=256)
@@ -161,7 +170,7 @@ plt.ylabel("Power Spectral Density")
 plt.legend()
 # plt.grid(True, which="both", ls="--", alpha=0.5)
 plt.tight_layout()
-plt.show()
+
 
 # %%
 

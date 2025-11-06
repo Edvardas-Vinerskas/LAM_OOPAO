@@ -78,7 +78,7 @@ def make_env():
     return thunk
 
 
-# ALGO LOGIC: initialize agent here:
+# Q network takes in the state and the action (current pwfs measurements and previous dm measurements + the zernike modes output by the policy network)
 class SoftQNetwork(nn.Module):
     def __init__(self, env, hidden_dim=256):
         super().__init__()
@@ -111,7 +111,7 @@ class SoftQNetwork(nn.Module):
 LOG_STD_MAX = 2
 LOG_STD_MIN = -10
 
-
+#takes in the state (current pwfs commands and previous dm commands)
 class Actor(nn.Module):
     def __init__(self, env, hidden_dim=256):
         super().__init__()

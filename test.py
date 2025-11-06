@@ -18,14 +18,8 @@ from OOPAO.tools.displayTools import displayMap, makeSquareAxes
 
 import torch
 
-#z, x, y
 
 
-arrrr = torch.ones((5, (1+2)))
-for i in range(5):
-    arrrr[i] = arrrr[i] * i
-print(arrrr)
-arr = torch.roll(arrrr, 1, 0)
 
-print(arr)
+
 

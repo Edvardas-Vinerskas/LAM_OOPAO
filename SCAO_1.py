@@ -79,7 +79,7 @@ post_process = "slopesMaps"
 
 #the factor increases your image size by zeroPaddingFactor, allowing for finer frequency bins in the fft
 #so for 6, you image size is increased 6 times
-zeroPaddingFactor = 6
+zeroPaddingFactor = 2
 
 
 
@@ -142,7 +142,7 @@ tel.computePSF(zeroPaddingFactor)
 #the arcsec_per_pixel code assumes that we are sampling the diffraction limit per zeroPaddingFactor number of pixels (so 6 pixels per diffraction limited angular resolution)
 #zeroPaddingFactor effectively acts as a camera with denser/more pixels in the focal plane
 arcsec_per_pixel  = 206265 * (tel.src.wavelength/tel.D) / zeroPaddingFactor
-N                 = 300
+N                 = 50
 zoomed_PSF        = tel.PSF[N:-N, N: -N]
 zoomed_PSF        = zoomed_PSF/np.sum(zoomed_PSF)
 fov               = zoomed_PSF.shape[0] * arcsec_per_pixel
@@ -177,7 +177,7 @@ plt.colorbar()
 ##############################################################################################################
 
 atm = Atmosphere(telescope     = tel,
-                 r0            = r_0, #defined at 550nm
+                 r0            = r_0, #defined at 500nm
                  L0            = L_0,
                  windSpeed     = wind_speed,
                  windDirection = wind_direction,
@@ -214,7 +214,6 @@ dm = DeformableMirror(telescope      = tel,
 
 #control radius calculation for the dm
 control_radius = ((n_subaperture + 1) * src.wavelength) /(2 * tel.D) * rad2arcsec
-k_spatial_dm   = 2 * np.pi * ((n_subaperture + 1)) /(2 * tel.D)
 corr_zone_1 = Circle([0,0], control_radius, fc='none', ec='w', ls=':')
 corr_zone_2 = Circle([0,0], control_radius, fc='none', ec='w', ls=':')
 print(f"dm pitch {dm.pitch} vs {r_0_src} r_0 value")
@@ -284,7 +283,8 @@ M2C_KL = M2C_KL[:, :300]
 #ZERNIKE
 #Zernike.modesFullRes - has all of the modes of Zernike that you can later plot
 #can use displayMap to plot ALL of the modes
-#Z.modes takes in modes and outputs the phase/OPD
+#Z.modes takes in modes and outputs the phase
+#dm.modes takes in controle and outputs phase
 #1st and 2nd modes is tip tilt (no piston)
 
 
@@ -314,8 +314,8 @@ calib_zonal = InteractionMatrix(ngs             = src,
                                 wfs             = pwfs,
                                 M2C             = M2C__,
                                 stroke          = 1e-9,
-                                nMeasurements   = 1,    #they build up the interaction matrix using nMeasurements columns at a time
-                                noise           = "off") #noise of the wfs measurements
+                                nMeasurements   = 1,     #they build up the interaction matrix using nMeasurements columns at a time
+                                noise           = "off") #wfs measurement noise is turned off when doing the interaction matrix
 
 
 
@@ -326,7 +326,7 @@ input_modes = np.random.randn(M2C__.shape[1]) * 1e-9
 
 
 
-dm.coefs = M2C__ @ input_modes #need this line for propagation
+dm.coefs = M2C__ @ input_modes
 src*tel*dm*pwfs
 tel.print_optical_path() #sanity check
 
@@ -339,18 +339,19 @@ plt.ylabel("DM commands")
 plt.legend()
 
 Z_coefficient_matrix_atmosphere_test = Z.modes.T @ atm.OPD[np.where(tel.pupil > 0)] / (np.diag(Z.modes.T @ Z.modes))
-
-
-
-
 dm.coefs = M2C__ @ Z_coefficient_matrix_atmosphere_test
 
-
-
 fitting_error = atm.OPD - dm.OPD
+
+plt.subplot(121)
+plt.imshow(atm.OPD)
+plt.subplot(122)
+plt.imshow(dm.OPD)
+
 simulational_fitting_error = np.std(fitting_error[np.where(tel.pupil > 0)]) * 1e9
-
-
+print(np.average(atm.OPD), np.average(dm.OPD))
+plt.show()
+error
 
 
 ##############################################################################################################
