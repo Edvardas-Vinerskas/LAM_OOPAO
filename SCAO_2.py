@@ -32,8 +32,35 @@ SOME ANSWERS:
 
 REGARDING THE SUBAPERTURE THING, YOU CAN TEST FOR TEMPORAL ERROR BY REMOVING IT
 """
+from torch import dtype
+
+"""
+* now the RL has been done for central_obstruction = 0
+    *redo it for central_obstruction = 0.1
+    * when redoing it, you must change how you split for zernike tip tilt modes
+    * because the current version only works with no central obstruction
+    * there are apparently fitting error functions in OOPAO.calibration
+    
+* ON FRIDAY YOU FOR ONCE FIGURE OUT ALL OF THE WEBSITES THAT YOU SHOULD HAVE ACCESS TO
+* estimate the wfs limited resolution error
+* I guess estimate all possible errors due to limited resolution
+* calculate std for the errors
+
+* something is wrong with how I calculate errors and the residual seems to be dominated be the residual error at all times
+* the DM is reconstructing half the phase, and so the error is twice as small!
+* I should also recalculate the fitting error based on old phase screens and NOT the current ones
+    * this would effectively just shift my fitting error curve to the right
+    * and thus probably better align with the temporal error
+    * AND OF COURSE THE CURRENT DM IS TRYING TO FIT THE OLD PHASE SO CLEARLY YOU ARE NOT SMART
+*redo all of the error calculations in terms of phase difference and not OPD
+*fix all of the units
+*test if the same atm seed gives you the same phase evolution under the same conditions or not
+    because the evolution could still be different based on random stuff
+"""
+
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import SymLogNorm
 from matplotlib.patches import Circle
 import numpy as np
 from numpy.fft import fftshift, fft2 #need to shift just because of formatting
@@ -58,21 +85,21 @@ from functions import *
 
 N_SUBAPERTURE       = 20
 DIAMETER            = 1.52
-CENTRAL_OBSTRUCTION = 0.1 #0.15
+CENTRAL_OBSTRUCTION = 0 #0.15
 RESOLUTION          = N_SUBAPERTURE * 8
 FREQUENCY           = 1000
 SAMPLING_TIME       = 1/FREQUENCY
 FOV                 = 10
-MECHANICAL_COUPLING = 0.4
+MECHANICAL_COUPLING = 0.35
 MODULATION          = 3
 LIGHT_RATIO         = 0.1
 POST_PROCESS        = "slopesMaps"
 r_0                 = 0.15
-L_0                 = 20
-WIND_SPEED          = [5, 50] #[10, 20, 60]
-WIND_DIRECTION      = [30, 60] #[0, 100, 160]
-FRACTIONAL_C_N2     = [0.85, 0.15] #[0.5, 0.3, 0.2]
-ALTITUDE            = [0, 10000] #[0, 4500, 10000]
+L_0                 = 25
+WIND_SPEED          = [10, 20, 60] #[10, 20, 60]
+WIND_DIRECTION      = [0, 100, 160] #[0, 100, 160]
+FRACTIONAL_C_N2     = [0.6, 0.3, 0.1] #[0.5, 0.3, 0.2]
+ALTITUDE            = [0, 4500, 10000] #[0, 4500, 10000]
 Z_coefs             = 300 #200 #above 200 does not work great per Benoit
 
 
@@ -84,9 +111,9 @@ rad2arcsec        = 180 * 60 * 60 / np.pi
 use_pwfs          = True
 use_shwfs         = False
 
-use_zernike       = True
-use_zonal         = False
-use_KL            = False
+use_zernike       = False
+use_zonal         = True
+use_KL            = False #not yet implemented fully
 
 
 
@@ -117,6 +144,11 @@ TEL = Telescope(resolution          = RESOLUTION,
 
 #MUST couple source object to telescope
 SRC * TEL
+
+TEL.computePSF(zeroPaddingFactor)
+#diffraction limited OTF calculation
+OTF_dl = fftshift(fft2(fftshift(TEL.PSF / np.sum(TEL.PSF))))
+x_axis, OTF_dl_averaged = circular_average((np.abs(OTF_dl)).shape, np.abs(OTF_dl))
 
 #---------------------------------------------------ATMOSPHERE---------------------------------------------------#
 ATM = Atmosphere(telescope    = TEL,
@@ -166,10 +198,12 @@ if use_shwfs:
     WFS = SHWFS
 
 #---------------------------------------------------MODAL_BASIS---------------------------------------------------#
-M2C = None
+M2C   = None
+modes = None
 if use_zonal:
     M2C_zonal = np.identity(DM.nValidAct)
     M2C       = M2C_zonal
+    modes     = DM.modes
 
 
 if use_zernike:
@@ -180,6 +214,7 @@ if use_zernike:
 
     M2C_Z = np.linalg.pinv(np.squeeze(DM.modes[TEL.pupilLogical, :])) @ zernike.modes
     M2C   = M2C_Z
+    modes = zernike.modes
 
 if use_KL:
 
@@ -195,7 +230,7 @@ stroke = SRC.wavelength / 16
 CALIB = InteractionMatrix(ngs            = SRC,
                           tel            = TEL,
                           dm             = DM,
-                          wfs            = PWFS,
+                          wfs            = WFS,
                           M2C            = M2C,
                           atm            = ATM,
                           nMeasurements  = 5,
@@ -203,7 +238,22 @@ CALIB = InteractionMatrix(ngs            = SRC,
                           noise          = "off")
 
 
+#---------------------------------------------------FITTING ERROR CALC---------------------------------------------------#
 
+#for zernike and zonal only (later extract the KL modes from the source code?)
+modes_inv = None
+#the rest of the code is in the for loop
+
+#takes in phase and outputs modes
+if use_zonal:
+    modes_inv = np.linalg.pinv(np.squeeze(modes[TEL.pupilLogical, :]))
+
+if use_zernike:
+    modes_inv = np.linalg.pinv(np.squeeze(modes))
+
+
+
+#the rest of the code is in the for loop
 
 #---------------------------------------------------SIMULATION---------------------------------------------------#
 #for now we are only using SRC
@@ -217,7 +267,7 @@ SRC * TEL * DM * WFS
 TEL.print_optical_path()
 
 #delay implementation
-frame_delay         = 1
+frame_delay         = 2
 delay               = frame_delay - 1 #frame delay of 1 is already built-in
 if frame_delay >= 2:
     wfssignal_buffer = [np.zeros(WFS.nSignal) for i in range(delay)]
@@ -225,19 +275,25 @@ else:
     wfssignal_buffer = []
 
 #variables and performance metric initialisation
-nLoop                        = 50
+nLoop                        = 10000
 sr                           = np.zeros(nLoop)
 sr_running                   = np.zeros(nLoop)
 total_error                  = np.zeros(nLoop)
 residual_error               = np.zeros(nLoop)
+final_residual_phase         = 0
+final_atmosphere_OPD         = 0
+final_dm_OPD                 = 0
+
+
+
 
 #for temp_err_delay = 3, the list has current, previous and previous_previous
-atm_OPD_list                 = []
-temp_err_delay = 3 #don't change
+temp_err_delay               = 4
+atm_OPD_list                 = [np.zeros(ATM.OPD.shape) for i in range((temp_err_delay + 1))] #(temp_err_delay + 1) tells you how many current + previous frames you want to keep in the buffer
 sim_temp_error_1_frame_delay = []
 sim_temp_error_2_frame_delay = []
 sim_temp_error_3_frame_delay = []
-sim_fit_error_list = []
+sim_fit_error_list           = []
 
 
 CL_gain = 0.4
@@ -250,16 +306,16 @@ for i in range(nLoop):
 
     #temporal error calculation for every frame for 1, 2, 3 frame delay
     atm_OPD_list.append(ATM.OPD)
-    if i >= temp_err_delay:
-        atm_OPD_1_frame = (atm_OPD_list[0] - atm_OPD_list[1])[np.where(TEL.pupil > 0)]
-        atm_OPD_2_frame = (atm_OPD_list[0] - atm_OPD_list[2])[np.where(TEL.pupil > 0)]
-        atm_OPD_3_frame = (atm_OPD_list[0] - atm_OPD_list[3])[np.where(TEL.pupil > 0)]
+    atm_OPD_list.pop(0)
 
-        sim_temp_error_1_frame_delay.append(np.std(atm_OPD_1_frame) * 1e9)
-        sim_temp_error_2_frame_delay.append(np.std(atm_OPD_2_frame) * 1e9)
-        sim_temp_error_3_frame_delay.append(np.std(atm_OPD_3_frame) * 1e9)
+    atm_OPD_1_frame = (atm_OPD_list[-1] - atm_OPD_list[-2])[np.where(TEL.pupil > 0)]
+    atm_OPD_2_frame = (atm_OPD_list[-1] - atm_OPD_list[-3])[np.where(TEL.pupil > 0)]
+    atm_OPD_3_frame = (atm_OPD_list[-1] - atm_OPD_list[-4])[np.where(TEL.pupil > 0)]
 
-        atm_OPD_list.pop(0)
+    sim_temp_error_1_frame_delay.append(np.std(atm_OPD_1_frame) * 1e9)
+    sim_temp_error_2_frame_delay.append(np.std(atm_OPD_2_frame) * 1e9)
+    sim_temp_error_3_frame_delay.append(np.std(atm_OPD_3_frame) * 1e9)
+
 
 
     total_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
@@ -280,35 +336,20 @@ for i in range(nLoop):
 
     #update the dm commands
     DM.coefs = DM.coefs - CL_gain * np.matmul(reconstructor, delayed_signal)
+    dm_coefs_copy = DM.coefs
 
 
-    frame_delay = 4 #changed the stroke btw (change it back, did not help)
-    #the error is because the dm corrects for the phase
-    #in SCAO_1 I had instead remapped the phase of the atmosphere onto the DM
-    #here I am not remapping, so the OPD should be 1/2 for the DM and also flipped in phase
-    if i >= frame_delay:
-        fitting_error = atm_OPD_list[-2] + 2 * DM.OPD
 
-        if i >= 49:
-            plt.figure()
-
-            plt.subplot(131)
-            plt.imshow(atm_OPD_list[-2])
-            plt.title("previous cycle atm.OPD")
-            plt.subplot(133)
-            plt.imshow(-2 * DM.OPD)
-            plt.title("DM.OPD")
-            plt.subplot(132)
-            plt.imshow(atm_OPD_list[-3])
-            plt.title("2 previous cycle atm.OPD")
-            plt.tight_layout()
-            plt.show()
+    #fitting error calculation for every frame (written for 2 frame delay)
+    mode_coefs = modes_inv @ atm_OPD_list[-3][np.where(TEL.pupil > 0)]
+    DM.coefs = M2C @ mode_coefs
+    fitting_error = (atm_OPD_list[-3] - DM.OPD)
+    simulational_fitting_error = np.std(fitting_error[np.where(TEL.pupil > 0)]) * 1e9
+    sim_fit_error_list.append(simulational_fitting_error)
 
 
-        sim_fitting_error = np.std(fitting_error[np.where(TEL.pupil > 0)]) * 1e9
-        print("sim_fitting_error", sim_fitting_error)
-        print(np.average(atm_OPD_list[(-2)]), np.average(DM.OPD))
-        sim_fit_error_list.append(sim_fitting_error)
+    #convert back the DM.coefs to their actual CL values
+    DM.coefs = dm_coefs_copy
 
 
 
@@ -323,24 +364,150 @@ for i in range(nLoop):
         final_dm_OPD           = DM.OPD
 
 
-#---------------------------------------------------PLOTTING + ERRORS---------------------------------------------------#
+#---------------------------------------------------PLOTTING---------------------------------------------------#
+sim_fit_error_list = np.array(sim_fit_error_list)
+sim_temp_error_2_frame_delay = np.array(sim_temp_error_2_frame_delay)
+sim_fit_temp_sum = np.sqrt(sim_temp_error_2_frame_delay ** 2 + sim_fit_error_list ** 2)
 
 
 
 time = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
-time_temp = np.arange(temp_err_delay * SAMPLING_TIME, nLoop * SAMPLING_TIME, SAMPLING_TIME)
-time_fit  = np.arange(frame_delay * SAMPLING_TIME, nLoop * SAMPLING_TIME, SAMPLING_TIME)
+
+
+fitting_error_analytical = (0.23) ** (1/2) * (DM.pitch/ r_0_src) ** (5 / 6) * SRC.wavelength / (2 * np.pi) * 1e9
+fitting_error_analytical = np.ones(len(time)) * fitting_error_analytical
+
+
+#---------------------------------------------------Error decomposition---------------------------------------------------#
 plt.figure()
 plt.plot(time, residual_error, label = "residual")
-plt.plot(time_temp, sim_temp_error_1_frame_delay, label = "simulational temporal error 1 frame delay")
-plt.plot(time_temp, sim_temp_error_2_frame_delay, label = "simulational temporal error 2 frame delay")
-plt.plot(time_temp, sim_temp_error_3_frame_delay, label = "simulational temporal error 3 frame delay")
-plt.plot(time_fit, sim_fit_error_list, label = "simulational fitting error")
+#plt.plot(time, sim_temp_error_1_frame_delay, label = "simulational temporal error 1 frame delay")
+plt.plot(time, sim_temp_error_2_frame_delay, label = "simulational temporal error 2 frame delay")
+plt.plot(time, fitting_error_analytical, label = "analyical fitting error")
+plt.plot(time, sim_fit_error_list, label = "simulational fitting error")
+plt.plot(time, sim_fit_temp_sum, label = "fitting + temporal 2 frame delay")
 plt.title("error decomposition (nm)")
 plt.xlabel("time s")
 plt.yscale("log")
 plt.legend()
+
+
+
+
+
+
+
+#---------------------------------------------------Strehl---------------------------------------------------#
+sr_mean = np.mean(sr)
+kernel = np.ones(30) / 30
+
+# pad sr
+pad_left = len(kernel) // 2
+pad_right = len(kernel) - pad_left - 1
+sr_padded = np.pad(sr, (pad_left, pad_right), mode='constant', constant_values=sr_mean)
+sr_running = np.convolve(sr_padded, kernel, mode='valid')
+
+
+plt.figure()
+plt.plot(time, sr, label = "strehl")
+plt.plot(time, sr_running, label = "running_strehl")
+plt.title("Strehl ratio")
+plt.xlabel("time s")
+plt.ylim(bottom = (sr_mean - 0.3))
+plt.legend()
+
+
+#---------------------------------------------------AO PSF---------------------------------------------------#
+
+plt.figure()
+TEL.computePSF(zeroPaddingFactor)
+
+arcsec_per_pixel = 206265 * (TEL.src.wavelength/TEL.D) / zeroPaddingFactor
+N = 50
+AO_PSF = TEL.PSF[N: -N, N: -N]
+fov    = AO_PSF.shape[0] * arcsec_per_pixel
+AO_PSF = AO_PSF/np.sum(AO_PSF)
+plt.imshow(AO_PSF, norm = SymLogNorm(1e-7), extent = [-fov/2, fov/2, -fov/2, fov/2])
+plt.title("AO corrected PSF")
+plt.gca().add_artist(corr_zone_1)
+plt.xlabel("arcsec")
+plt.ylabel("arcsec")
+plt.colorbar()
+
+#---------------------------------------------------AO OTF---------------------------------------------------#
+
+
+OTF_AO = fftshift(fft2(fftshift(TEL.PSF / np.sum(TEL.PSF))))
+x_axis___, OTF_AO_averaged = circular_average(np.abs(OTF_AO).shape, np.abs(OTF_AO))
+
+
+
+plt.figure()
+plt.plot(x_axis, OTF_dl_averaged, label = "diffraction limited")
+plt.plot(x_axis___, OTF_AO_averaged, label = "AO corrected pwfs")
+plt.title("OTF magnitude diffraction limited")
+plt.xlabel("Frequency domain")
+plt.ylabel("MTF")
+plt.xscale("log")
+plt.yscale("log")
+plt.ylim(bottom = 1e-3)
+plt.legend()
+
+
+#---------------------------------------------------Zernike decomposition---------------------------------------------------#
+if use_zernike:
+
+    atmosphere_phase = 2 * np.pi * final_atmosphere_OPD / SRC.wavelength
+    Z_coefficient_matrix = modes_inv @ final_residual_phase[np.where(TEL.pupil > 0)]
+    Z_coefficient_matrix_atmosphere = modes_inv @ atmosphere_phase[np.where(TEL.pupil > 0)]
+    zernike_names = []
+    for i in range(len(Z_coefficient_matrix)):
+        zernike_names.append(f"z{i+1}")
+
+
+    plt.figure()
+    plt.bar(zernike_names[:50], Z_coefficient_matrix[:50], color = "red", label = "Zernike coeffs for residual phase")
+    plt.title("Zernike coefficients for corrected phase")
+    plt.bar(zernike_names[:50],Z_coefficient_matrix_atmosphere[:50], color = "black", alpha = 0.4, label = "Zernike coeffs for atmospheric phase")
+    plt.title("Zernike coefficients for atmosphere phase")
+    plt.tight_layout()
+    plt.legend()
+
+
+#---------------------------------------------------PSD---------------------------------------------------#
+
+corrected_phase = final_residual_phase
+PSD_corrected = np.abs(fftshift(fft2(corrected_phase))) ** 2 / ((TEL.D / 2) ** 2 * np.pi)
+x_axis_PSD_residual, PSD_corrected_averaged = circular_average(np.abs(PSD_corrected).shape, np.abs(PSD_corrected))
+
+atmosphere_phase = 2*np.pi * final_atmosphere_OPD / SRC.wavelength
+PSD_atmosphere = np.abs(fftshift(fft2(atmosphere_phase))) ** 2 / ((TEL.D / 2) ** 2 * np.pi)
+x_axis_PSD_atmosphere_residual, atmosphere_residual_averaged = circular_average(np.abs(PSD_atmosphere).shape, np.abs(PSD_atmosphere))
+
+
+
+plt.figure()
+plt.plot(x_axis_PSD_residual, PSD_corrected_averaged, label = "PSD_residual_pwfs")
+plt.plot(x_axis_PSD_atmosphere_residual, atmosphere_residual_averaged, label = "atmosphere_PSD")
+plt.title("PSD residual vs atmosphere comparison")
+plt.xlabel("Frequency domain")
+plt.ylabel("PSD")
+plt.xscale("log")
+plt.yscale("log")
+plt.ylim(bottom = 1e-7)
+plt.legend()
+
+
 plt.show()
+
+
+
+
+
+
+
+
+
 
 
 

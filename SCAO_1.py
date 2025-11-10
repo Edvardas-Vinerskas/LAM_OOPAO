@@ -2,19 +2,7 @@
 NGS/SRC -> atmosphere -> telescope -> dm -> wfs -> camera
 split somewhere for src/ngs
 
-figure out what is cam and cam.binned
-
-
-NEXT TASK: prepare slides, do ALL tutorials, make some graphs how SR (and other parameters) change when you change:
-resolution +
-n_subaperture +
-actuator number +
-wind speed +
-r_0 +
-sampling time +
-calculate cutoff frequency (formula in PhDs potentially)
-
-Play around with light ratio parameter on the pwfs
+figure out what is cam and cam.binned (one is science and on is wfs?)
 """
 
 import matplotlib.pyplot as plt
@@ -40,19 +28,13 @@ from OOPAO.calibration.compute_KL_modal_basis import compute_KL_basis
 ##############################################################################################################
 #ALL GLOBALS HERE
 n_subaperture = 20 #basically the number of actuators og20
-rad2arcsec = 180 * 60 * 60 / np.pi
-
 #the resolution is the telescope resolution? (you can check by changing it and seeing what the pupil and other masks output)
 resolution    = n_subaperture * 8 #n_subaperture * 4 (og) (4 represents the number of pixels per subaperture)
-Z_coefs = 300
-
 loop_frequency = 1000
 sampling_time = 1/loop_frequency #1/1000 og
 diameter = 1.52
 central_obstruction = 0.1
-r_0 = 0.15 #0.15
-nLoop = 1000
-frame_delay = 2
+r_0 = 0.15
 
 #always check whether there are enough pixels for r_0
 pixel_size = diameter / resolution
@@ -80,8 +62,9 @@ post_process = "slopesMaps"
 #the factor increases your image size by zeroPaddingFactor, allowing for finer frequency bins in the fft
 #so for 6, you image size is increased 6 times
 zeroPaddingFactor = 2
+Z_coefs = 300
 
-
+rad2arcsec = 180 * 60 * 60 / np.pi
 
 ##############################################################################################################
 
@@ -337,22 +320,22 @@ plt.plot(calib_zonal.M @ pwfs.signal, label = "reconstructed")
 plt.title("Reconstructed vs input dm modes")
 plt.ylabel("DM commands")
 plt.legend()
+##############################################################################################################
 
-Z_coefficient_matrix_atmosphere_test = Z.modes.T @ atm.OPD[np.where(tel.pupil > 0)] / (np.diag(Z.modes.T @ Z.modes))
+#FITTING ERROR
+#you cannot calculate the fitting error by propagating through the whole system
+#because the wfs for example will introduce phase to slope mapping errors just due to non infinite resolution
+#so you instead must reproject the phase of the atmosphere onto the DM using whatever modes you have
+#by the way the below implementation only works when the central obstruction = 0
+
+##############################################################################################################
+modes_inv = np.linalg.pinv(np.squeeze(Z.modes))
+Z_coefficient_matrix_atmosphere_test = modes_inv @ atm.OPD[np.where(tel.pupil == 1)]
 dm.coefs = M2C__ @ Z_coefficient_matrix_atmosphere_test
 
 fitting_error = atm.OPD - dm.OPD
 
-plt.subplot(121)
-plt.imshow(atm.OPD)
-plt.subplot(122)
-plt.imshow(dm.OPD)
-
 simulational_fitting_error = np.std(fitting_error[np.where(tel.pupil > 0)]) * 1e9
-print(np.average(atm.OPD), np.average(dm.OPD))
-plt.show()
-error
-
 
 ##############################################################################################################
 
@@ -362,7 +345,8 @@ error
 ##############################################################################################################
 
 #some simulation of my SCAO
-
+nLoop = 1000
+frame_delay = 2
 
 tel.resetOPD()
 dm.coefs = 0
@@ -439,7 +423,7 @@ simulational_temporal_error_plot_2 = np.ones(len(simulational_temporal_error)) *
 simulational_temporal_error_plot_1 = np.ones(len(simulational_temporal_error)) * simulational_temporal_error[1]
 sum_fitting_temporal               = simulational_temporal_error_plot_2 + simulational_fitting_error_plot
 
-fitting_error_analytical = 0.23 * (dm.pitch/ r_0_src) ** (5 / 6) * src.wavelength / (2 * np.pi) * 1e9
+fitting_error_analytical = (0.23) ** (1 / 2) * (dm.pitch/ r_0_src) ** (5 / 6) * src.wavelength / (2 * np.pi) * 1e9
 print(f"analytical fitting error {fitting_error_analytical}")
 wind_speed = np.array(wind_speed)
 fractional_R0 = np.array(fractional_R0)
@@ -593,7 +577,7 @@ plt.title("Zernike coefficients for atmosphere phase")
 plt.tight_layout()
 
 
-PSD_residual_shwfs = np.load("PSD_residual_SHWFS.npy")
+#PSD_residual_shwfs = np.load("PSD_residual_SHWFS.npy")
 
 
 #for the x_axis I am just using the length of the PSD so it is not related to any real frequencies

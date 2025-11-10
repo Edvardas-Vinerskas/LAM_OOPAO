@@ -38,7 +38,7 @@ class Args:
     # Algorithm specific arguments
     env_id: str = "OOPAO_RL_tt"
     """the environment id of the task"""
-    total_timesteps: int = 10000
+    total_timesteps: int = 5000
     """total timesteps of the experiments"""
     num_envs: int = 1
     """the number of parallel game environments"""
@@ -90,7 +90,7 @@ class SoftQNetwork(nn.Module):
         #INPUT SHAPE
         self.hidden_dim = hidden_dim
 
-        self.input_dim = self.n * self.T + 2 # it is adding 2 because action is also an input parameter
+        self.input_dim = self.n * self.T + 100 # it is adding 2 because action is also an input parameter
                                              # action here is the 2 tt modes
 
         self.net = nn.Sequential(
@@ -314,7 +314,7 @@ if __name__ == "__main__":
                             # 'ema_model_state_dict': ema_reconstructor.module.state_dict(),
                             'optimizer_state_dict': actor_optimizer.state_dict(),
                             'reward': best_reward,
-                        }, os.path.dirname(__file__) + f"/./models/best_model_delay_run_{i}.pth")
+                        }, os.path.dirname(__file__) + f"/./models/best_model_delay_run_{i}_Z_100.pth")
                         with open("./train_returns.txt", "a") as f:  # 'a' mode appends to the file
                             f.write(f"Saving Model \n")
 

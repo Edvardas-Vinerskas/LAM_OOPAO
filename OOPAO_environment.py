@@ -58,7 +58,7 @@ class OOPAO_environment(gym.Env):
         self.CENTRAL_OBSTRUCTION = 0
         self.MECH_COUPLING = 0.35
         self.J_zer = 300
-        self.J_corr= 2
+        self.J_corr= 50
         self.nLOOP = 500
         self.zeroPaddingFactor = 6
 
@@ -176,9 +176,9 @@ class OOPAO_environment(gym.Env):
         # THIS SPLITTING ONLY WORKS IF YOUR MODES ARE ORTHONORMAL (they are not when you have a central obstruction)
         # doesn't matter that much in the end because RL will take care of this
         #takes in slopes outputs controle
-        self.RECONSTRUCTION_wTT = self.M2C[:, 2:] @ self.CALIBRATION_MATRIX.M[2:, :]
-        self.RECONSTRUCTION_TT  = self.M2C[:, :2] @ self.CALIBRATION_MATRIX.M[:2, :]
-        self.M2C_TT = self.M2C[:, :2]
+        self.RECONSTRUCTION_wTT = self.M2C[:, self.J_corr:] @ self.CALIBRATION_MATRIX.M[self.J_corr:, :]
+        self.RECONSTRUCTION_TT  = self.M2C[:, :self.J_corr] @ self.CALIBRATION_MATRIX.M[:self.J_corr, :]
+        self.M2C_TT = self.M2C[:, :self.J_corr]
 
         # initialize DM commands
         self.TEL.resetOPD()
@@ -264,7 +264,7 @@ class OOPAO_environment(gym.Env):
 
         #self.TEL + self.ATM
 
-        tt_modes_residual = torch.tensor(self.CALIBRATION_MATRIX.M[:2, :] @ self.PWFS.signal, dtype=torch.float32).to(
+        tt_modes_residual = torch.tensor(self.CALIBRATION_MATRIX.M[:self.J_corr, :] @ self.PWFS.signal, dtype=torch.float32).to(
             self.device) * self.SCALE_UP
 
         #self.SRC * self.TEL * self.DM * self.PWFS
@@ -307,7 +307,7 @@ class OOPAO_environment(gym.Env):
         OBSERVATION = self.N_HISTORY_BUFFER.clone().detach() #current action and previous dm commands
 
 
-        tt_modes_residual = torch.tensor(self.CALIBRATION_MATRIX.M[:2, :] @ self.PWFS.signal, dtype = torch.float32).to(self.device) * self.SCALE_UP
+        tt_modes_residual = torch.tensor(self.CALIBRATION_MATRIX.M[:self.J_corr, :] @ self.PWFS.signal, dtype = torch.float32).to(self.device) * self.SCALE_UP
         REWARD      = - np.linalg.norm(tt_modes_residual.cpu()) ** 2 / self.J_corr #centered PSF or reconstructed phase projected zernike are 0 for tip tilt
 
 
