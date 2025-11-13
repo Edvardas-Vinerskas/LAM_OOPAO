@@ -56,6 +56,8 @@ from torch import dtype
 *fix all of the units
 *test if the same atm seed gives you the same phase evolution under the same conditions or not
     because the evolution could still be different based on random stuff
+    
+* fix OTF and PSD calculations? units and the weird behaviour of PSD
 """
 
 
@@ -63,7 +65,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import SymLogNorm
 from matplotlib.patches import Circle
 import numpy as np
-from numpy.fft import fftshift, fft2 #need to shift just because of formatting
+from numpy.fft import fftshift, fft2, fftfreq #need to shift just because of formatting
 
 import OOPAO
 from OOPAO.Source import Source
@@ -258,7 +260,7 @@ if use_zernike:
 #---------------------------------------------------SIMULATION---------------------------------------------------#
 #for now we are only using SRC
 
-
+ATM.generateNewPhaseScreen(seed = 2)
 #reset everything just in case
 TEL.resetOPD()
 DM.coefs = 0
@@ -275,13 +277,14 @@ else:
     wfssignal_buffer = []
 
 #variables and performance metric initialisation
-nLoop                        = 10000
+nLoop                        = 1000
 sr                           = np.zeros(nLoop)
 sr_running                   = np.zeros(nLoop)
 total_error                  = np.zeros(nLoop)
 residual_error               = np.zeros(nLoop)
-final_residual_phase         = 0
-final_atmosphere_OPD         = 0
+
+#variables for PSD calculation
+residual_OPD_list            = []
 final_dm_OPD                 = 0
 
 
@@ -299,7 +302,7 @@ sim_fit_error_list           = []
 CL_gain = 0.4
 reconstructor = M2C @ CALIB.M
 
-
+#what is inside the loop is basically what should be in the step function of the RL OOPAO environment
 for i in range(nLoop):
     #update phase screen
     ATM.update()
@@ -356,12 +359,13 @@ for i in range(nLoop):
     #performance metrics
     sr[i] = np.exp(-np.var(TEL.src.phase[np.where(TEL.pupil == 1)]))
     residual_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
-    print("Loop" + str(i) + "/" + str(nLoop) + "AO residual: " + str(residual_error[i]) + "nm")
+    print("Loop" + str(i) + "/" + str(nLoop) + " " + "AO residual: " + str(residual_error[i]) + "nm" + "total err: " + str(total_error[i]) + "nm")
     print(f"strehl {sr[i]}")
-    if i == (nLoop - 1):
-        final_residual_phase   = TEL.src.phase
-        final_atmosphere_OPD   = ATM.OPD
-        final_dm_OPD           = DM.OPD
+
+
+    if sr[i] > 0.5:
+        residual_OPD_list.append(TEL.OPD)
+
 
 
 #---------------------------------------------------PLOTTING---------------------------------------------------#
@@ -374,18 +378,23 @@ sim_fit_temp_sum = np.sqrt(sim_temp_error_2_frame_delay ** 2 + sim_fit_error_lis
 time = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
 
 
+
 fitting_error_analytical = (0.23) ** (1/2) * (DM.pitch/ r_0_src) ** (5 / 6) * SRC.wavelength / (2 * np.pi) * 1e9
 fitting_error_analytical = np.ones(len(time)) * fitting_error_analytical
+
+
+residual_sim_difference = residual_error - sim_fit_temp_sum
 
 
 #---------------------------------------------------Error decomposition---------------------------------------------------#
 plt.figure()
 plt.plot(time, residual_error, label = "residual")
 #plt.plot(time, sim_temp_error_1_frame_delay, label = "simulational temporal error 1 frame delay")
-plt.plot(time, sim_temp_error_2_frame_delay, label = "simulational temporal error 2 frame delay")
+#plt.plot(time, sim_temp_error_2_frame_delay, label = "simulational temporal error 2 frame delay")
 plt.plot(time, fitting_error_analytical, label = "analyical fitting error")
 plt.plot(time, sim_fit_error_list, label = "simulational fitting error")
 plt.plot(time, sim_fit_temp_sum, label = "fitting + temporal 2 frame delay")
+#plt.plot(time, residual_sim_difference, label = "difference between residual and simulational errors")
 plt.title("error decomposition (nm)")
 plt.xlabel("time s")
 plt.yscale("log")
@@ -458,6 +467,7 @@ plt.legend()
 if use_zernike:
 
     atmosphere_phase = 2 * np.pi * final_atmosphere_OPD / SRC.wavelength
+    final_residual_phase = 2 * np.pi * final_residual_OPD / SRC.wavelength
     Z_coefficient_matrix = modes_inv @ final_residual_phase[np.where(TEL.pupil > 0)]
     Z_coefficient_matrix_atmosphere = modes_inv @ atmosphere_phase[np.where(TEL.pupil > 0)]
     zernike_names = []
@@ -475,26 +485,66 @@ if use_zernike:
 
 
 #---------------------------------------------------PSD---------------------------------------------------#
+#THERE IS STILL A MASSIVE PROBLEM WITH DOING THE PSD BECAUSE DOING IT WITHOUT APPLYING THE PUPIL MASK CREATES WEIRD EFECTS AND DESTROYS THE VARIANCE BASED NORMALISATION
+#ON THE OTHER HAND CALCULATING STDs WITHOUT THE PUPIL MASK DISTORTS THE RESIDUAL ERROR CALCULATIONS
+#if ever your PSD integral does not agree with residual error, then check the values of the OPD outside the pupil mask (they should be 0)
+PSD_residual_circavg_list = []
+PSD_residual_circavg_freq = 0
 
-corrected_phase = final_residual_phase
-PSD_corrected = np.abs(fftshift(fft2(corrected_phase))) ** 2 / ((TEL.D / 2) ** 2 * np.pi)
-x_axis_PSD_residual, PSD_corrected_averaged = circular_average(np.abs(PSD_corrected).shape, np.abs(PSD_corrected))
+PSD_atmosphere_circavg_list = []
+PSD_atmosphere_circavg_freq = 0
+for j in range(len(residual_OPD_list)):
+    residual_OPD = (residual_OPD_list[j] - np.mean(residual_OPD_list[j])) * 1e9
+    PSD_residual = np.abs(fftshift(fft2(residual_OPD))) ** 2 / (TEL.resolution ** 4)
+    PSD_residual_freq_x = np.fft.fftfreq(PSD_residual.shape[0], d=(TEL.D / TEL.resolution))
+    PSD_residual_freq_max = np.max(np.sqrt(2 * (PSD_residual_freq_x) ** 2))
+    PSD_residual_freq, PSD_residual_circavg = circular_sum_PSD(np.abs(PSD_residual).shape, np.abs(PSD_residual), PSD_residual_freq_max)
+    print("\n")
+    print(f"TEL std {residual_error[j]}, TEL std from PSD {np.sqrt(np.sum(PSD_residual_circavg))}, TEL std from PSD {np.sqrt(np.sum(PSD_residual))}")
 
-atmosphere_phase = 2*np.pi * final_atmosphere_OPD / SRC.wavelength
-PSD_atmosphere = np.abs(fftshift(fft2(atmosphere_phase))) ** 2 / ((TEL.D / 2) ** 2 * np.pi)
-x_axis_PSD_atmosphere_residual, atmosphere_residual_averaged = circular_average(np.abs(PSD_atmosphere).shape, np.abs(PSD_atmosphere))
+    if j == 0:
+        PSD_residual_circavg_freq = PSD_residual_freq
+
+    PSD_residual_circavg_list.append(PSD_residual_circavg)
+
+
+"""for i in range(50):
+    ATM.generateNewPhaseScreen(seed = i)
+    for j in range(100):
+        ATM.update()
+        atmosphere_OPD = (ATM.OPD - np.mean(ATM.OPD)) * 1e9
+        PSD_atmosphere = np.abs(fftshift(fft2(atmosphere_OPD))) ** 2 / (TEL.resolution ** 4)
+        PSD_atmosphere_freq_x = np.fft.fftfreq(PSD_atmosphere.shape[0], d = (TEL.D / TEL.resolution))
+        PSD_atmosphere_freq_max = np.max(np.sqrt(2 * (PSD_atmosphere_freq_x) ** 2))
+        PSD_atmosphere_freq, PSD_atmosphere_circavg = circular_sum_PSD(np.abs(PSD_atmosphere).shape, np.abs(PSD_atmosphere), PSD_atmosphere_freq_max)
+
+
+
+
+        PSD_atmosphere_circavg_list.append(PSD_atmosphere_circavg)
+        if i == 0:
+            PSD_atmosphere_circavg_freq = PSD_atmosphere_freq
+"""
+PSD_residual_circavg_list  = np.array(PSD_residual_circavg_list)
+PSD_atmosphere_circavg_list = np.array(PSD_atmosphere_circavg_list)
+
+
+PSD_residual_statavg = np.mean(PSD_residual_circavg_list, axis = 0)
+PSD_atmosphere_statavg = np.mean(PSD_atmosphere_circavg_list, axis = 0)
+print(np.sqrt(np.sum(PSD_residual_statavg)))
+print(np.sqrt(np.sum(PSD_atmosphere_statavg)))
 
 
 
 plt.figure()
-plt.plot(x_axis_PSD_residual, PSD_corrected_averaged, label = "PSD_residual_pwfs")
-plt.plot(x_axis_PSD_atmosphere_residual, atmosphere_residual_averaged, label = "atmosphere_PSD")
+plt.plot(PSD_residual_circavg_freq, PSD_residual_statavg, label = "PSD_residual_pwfs")
+plt.plot(PSD_atmosphere_circavg_freq, PSD_atmosphere_statavg, label = "atmosphere_PSD")
 plt.title("PSD residual vs atmosphere comparison")
 plt.xlabel("Frequency domain")
 plt.ylabel("PSD")
 plt.xscale("log")
 plt.yscale("log")
-plt.ylim(bottom = 1e-7)
+plt.ylim(bottom = 1e-2)
 plt.legend()
 
 

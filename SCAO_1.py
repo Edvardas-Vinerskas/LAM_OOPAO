@@ -3,6 +3,8 @@ NGS/SRC -> atmosphere -> telescope -> dm -> wfs -> camera
 split somewhere for src/ngs
 
 figure out what is cam and cam.binned (one is science and on is wfs?)
+
+FROM 11/10/2025 THIS SHOULD ONLY BE USED FOR FORMULA SCAVENGING
 """
 
 import matplotlib.pyplot as plt
@@ -35,6 +37,15 @@ sampling_time = 1/loop_frequency #1/1000 og
 diameter = 1.52
 central_obstruction = 0.1
 r_0 = 0.15
+mechanical_coupling = 0.4
+modulation_ratio = 5 #full cycle needs to happen in one frame of the pyramid camera to successfully average it out (#in terms of lambda/D)
+light_ratio = 0.1 #flux criterion for subaperture pixel consideration (below the threshlod the dm does not react?)
+post_process = "slopesMaps"
+L_0 = 20
+wind_speed = [5, 50] #og 5, 50
+fractional_R0 = [0.85, 0.15]
+wind_direction = [30, 60] #in deg 30, 60 og
+alt = [0, 10000]
 
 #always check whether there are enough pixels for r_0
 pixel_size = diameter / resolution
@@ -43,21 +54,6 @@ if 3 * pixel_size <= r_0:
     print(f"PIXELS ARE SMALL ENOUGH, number of pixels per r_0 {r_0 / pixel_size}")
 else:
     print("YOUR PIXELS ARE TOO BIG!!!")
-
-
-L_0 = 20
-wind_speed = [5, 50] #og 5, 50
-fractional_R0 = [0.85, 0.15]
-wind_direction = [30, 60] #in deg 30, 60 og
-alt = [0, 10000]
-
-
-mechanical_coupling = 0.4
-#in terms of lambda/D
-modulation_ratio = 5 #full cycle needs to happen in one frame of the pyramid camera to successfully average it out
-light_ratio = 0.1 #flux criterion for subaperture pixel consideration (below the threshlod the dm does not react?)
-post_process = "slopesMaps"
-
 
 #the factor increases your image size by zeroPaddingFactor, allowing for finer frequency bins in the fft
 #so for 6, you image size is increased 6 times
@@ -135,11 +131,6 @@ fov               = zoomed_PSF.shape[0] * arcsec_per_pixel
 OTF_dl = fftshift(fft2(fftshift(tel.PSF / np.sum(tel.PSF))))
 
 x_axis, OTF_dl_averaged = circular_average((np.abs(OTF_dl)).shape, np.abs(OTF_dl))
-#unfinished calculation of the relative spatial frequency (maybe do absolute frequency)
-#np.arange(len(OTF_dl_averaged))*sampling/OTF_dl.shape[0]
-
-
-
 
 plt.figure()
 plt.imshow(zoomed_PSF, norm = SymLogNorm(1e-7), extent = [ -fov/2, fov/2, -fov/2, fov/2])
@@ -269,19 +260,13 @@ M2C_KL = M2C_KL[:, :300]
 #Z.modes takes in modes and outputs the phase
 #dm.modes takes in controle and outputs phase
 #1st and 2nd modes is tip tilt (no piston)
-
-
-##############################################################################################################
-
-
 #if you use too many zernike coefficients and the DM does not have the resolution to reconstruct
 #them, then you will have an unstable and incorrect system
+
+##############################################################################################################
 Z = Zernike(tel, Z_coefs)
 Z.computeZernike(tel)
 M2C_Z = np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])) @ Z.modes
-
-
-
 
 
 #just need to input an identity matrix - the first zonal function moves the first actuator (that is the logic)
@@ -299,11 +284,6 @@ calib_zonal = InteractionMatrix(ngs             = src,
                                 stroke          = 1e-9,
                                 nMeasurements   = 1,     #they build up the interaction matrix using nMeasurements columns at a time
                                 noise           = "off") #wfs measurement noise is turned off when doing the interaction matrix
-
-
-
-#phase reconstruction using the interaction/reconstruction matrix
-#calib_zonal.M @ pwfs.signal - reconstructed Zernike coefficients
 
 input_modes = np.random.randn(M2C__.shape[1]) * 1e-9
 
@@ -326,7 +306,7 @@ plt.legend()
 #you cannot calculate the fitting error by propagating through the whole system
 #because the wfs for example will introduce phase to slope mapping errors just due to non infinite resolution
 #so you instead must reproject the phase of the atmosphere onto the DM using whatever modes you have
-#by the way the below implementation only works when the central obstruction = 0
+
 
 ##############################################################################################################
 modes_inv = np.linalg.pinv(np.squeeze(Z.modes))
@@ -345,7 +325,7 @@ simulational_fitting_error = np.std(fitting_error[np.where(tel.pupil > 0)]) * 1e
 ##############################################################################################################
 
 #some simulation of my SCAO
-nLoop = 1000
+nLoop = 100
 frame_delay = 2
 
 tel.resetOPD()
@@ -394,12 +374,10 @@ for i in range(nLoop):
     #propagate to the source with the dm commands applied
     src * tel
 
-    """pwfssignal.pop(0)
-    pwfssignal.append(pwfs.signal)
-    delayed_signal = pwfssignal[0]"""
+
     #update the dm commands (i.e. dm.coefs)
     dm.coefs = dm.coefs - gain * np.matmul(reconstructor, pwfssignal)
-    pwfssignal = pwfs.signal
+    pwfssignal = pwfs.signal #2 frame delay
     #metrics
     SR[i] = np.exp(-np.var(tel.src.phase[np.where(tel.pupil == 1)]))
     residual[i] = np.std(tel.OPD[np.where(tel.pupil > 0)]) * 1e9
