@@ -37,27 +37,15 @@ from torch import dtype
 """
 * now the RL has been done for central_obstruction = 0
     *redo it for central_obstruction = 0.1
-    * when redoing it, you must change how you split for zernike tip tilt modes
-    * because the current version only works with no central obstruction
-    * there are apparently fitting error functions in OOPAO.calibration
-    
-* ON FRIDAY YOU FOR ONCE FIGURE OUT ALL OF THE WEBSITES THAT YOU SHOULD HAVE ACCESS TO
-* estimate the wfs limited resolution error
-* I guess estimate all possible errors due to limited resolution
-* calculate std for the errors
 
-* something is wrong with how I calculate errors and the residual seems to be dominated be the residual error at all times
-* the DM is reconstructing half the phase, and so the error is twice as small!
-* I should also recalculate the fitting error based on old phase screens and NOT the current ones
-    * this would effectively just shift my fitting error curve to the right
-    * and thus probably better align with the temporal error
-    * AND OF COURSE THE CURRENT DM IS TRYING TO FIT THE OLD PHASE SO CLEARLY YOU ARE NOT SMART
-*redo all of the error calculations in terms of phase difference and not OPD
 *fix all of the units
-*test if the same atm seed gives you the same phase evolution under the same conditions or not
-    because the evolution could still be different based on random stuff
-    
-* fix OTF and PSD calculations? units and the weird behaviour of PSD
+* Normalised the PSD to preserve variance, however the corrected PSD and atmosphere PSD still do not merge
+    *a potential idea is to simulate a high resolution phase screen, input the correct  pixel spacing and sum up the error above the DM cut off frequency
+    *you should get the fitting error if everything is correct
+    *plot the fitting error in 2 ways
+        * atm - dm -> calculate std
+        * atm -> PSD -> block out the DM frequencies -> atm -> calculate std
+        * this might not work that well as the second method does not take into account influence functions but maybe just the right ballpark?
 """
 
 
@@ -163,7 +151,9 @@ ATM = Atmosphere(telescope    = TEL,
                         )
 
 ATM.initializeAtmosphere(telescope = TEL)
-
+plt.figure()
+plt.imshow(ATM.OPD)
+plt.show()
 
 #---------------------------------------------------DEFORMABLE_MIRROR---------------------------------------------------#
 
@@ -277,7 +267,7 @@ else:
     wfssignal_buffer = []
 
 #variables and performance metric initialisation
-nLoop                        = 1000
+nLoop                        = 100
 sr                           = np.zeros(nLoop)
 sr_running                   = np.zeros(nLoop)
 total_error                  = np.zeros(nLoop)
@@ -285,6 +275,8 @@ residual_error               = np.zeros(nLoop)
 
 #variables for PSD calculation
 residual_OPD_list            = []
+final_residual_OPD           = 0
+final_atmosphere_OPD         = 0
 final_dm_OPD                 = 0
 
 
@@ -365,7 +357,12 @@ for i in range(nLoop):
 
     if sr[i] > 0.5:
         residual_OPD_list.append(TEL.OPD)
+        print("residual_OPD_append")
 
+    if i == (nLoop - 1):
+        final_residual_OPD   = TEL.OPD
+        final_atmosphere_OPD = ATM.OPD
+        final_dm_OPD         = DM.OPD
 
 
 #---------------------------------------------------PLOTTING---------------------------------------------------#
@@ -485,8 +482,6 @@ if use_zernike:
 
 
 #---------------------------------------------------PSD---------------------------------------------------#
-#THERE IS STILL A MASSIVE PROBLEM WITH DOING THE PSD BECAUSE DOING IT WITHOUT APPLYING THE PUPIL MASK CREATES WEIRD EFECTS AND DESTROYS THE VARIANCE BASED NORMALISATION
-#ON THE OTHER HAND CALCULATING STDs WITHOUT THE PUPIL MASK DISTORTS THE RESIDUAL ERROR CALCULATIONS
 #if ever your PSD integral does not agree with residual error, then check the values of the OPD outside the pupil mask (they should be 0)
 PSD_residual_circavg_list = []
 PSD_residual_circavg_freq = 0
@@ -494,13 +489,15 @@ PSD_residual_circavg_freq = 0
 PSD_atmosphere_circavg_list = []
 PSD_atmosphere_circavg_freq = 0
 for j in range(len(residual_OPD_list)):
-    residual_OPD = (residual_OPD_list[j] - np.mean(residual_OPD_list[j])) * 1e9
-    PSD_residual = np.abs(fftshift(fft2(residual_OPD))) ** 2 / (TEL.resolution ** 4)
+    residual_OPD_list[j][TEL.pupil > 0] = (residual_OPD_list[j][TEL.pupil > 0] - np.mean(residual_OPD_list[j][TEL.pupil > 0])) * 1e9
+    residual_OPD = residual_OPD_list[j]
+    PSD_residual = np.abs(fftshift(fft2(residual_OPD))) ** 2 / (len(TEL.pupil[TEL.pupil > 0]) ** 2)
     PSD_residual_freq_x = np.fft.fftfreq(PSD_residual.shape[0], d=(TEL.D / TEL.resolution))
     PSD_residual_freq_max = np.max(np.sqrt(2 * (PSD_residual_freq_x) ** 2))
     PSD_residual_freq, PSD_residual_circavg = circular_sum_PSD(np.abs(PSD_residual).shape, np.abs(PSD_residual), PSD_residual_freq_max)
     print("\n")
-    print(f"TEL std {residual_error[j]}, TEL std from PSD {np.sqrt(np.sum(PSD_residual_circavg))}, TEL std from PSD {np.sqrt(np.sum(PSD_residual))}")
+    #fix the residual error, since it plots every residual error, while the residual_OPD is instead calculated for a high strehl ratio
+    print(f"TEL std {residual_error[ - len(residual_OPD_list) + j]}, TEL std from PSD {np.sqrt(np.sum(PSD_residual_circavg))}, TEL std from PSD {np.sqrt(np.sum(PSD_residual))}")
 
     if j == 0:
         PSD_residual_circavg_freq = PSD_residual_freq
@@ -508,12 +505,13 @@ for j in range(len(residual_OPD_list)):
     PSD_residual_circavg_list.append(PSD_residual_circavg)
 
 
-"""for i in range(50):
+for i in range(20):
     ATM.generateNewPhaseScreen(seed = i)
     for j in range(100):
         ATM.update()
-        atmosphere_OPD = (ATM.OPD - np.mean(ATM.OPD)) * 1e9
-        PSD_atmosphere = np.abs(fftshift(fft2(atmosphere_OPD))) ** 2 / (TEL.resolution ** 4)
+        ATM.OPD[TEL.pupil > 0] = (ATM.OPD[TEL.pupil > 0] - np.mean(ATM.OPD[TEL.pupil > 0])) * 1e9
+        atmosphere_OPD = ATM.OPD
+        PSD_atmosphere = np.abs(fftshift(fft2(atmosphere_OPD))) ** 2 / (len(TEL.pupil[TEL.pupil > 0]) ** 2)
         PSD_atmosphere_freq_x = np.fft.fftfreq(PSD_atmosphere.shape[0], d = (TEL.D / TEL.resolution))
         PSD_atmosphere_freq_max = np.max(np.sqrt(2 * (PSD_atmosphere_freq_x) ** 2))
         PSD_atmosphere_freq, PSD_atmosphere_circavg = circular_sum_PSD(np.abs(PSD_atmosphere).shape, np.abs(PSD_atmosphere), PSD_atmosphere_freq_max)
@@ -524,15 +522,21 @@ for j in range(len(residual_OPD_list)):
         PSD_atmosphere_circavg_list.append(PSD_atmosphere_circavg)
         if i == 0:
             PSD_atmosphere_circavg_freq = PSD_atmosphere_freq
-"""
+
 PSD_residual_circavg_list  = np.array(PSD_residual_circavg_list)
 PSD_atmosphere_circavg_list = np.array(PSD_atmosphere_circavg_list)
 
 
 PSD_residual_statavg = np.mean(PSD_residual_circavg_list, axis = 0)
 PSD_atmosphere_statavg = np.mean(PSD_atmosphere_circavg_list, axis = 0)
+print(PSD_residual_statavg.shape, PSD_residual_circavg_list.shape)
+print(PSD_atmosphere_statavg.shape, PSD_atmosphere_circavg_list.shape)
 print(np.sqrt(np.sum(PSD_residual_statavg)))
 print(np.sqrt(np.sum(PSD_atmosphere_statavg)))
+print("\n")
+print(np.sqrt(np.sum(PSD_residual_statavg[11:]))) #not sure how useful this is since there is aliasing from the FFT itself when calculating the PSD and also temporal error?
+print(np.sqrt(np.sum(PSD_atmosphere_statavg[11:])))
+
 
 
 
@@ -542,6 +546,7 @@ plt.plot(PSD_atmosphere_circavg_freq, PSD_atmosphere_statavg, label = "atmospher
 plt.title("PSD residual vs atmosphere comparison")
 plt.xlabel("Frequency domain")
 plt.ylabel("PSD")
+plt.xlabel("spatial frequency m^-1")
 plt.xscale("log")
 plt.yscale("log")
 plt.ylim(bottom = 1e-2)

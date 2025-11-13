@@ -19,12 +19,6 @@ from OOPAO.tools.displayTools import displayMap, makeSquareAxes
 import torch
 
 
-x = np.array([[[1, 2], [3, 4]], [[1, 2], [3, 4]], [[1, 2], [3, 4]], [[1, 2], [3, 4]], [[1, 2], [3, 4]], [[1, 2], [3, 4]]])
-x_mean = np.mean(x, axis = (1,2))
-print(x.shape)
-print(x_mean.shape)
-y = x - x_mean
-print(y)
 
 
 
