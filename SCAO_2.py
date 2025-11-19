@@ -2,50 +2,43 @@
 Testing for different src and ngs (next step is extended source?)
 
 LIST OF ARGUMENTS TO TEST:
-* Calculate and plot the error terms for your AO system
 * Play around with the light_ratio parameter for PWFS
-* How to find out how many Zernike/KL modes you need? (connected to number of actuators/cut off frequency?)
-* Write down stuff like interaction matrices and how PSF are calculated on paper
-* How to optimize for resolution?
-* Build a small RL model? (CNN possibly)
 * In the real AO bench they had a gain sensing camera? how does that incorporate here (especially papytwin I guess)
-* Calculate the spatial cutoff frequency
-* WHAT DOES THIS REPRESENT/??? print(np.linalg.pinv(np.squeeze(dm.modes[tel.pupilLogical, :])).shape)
-* plot running averages of SR (compare marechal approximation with the PSF estimate)
-* PLOT DIFFERENCE BETWEEN ORIGINAL AND CORRECTED WAVEFRONT
-* test the increasing subaperture number for shwfs (same result)
-
-
-* reproject residual phase on Zernike modes
-* plot PSD vs modes/frequency
 
 
 SOME ANSWERS:
-* actuators number = n_subap (or at least when you use it for the dm)
 * for zonal you just use the identity of M2C
-* What is the Z.modesFullRes vs Z.modes?
-    these store the zernike polynomial values
-    Z.modesFullRes just reformats the polynomial values according to the mirror resolution
-* test the nsubap influence on what outputs you get for the pwfs
-    resolution of the pwfs cam
-
-
-REGARDING THE SUBAPERTURE THING, YOU CAN TEST FOR TEMPORAL ERROR BY REMOVING IT
 """
 from torch import dtype
 
 """
-* now the RL has been done for central_obstruction = 0
-    *redo it for central_obstruction = 0.1
+* the PSD should have units of nm^2 m^2 (check thoroughly on paper)
+    
+* try doing a zero delay loop to see if the residual completely gets rid of the temporal error
+* inject temporal frequencies into ATM.OPD (one above DM freq and one below)
 
-*fix all of the units
-* Normalised the PSD to preserve variance, however the corrected PSD and atmosphere PSD still do not merge
-    *a potential idea is to simulate a high resolution phase screen, input the correct  pixel spacing and sum up the error above the DM cut off frequency
-    *you should get the fitting error if everything is correct
-    *plot the fitting error in 2 ways
-        * atm - dm -> calculate std
-        * atm -> PSD -> block out the DM frequencies -> atm -> calculate std
-        * this might not work that well as the second method does not take into account influence functions but maybe just the right ballpark?
+for the PSD problem:
+    * can do apodizing (welsh filter or smooth filter going to 0 over 2 pixels)
+    * do maths about how the square filter affects our FFT
+        * just like mentioned (and I checked) square filter causes the transfer of power from lower to higher frequencies
+        * this happens due to the sidelobs and is somewhat assymetric (judging from the graphical function representation)
+        * this problem is called spectral leakage (very appropriate)
+    * plot theoretical atmosphere PSD (THIS IS THE ONLY SOLUTION REALLY)
+    * just do modes
+    * analyse the fitting error peaks? (do spatial and temporal PSDs?)
+    * project the temporal error on the DM for more accurate representation
+    * just check the code to see if there is a mistake in how you get your PSDs
+* cut the PSD plots at the appropriate frequencies
+* Fix the spatial error propagation
+
+* Compute temporal ETF
+* ETF x input should give you an understanding of how
+
+* Add temporally varying tip-tilt
+
+* implement cameras for the SE PSF and LE PSF
+
+* LONG TERM TASK - ASSUME SOME ZERNIKE OUTPUT PHASE AND CONTROL A 9x9 DM (I left some papers for the weekend reading)
 """
 
 
@@ -151,9 +144,7 @@ ATM = Atmosphere(telescope    = TEL,
                         )
 
 ATM.initializeAtmosphere(telescope = TEL)
-plt.figure()
-plt.imshow(ATM.OPD)
-plt.show()
+
 
 #---------------------------------------------------DEFORMABLE_MIRROR---------------------------------------------------#
 
@@ -170,7 +161,6 @@ corr_zone_2 = Circle([0,0], control_radius, fc='none', ec='w', ls=':')
 #pitch check
 if (2 * DM.pitch) > r_0_src:
     raise SystemExit(f"ERROR: DM actuator density is insufficient for r_0 {r_0_src} ")
-
 
 #---------------------------------------------------WFS---------------------------------------------------#
 WFS = None
@@ -247,6 +237,21 @@ if use_zernike:
 
 #the rest of the code is in the for loop
 
+#---------------------------------------------------CAMERA---------------------------------------------------#
+
+CAM = Detector(integrationTime = 100 * TEL.samplingTime,  # integration time of the detector
+                photonNoise=False,  # enable photon noise
+                readoutNoise=0,  # readout of the detector in [e-/pixel]
+                QE=1,  # quantum efficiency
+                psf_sampling=2,  # sampling for the PSF computation 2 = Shannon sampling
+                binning=1)  # Binning factor of the PSF
+
+
+
+
+
+
+
 #---------------------------------------------------SIMULATION---------------------------------------------------#
 #for now we are only using SRC
 
@@ -267,7 +272,7 @@ else:
     wfssignal_buffer = []
 
 #variables and performance metric initialisation
-nLoop                        = 100
+nLoop                        = 50
 sr                           = np.zeros(nLoop)
 sr_running                   = np.zeros(nLoop)
 total_error                  = np.zeros(nLoop)
@@ -285,10 +290,12 @@ final_dm_OPD                 = 0
 #for temp_err_delay = 3, the list has current, previous and previous_previous
 temp_err_delay               = 4
 atm_OPD_list                 = [np.zeros(ATM.OPD.shape) for i in range((temp_err_delay + 1))] #(temp_err_delay + 1) tells you how many current + previous frames you want to keep in the buffer
-sim_temp_error_1_frame_delay = []
 sim_temp_error_2_frame_delay = []
-sim_temp_error_3_frame_delay = []
 sim_fit_error_list           = []
+sim_fit_error_list_2D        = []
+
+
+tel_psf_list = []
 
 
 CL_gain = 0.4
@@ -298,20 +305,6 @@ reconstructor = M2C @ CALIB.M
 for i in range(nLoop):
     #update phase screen
     ATM.update()
-
-    #temporal error calculation for every frame for 1, 2, 3 frame delay
-    atm_OPD_list.append(ATM.OPD)
-    atm_OPD_list.pop(0)
-
-    atm_OPD_1_frame = (atm_OPD_list[-1] - atm_OPD_list[-2])[np.where(TEL.pupil > 0)]
-    atm_OPD_2_frame = (atm_OPD_list[-1] - atm_OPD_list[-3])[np.where(TEL.pupil > 0)]
-    atm_OPD_3_frame = (atm_OPD_list[-1] - atm_OPD_list[-4])[np.where(TEL.pupil > 0)]
-
-    sim_temp_error_1_frame_delay.append(np.std(atm_OPD_1_frame) * 1e9)
-    sim_temp_error_2_frame_delay.append(np.std(atm_OPD_2_frame) * 1e9)
-    sim_temp_error_3_frame_delay.append(np.std(atm_OPD_3_frame) * 1e9)
-
-
 
     total_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
 
@@ -343,6 +336,22 @@ for i in range(nLoop):
     sim_fit_error_list.append(simulational_fitting_error)
 
 
+    # temporal error calculation for every frame for 1, 2, 3 frame delay
+    atm_OPD_list.append(ATM.OPD)
+    atm_OPD_list.pop(0)
+
+    atm_coefs_t = modes_inv @ atm_OPD_list[-1][np.where(TEL.pupil > 0)]
+    DM.coefs = M2C @ atm_coefs_t
+    atm_t_OPD = DM.OPD
+    atm_coefs_t2 = modes_inv @ atm_OPD_list[-3][np.where(TEL.pupil > 0)]
+    DM.coefs = M2C @ atm_coefs_t2
+    atm_t2_OPD = DM.OPD
+
+
+    atm_OPD_2_frame = (atm_t_OPD - atm_t2_OPD)[np.where(TEL.pupil > 0)]
+    sim_temp_error_2_frame_delay.append(np.std(atm_OPD_2_frame) * 1e9)
+
+
     #convert back the DM.coefs to their actual CL values
     DM.coefs = dm_coefs_copy
 
@@ -357,12 +366,17 @@ for i in range(nLoop):
 
     if sr[i] > 0.5:
         residual_OPD_list.append(TEL.OPD)
+        sim_fit_error_list_2D.append(fitting_error)
         print("residual_OPD_append")
 
     if i == (nLoop - 1):
         final_residual_OPD   = TEL.OPD
         final_atmosphere_OPD = ATM.OPD
         final_dm_OPD         = DM.OPD
+
+
+    TEL.computePSF(zeroPaddingFactor)
+    tel_psf_list.append(TEL.PSF)
 
 
 #---------------------------------------------------PLOTTING---------------------------------------------------#
@@ -379,6 +393,8 @@ time = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
 fitting_error_analytical = (0.23) ** (1/2) * (DM.pitch/ r_0_src) ** (5 / 6) * SRC.wavelength / (2 * np.pi) * 1e9
 fitting_error_analytical = np.ones(len(time)) * fitting_error_analytical
 
+fitting_error_sim_avg = np.mean(sim_fit_error_list)
+fitting_error_sim_avg = np.ones(len(time)) * fitting_error_sim_avg
 
 residual_sim_difference = residual_error - sim_fit_temp_sum
 
@@ -386,12 +402,11 @@ residual_sim_difference = residual_error - sim_fit_temp_sum
 #---------------------------------------------------Error decomposition---------------------------------------------------#
 plt.figure()
 plt.plot(time, residual_error, label = "residual")
-#plt.plot(time, sim_temp_error_1_frame_delay, label = "simulational temporal error 1 frame delay")
 #plt.plot(time, sim_temp_error_2_frame_delay, label = "simulational temporal error 2 frame delay")
 plt.plot(time, fitting_error_analytical, label = "analyical fitting error")
+plt.plot(time, fitting_error_sim_avg, label = "simulational average fitting error")
 plt.plot(time, sim_fit_error_list, label = "simulational fitting error")
 plt.plot(time, sim_fit_temp_sum, label = "fitting + temporal 2 frame delay")
-#plt.plot(time, residual_sim_difference, label = "difference between residual and simulational errors")
 plt.title("error decomposition (nm)")
 plt.xlabel("time s")
 plt.yscale("log")
@@ -433,9 +448,21 @@ N = 50
 AO_PSF = TEL.PSF[N: -N, N: -N]
 fov    = AO_PSF.shape[0] * arcsec_per_pixel
 AO_PSF = AO_PSF/np.sum(AO_PSF)
-plt.imshow(AO_PSF, norm = SymLogNorm(1e-7), extent = [-fov/2, fov/2, -fov/2, fov/2])
+plt.imshow(AO_PSF, norm = SymLogNorm(1e-6), extent = [-fov/2, fov/2, -fov/2, fov/2])
 plt.title("AO corrected PSF")
 plt.gca().add_artist(corr_zone_1)
+plt.xlabel("arcsec")
+plt.ylabel("arcsec")
+plt.colorbar()
+
+tel_psf_list = np.array(tel_psf_list)
+AO_PSF_LE = np.mean(tel_psf_list, axis = 0)
+AO_PSF_LE = AO_PSF_LE[N: -N, N: -N]
+AO_PSF_LE = AO_PSF_LE / np.sum(AO_PSF_LE)
+plt.figure()
+plt.imshow(AO_PSF_LE, norm = SymLogNorm(1e-6), extent = [-fov/2, fov/2, -fov/2, fov/2])
+plt.title("AO corrected PSF LE")
+plt.gca().add_artist(corr_zone_2)
 plt.xlabel("arcsec")
 plt.ylabel("arcsec")
 plt.colorbar()
@@ -482,22 +509,28 @@ if use_zernike:
 
 
 #---------------------------------------------------PSD---------------------------------------------------#
-#if ever your PSD integral does not agree with residual error, then check the values of the OPD outside the pupil mask (they should be 0)
+#PSD is calculated using a square inside the tel.pupil
+x_square = np.sqrt(TEL.resolution ** 2 / 2)
+x_square_index = int((TEL.resolution - x_square) / 2 + 1)
+
+
 PSD_residual_circavg_list = []
 PSD_residual_circavg_freq = 0
-
-PSD_atmosphere_circavg_list = []
-PSD_atmosphere_circavg_freq = 0
+PSD_residual_freq_x       = 0
+#PSD calculation for residual OPD
 for j in range(len(residual_OPD_list)):
-    residual_OPD_list[j][TEL.pupil > 0] = (residual_OPD_list[j][TEL.pupil > 0] - np.mean(residual_OPD_list[j][TEL.pupil > 0])) * 1e9
-    residual_OPD = residual_OPD_list[j]
-    PSD_residual = np.abs(fftshift(fft2(residual_OPD))) ** 2 / (len(TEL.pupil[TEL.pupil > 0]) ** 2)
+    #residual_OPD_list[j][TEL.pupil > 0] = (residual_OPD_list[j][TEL.pupil > 0] - np.mean(residual_OPD_list[j][TEL.pupil > 0])) * 1e9
+    residual_OPD = residual_OPD_list[j][x_square_index:-x_square_index, x_square_index:-x_square_index]
+    residual_OPD = (residual_OPD - np.mean(residual_OPD)) * 1e9
+    PSD_residual = np.abs(fftshift(fft2(residual_OPD))) ** 2 / (x_square ** 4)
     PSD_residual_freq_x = np.fft.fftfreq(PSD_residual.shape[0], d=(TEL.D / TEL.resolution))
+    PSD_residual_freq_x = np.max(PSD_residual_freq_x)
     PSD_residual_freq_max = np.max(np.sqrt(2 * (PSD_residual_freq_x) ** 2))
     PSD_residual_freq, PSD_residual_circavg = circular_sum_PSD(np.abs(PSD_residual).shape, np.abs(PSD_residual), PSD_residual_freq_max)
     print("\n")
     #fix the residual error, since it plots every residual error, while the residual_OPD is instead calculated for a high strehl ratio
-    print(f"TEL std {residual_error[ - len(residual_OPD_list) + j]}, TEL std from PSD {np.sqrt(np.sum(PSD_residual_circavg))}, TEL std from PSD {np.sqrt(np.sum(PSD_residual))}")
+    print(f"TEL std {residual_error[ - len(residual_OPD_list) + j]}, TEL std from PSD {np.sqrt(np.sum(PSD_residual_circavg))}")
+
 
     if j == 0:
         PSD_residual_circavg_freq = PSD_residual_freq
@@ -505,17 +538,40 @@ for j in range(len(residual_OPD_list)):
     PSD_residual_circavg_list.append(PSD_residual_circavg)
 
 
+PSD_fitting_circavg_list = []
+PSD_fitting_circavg_freq = 0
+#PSD calculation for fitting error
+for j in range(len(sim_fit_error_list_2D)):
+    fitting_OPD = sim_fit_error_list_2D[j][x_square_index:-x_square_index, x_square_index:-x_square_index]
+    fitting_OPD = (fitting_OPD - np.mean(fitting_OPD)) * 1e9
+    PSD_fitting = np.abs(fftshift(fft2(fitting_OPD))) ** 2 / (x_square ** 4)
+    PSD_fitting_freq_x = np.fft.fftfreq(PSD_fitting.shape[0], d=(TEL.D / TEL.resolution))
+    PSD_fitting_freq_x = np.max(PSD_fitting_freq_x)
+    PSD_fitting_freq_max = np.max(np.sqrt(2 * (PSD_fitting_freq_x) ** 2))
+    PSD_fitting_freq, PSD_fitting_circavg = circular_sum_PSD(np.abs(PSD_fitting).shape, np.abs(PSD_fitting), PSD_fitting_freq_max)
+
+    if j == 0:
+        PSD_fitting_circavg_freq = PSD_fitting_freq
+
+    PSD_fitting_circavg_list.append(PSD_fitting_circavg)
+
+
+PSD_atmosphere_circavg_list = []
+PSD_atmosphere_circavg_freq = 0
+#PSD calculation for the atmosphere
 for i in range(20):
     ATM.generateNewPhaseScreen(seed = i)
     for j in range(100):
         ATM.update()
-        ATM.OPD[TEL.pupil > 0] = (ATM.OPD[TEL.pupil > 0] - np.mean(ATM.OPD[TEL.pupil > 0])) * 1e9
-        atmosphere_OPD = ATM.OPD
-        PSD_atmosphere = np.abs(fftshift(fft2(atmosphere_OPD))) ** 2 / (len(TEL.pupil[TEL.pupil > 0]) ** 2)
+        #ATM.OPD[TEL.pupil > 0] = (ATM.OPD[TEL.pupil > 0] - np.mean(ATM.OPD[TEL.pupil > 0])) * 1e9
+        atmosphere_OPD = ATM.OPD[x_square_index:-x_square_index, x_square_index:-x_square_index]
+        atmosphere_OPD = (atmosphere_OPD - np.mean(atmosphere_OPD)) * 1e9
+        PSD_atmosphere = np.abs(fftshift(fft2(atmosphere_OPD))) ** 2 / (x_square ** 4)
         PSD_atmosphere_freq_x = np.fft.fftfreq(PSD_atmosphere.shape[0], d = (TEL.D / TEL.resolution))
+        PSD_atmosphere_freq_x = np.max(PSD_atmosphere_freq_x)
         PSD_atmosphere_freq_max = np.max(np.sqrt(2 * (PSD_atmosphere_freq_x) ** 2))
         PSD_atmosphere_freq, PSD_atmosphere_circavg = circular_sum_PSD(np.abs(PSD_atmosphere).shape, np.abs(PSD_atmosphere), PSD_atmosphere_freq_max)
-
+        #print(f"ATM std from PSD {np.sqrt(np.sum(PSD_atmosphere_circavg))}")
 
 
 
@@ -529,28 +585,48 @@ PSD_atmosphere_circavg_list = np.array(PSD_atmosphere_circavg_list)
 
 PSD_residual_statavg = np.mean(PSD_residual_circavg_list, axis = 0)
 PSD_atmosphere_statavg = np.mean(PSD_atmosphere_circavg_list, axis = 0)
-print(PSD_residual_statavg.shape, PSD_residual_circavg_list.shape)
-print(PSD_atmosphere_statavg.shape, PSD_atmosphere_circavg_list.shape)
-print(np.sqrt(np.sum(PSD_residual_statavg)))
-print(np.sqrt(np.sum(PSD_atmosphere_statavg)))
+PSD_fitting_statavg = np.mean(PSD_fitting_circavg_list, axis = 0)
+print(f"PSD_residual average error {np.sqrt(np.sum(PSD_residual_statavg))}")
+print(f"PSD_atmosphere average error {np.sqrt(np.sum(PSD_atmosphere_statavg))}")
+# 7 or 8 index for fitting error (no padding)
+
+print(f"PSD_residual fitting error 7 {np.sqrt(np.sum(PSD_residual_statavg[7: ]))}")
+print(f"PSD_atmosphere fitting error 7 {np.sqrt(np.sum(PSD_atmosphere_statavg[7: ]))}")
+print(f"PSD_residual fitting error 8 {np.sqrt(np.sum(PSD_residual_statavg[8: ]))} for freq {PSD_residual_circavg_freq[8]}")
+print(f"PSD_atmosphere fitting error 8 {np.sqrt(np.sum(PSD_atmosphere_statavg[8: ]))} for freq {PSD_atmosphere_circavg_freq[8]}")
 print("\n")
-print(np.sqrt(np.sum(PSD_residual_statavg[11:]))) #not sure how useful this is since there is aliasing from the FFT itself when calculating the PSD and also temporal error?
-print(np.sqrt(np.sum(PSD_atmosphere_statavg[11:])))
 
-
-
-
+print("length PSD fit", len(PSD_fitting_statavg))
+print("length PSD residual", len(PSD_residual_statavg))
+print("length PSD atmosphere", len(PSD_atmosphere_statavg))
 plt.figure()
 plt.plot(PSD_residual_circavg_freq, PSD_residual_statavg, label = "PSD_residual_pwfs")
 plt.plot(PSD_atmosphere_circavg_freq, PSD_atmosphere_statavg, label = "atmosphere_PSD")
+plt.plot(PSD_fitting_circavg_freq, PSD_fitting_statavg, label = "fitting_err_PSD")
+plt.axvline(x=6.57, color='red', linestyle='-', linewidth=1.5)
 plt.title("PSD residual vs atmosphere comparison")
-plt.xlabel("Frequency domain")
 plt.ylabel("PSD")
 plt.xlabel("spatial frequency m^-1")
 plt.xscale("log")
 plt.yscale("log")
+plt.xlim(right = PSD_residual_freq_x)
 plt.ylim(bottom = 1e-2)
 plt.legend()
+
+#---------------------------------------------------Error transfer function---------------------------------------------------#
+ETF = PSD_residual_statavg/PSD_atmosphere_statavg
+
+plt.figure()
+plt.plot(PSD_residual_circavg_freq, ETF)
+plt.axvline(x=6.57, color='red', linestyle='-', linewidth=1.5)
+plt.title("Error transfer function")
+plt.ylabel("ETF")
+plt.xlabel("spatial frequency m^-1")
+plt.xscale("log")
+plt.yscale("log")
+#plt.ylim(bottom = 1e-2)
+plt.legend()
+
 
 
 plt.show()
