@@ -2,43 +2,39 @@
 Testing for different src and ngs (next step is extended source?)
 
 LIST OF ARGUMENTS TO TEST:
-* Play around with the light_ratio parameter for PWFS
 * In the real AO bench they had a gain sensing camera? how does that incorporate here (especially papytwin I guess)
 
 
 SOME ANSWERS:
 * for zonal you just use the identity of M2C
-"""
-from torch import dtype
-
-"""
-* the PSD should have units of nm^2 m^2 (check thoroughly on paper)
-    
-* try doing a zero delay loop to see if the residual completely gets rid of the temporal error
-* inject temporal frequencies into ATM.OPD (one above DM freq and one below)
-
 for the PSD problem:
     * can do apodizing (welsh filter or smooth filter going to 0 over 2 pixels)
     * do maths about how the square filter affects our FFT
         * just like mentioned (and I checked) square filter causes the transfer of power from lower to higher frequencies
         * this happens due to the sidelobs and is somewhat assymetric (judging from the graphical function representation)
         * this problem is called spectral leakage (very appropriate)
-    * plot theoretical atmosphere PSD (THIS IS THE ONLY SOLUTION REALLY)
-    * just do modes
+"""
+
+
+"""    
+* try doing a zero delay loop to see if the residual completely gets rid of the temporal error
+* inject temporal frequencies into ATM.OPD (one above DM freq and one below)
+* I am not sure averaging the zernike coefficients helps
+
+for the PSD problem:
     * analyse the fitting error peaks? (do spatial and temporal PSDs?)
-    * project the temporal error on the DM for more accurate representation
-    * just check the code to see if there is a mistake in how you get your PSDs
-* cut the PSD plots at the appropriate frequencies
-* Fix the spatial error propagation
+* Fix the spatial error propagation (this is for the injected vibration)
 
 * Compute temporal ETF
-* ETF x input should give you an understanding of how
+* ETF x input should give you an understanding of how different frequencies are compensated for vs amplified
 
 * Add temporally varying tip-tilt
 
 * implement cameras for the SE PSF and LE PSF
 
 * LONG TERM TASK - ASSUME SOME ZERNIKE OUTPUT PHASE AND CONTROL A 9x9 DM (I left some papers for the weekend reading)
+
+*some numerical problem for the KL mode fitting calculation (the modes are incorrect)
 """
 
 
@@ -83,7 +79,7 @@ WIND_SPEED          = [10, 20, 60] #[10, 20, 60]
 WIND_DIRECTION      = [0, 100, 160] #[0, 100, 160]
 FRACTIONAL_C_N2     = [0.6, 0.3, 0.1] #[0.5, 0.3, 0.2]
 ALTITUDE            = [0, 4500, 10000] #[0, 4500, 10000]
-Z_coefs             = 300 #200 #above 200 does not work great per Benoit
+Z_coefs             = 200 #200 #above 200 does not work great per Benoit
 
 
 
@@ -95,8 +91,8 @@ use_pwfs          = True
 use_shwfs         = False
 
 use_zernike       = False
-use_zonal         = True
-use_KL            = False #not yet implemented fully
+use_zonal         = False
+use_KL            = True
 
 
 
@@ -144,6 +140,13 @@ ATM = Atmosphere(telescope    = TEL,
                         )
 
 ATM.initializeAtmosphere(telescope = TEL)
+def temp_vib(f, t, shape):
+    k = 30
+    f = f
+    x = np.linspace(-np.pi, np.pi, shape)
+    vibration = np.cos(2 * np.pi * (k * x - f * t)) * np.ones(shape)
+    return vibration
+
 
 
 #---------------------------------------------------DEFORMABLE_MIRROR---------------------------------------------------#
@@ -160,7 +163,7 @@ corr_zone_2 = Circle([0,0], control_radius, fc='none', ec='w', ls=':')
 
 #pitch check
 if (2 * DM.pitch) > r_0_src:
-    raise SystemExit(f"ERROR: DM actuator density is insufficient for r_0 {r_0_src} ")
+    raise SystemExit(f"ERROR: DM actuator density is insufficient for r_0 {r_0_src}, dm pitch {DM.pitch} ")
 
 #---------------------------------------------------WFS---------------------------------------------------#
 WFS = None
@@ -172,6 +175,7 @@ if use_pwfs:
                    lightRatio     = LIGHT_RATIO,
                    postProcessing = POST_PROCESS)
     WFS = PWFS
+
 if use_shwfs:
     SHWFS = ShackHartmann(nSubap       = N_SUBAPERTURE,
                           telescope    = TEL,
@@ -201,8 +205,8 @@ if use_zernike:
 if use_KL:
 
     M2C_KL = compute_KL_basis(tel = TEL, atm = ATM, dm = DM)
-    M2C = M2C_KL[:, :300]
-
+    M2C    = M2C_KL[:, :200]
+    modes  = DM.modes @ M2C
 
 #---------------------------------------------------INTERACTION MATRIX---------------------------------------------------#
 
@@ -233,6 +237,8 @@ if use_zonal:
 if use_zernike:
     modes_inv = np.linalg.pinv(np.squeeze(modes))
 
+if use_KL:
+    modes_inv = np.linalg.pinv(np.squeeze(modes[TEL.pupilLogical, :]))
 
 
 #the rest of the code is in the for loop
@@ -295,6 +301,11 @@ sim_fit_error_list           = []
 sim_fit_error_list_2D        = []
 
 
+#vibration implementation
+
+
+
+
 tel_psf_list = []
 
 
@@ -306,11 +317,21 @@ for i in range(nLoop):
     #update phase screen
     ATM.update()
 
-    total_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
+    #temporal vibration injection
+    TEL.OPD[TEL.pupil > 0] = 0 #(TEL.OPD + temp_vib(10, SAMPLING_TIME * i, TEL.OPD.shape[0]) * np.max(TEL.OPD) * 10)[TEL.pupil > 0]
+    ATM.OPD[TEL.pupil > 0] = 0 #(ATM.OPD + temp_vib(10, SAMPLING_TIME * i, ATM.OPD.shape[0]) * np.max(ATM.OPD) * 10)[TEL.pupil > 0]
 
+    total_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
 
     #propagate through AO with the dm commands applied
     SRC * TEL * DM * WFS
+    plt.figure()
+    plt.imshow(ATM.OPD)
+    plt.figure()
+    plt.imshow(TEL.OPD)
+    plt.figure()
+    plt.imshow(WFS.signal_2D)
+    plt.show()
     #propagate to the source with the dm commands applied (old dm commands)
     #the point of this line is that for the wfs propagation you would be using NGS
     SRC * TEL
@@ -368,11 +389,6 @@ for i in range(nLoop):
         residual_OPD_list.append(TEL.OPD)
         sim_fit_error_list_2D.append(fitting_error)
         print("residual_OPD_append")
-
-    if i == (nLoop - 1):
-        final_residual_OPD   = TEL.OPD
-        final_atmosphere_OPD = ATM.OPD
-        final_dm_OPD         = DM.OPD
 
 
     TEL.computePSF(zeroPaddingFactor)
@@ -487,31 +503,19 @@ plt.ylim(bottom = 1e-3)
 plt.legend()
 
 
-#---------------------------------------------------Zernike decomposition---------------------------------------------------#
-if use_zernike:
-
-    atmosphere_phase = 2 * np.pi * final_atmosphere_OPD / SRC.wavelength
-    final_residual_phase = 2 * np.pi * final_residual_OPD / SRC.wavelength
-    Z_coefficient_matrix = modes_inv @ final_residual_phase[np.where(TEL.pupil > 0)]
-    Z_coefficient_matrix_atmosphere = modes_inv @ atmosphere_phase[np.where(TEL.pupil > 0)]
-    zernike_names = []
-    for i in range(len(Z_coefficient_matrix)):
-        zernike_names.append(f"z{i+1}")
-
-
-    plt.figure()
-    plt.bar(zernike_names[:50], Z_coefficient_matrix[:50], color = "red", label = "Zernike coeffs for residual phase")
-    plt.title("Zernike coefficients for corrected phase")
-    plt.bar(zernike_names[:50],Z_coefficient_matrix_atmosphere[:50], color = "black", alpha = 0.4, label = "Zernike coeffs for atmospheric phase")
-    plt.title("Zernike coefficients for atmosphere phase")
-    plt.tight_layout()
-    plt.legend()
-
 
 #---------------------------------------------------PSD---------------------------------------------------#
 #PSD is calculated using a square inside the tel.pupil
-x_square = np.sqrt(TEL.resolution ** 2 / 2)
+x_square = int(np.sqrt(TEL.resolution ** 2 / 2))
 x_square_index = int((TEL.resolution - x_square) / 2 + 1)
+N_length = TEL.resolution - 2 * x_square_index
+
+
+#PSD normalisation factors
+delta_x = TEL.D / TEL.resolution
+delta_f = 1 / (delta_x * N_length)
+f_DM = 1/ (2 * DM.pitch)
+
 
 
 PSD_residual_circavg_list = []
@@ -519,17 +523,17 @@ PSD_residual_circavg_freq = 0
 PSD_residual_freq_x       = 0
 #PSD calculation for residual OPD
 for j in range(len(residual_OPD_list)):
-    #residual_OPD_list[j][TEL.pupil > 0] = (residual_OPD_list[j][TEL.pupil > 0] - np.mean(residual_OPD_list[j][TEL.pupil > 0])) * 1e9
     residual_OPD = residual_OPD_list[j][x_square_index:-x_square_index, x_square_index:-x_square_index]
     residual_OPD = (residual_OPD - np.mean(residual_OPD)) * 1e9
-    PSD_residual = np.abs(fftshift(fft2(residual_OPD))) ** 2 / (x_square ** 4)
+    PSD_residual = np.abs(fftshift(fft2(residual_OPD))) ** 2 * delta_x ** 2 / (x_square ** 2)
     PSD_residual_freq_x = np.fft.fftfreq(PSD_residual.shape[0], d=(TEL.D / TEL.resolution))
     PSD_residual_freq_x = np.max(PSD_residual_freq_x)
     PSD_residual_freq_max = np.max(np.sqrt(2 * (PSD_residual_freq_x) ** 2))
     PSD_residual_freq, PSD_residual_circavg = circular_sum_PSD(np.abs(PSD_residual).shape, np.abs(PSD_residual), PSD_residual_freq_max)
+    PSD_residual_circavg = PSD_residual_circavg * delta_f
     print("\n")
-    #fix the residual error, since it plots every residual error, while the residual_OPD is instead calculated for a high strehl ratio
-    print(f"TEL std {residual_error[ - len(residual_OPD_list) + j]}, TEL std from PSD {np.sqrt(np.sum(PSD_residual_circavg))}")
+    print(f"TEL std {residual_error[ - len(residual_OPD_list) + j]}, TEL std from PSD {np.sqrt(np.sum(PSD_residual) * delta_f ** 2)}, TEL std from PSD {np.sqrt(np.sum(PSD_residual_circavg) * delta_f)}")
+
 
 
     if j == 0:
@@ -544,11 +548,12 @@ PSD_fitting_circavg_freq = 0
 for j in range(len(sim_fit_error_list_2D)):
     fitting_OPD = sim_fit_error_list_2D[j][x_square_index:-x_square_index, x_square_index:-x_square_index]
     fitting_OPD = (fitting_OPD - np.mean(fitting_OPD)) * 1e9
-    PSD_fitting = np.abs(fftshift(fft2(fitting_OPD))) ** 2 / (x_square ** 4)
+    PSD_fitting = np.abs(fftshift(fft2(fitting_OPD))) ** 2 * delta_x ** 2 / (x_square ** 2)
     PSD_fitting_freq_x = np.fft.fftfreq(PSD_fitting.shape[0], d=(TEL.D / TEL.resolution))
     PSD_fitting_freq_x = np.max(PSD_fitting_freq_x)
     PSD_fitting_freq_max = np.max(np.sqrt(2 * (PSD_fitting_freq_x) ** 2))
     PSD_fitting_freq, PSD_fitting_circavg = circular_sum_PSD(np.abs(PSD_fitting).shape, np.abs(PSD_fitting), PSD_fitting_freq_max)
+    PSD_fitting_circavg = PSD_fitting_circavg * delta_f
 
     if j == 0:
         PSD_fitting_circavg_freq = PSD_fitting_freq
@@ -558,20 +563,23 @@ for j in range(len(sim_fit_error_list_2D)):
 
 PSD_atmosphere_circavg_list = []
 PSD_atmosphere_circavg_freq = 0
+ATM_OPD_generated_list = []
 #PSD calculation for the atmosphere
 for i in range(20):
     ATM.generateNewPhaseScreen(seed = i)
     for j in range(100):
         ATM.update()
-        #ATM.OPD[TEL.pupil > 0] = (ATM.OPD[TEL.pupil > 0] - np.mean(ATM.OPD[TEL.pupil > 0])) * 1e9
         atmosphere_OPD = ATM.OPD[x_square_index:-x_square_index, x_square_index:-x_square_index]
         atmosphere_OPD = (atmosphere_OPD - np.mean(atmosphere_OPD)) * 1e9
-        PSD_atmosphere = np.abs(fftshift(fft2(atmosphere_OPD))) ** 2 / (x_square ** 4)
+        PSD_atmosphere = np.abs(fftshift(fft2(atmosphere_OPD))) ** 2 * delta_x ** 2 / (x_square ** 2)
         PSD_atmosphere_freq_x = np.fft.fftfreq(PSD_atmosphere.shape[0], d = (TEL.D / TEL.resolution))
         PSD_atmosphere_freq_x = np.max(PSD_atmosphere_freq_x)
         PSD_atmosphere_freq_max = np.max(np.sqrt(2 * (PSD_atmosphere_freq_x) ** 2))
         PSD_atmosphere_freq, PSD_atmosphere_circavg = circular_sum_PSD(np.abs(PSD_atmosphere).shape, np.abs(PSD_atmosphere), PSD_atmosphere_freq_max)
-        #print(f"ATM std from PSD {np.sqrt(np.sum(PSD_atmosphere_circavg))}")
+        PSD_atmosphere_circavg = PSD_atmosphere_circavg * delta_f
+        ATM_OPD_generated_list.append(ATM.OPD)
+        print("\n")
+        print(f"ATM std {np.std(atmosphere_OPD)}, ATM std from PSD {np.sqrt(np.sum(PSD_atmosphere) * delta_f ** 2)}, ATM std from PSD {np.sqrt(np.sum(PSD_atmosphere_circavg) * delta_f)}")
 
 
 
@@ -583,27 +591,46 @@ PSD_residual_circavg_list  = np.array(PSD_residual_circavg_list)
 PSD_atmosphere_circavg_list = np.array(PSD_atmosphere_circavg_list)
 
 
+#analytical kolmogorov spectrum
+def PSD_von_karman(f):
+    result = 2 * np.pi * f * 0.023 * (1/r_0_src) ** (5/3) * (f ** 2 + L_0 ** (-2)) ** (-11/6) * (SRC.wavelength * 1e9 / (2 * np.pi)) ** 2
+    return result
+
+PSD_kolmogorov = PSD_von_karman(PSD_residual_circavg_freq)
+
+
+
 PSD_residual_statavg = np.mean(PSD_residual_circavg_list, axis = 0)
 PSD_atmosphere_statavg = np.mean(PSD_atmosphere_circavg_list, axis = 0)
 PSD_fitting_statavg = np.mean(PSD_fitting_circavg_list, axis = 0)
-print(f"PSD_residual average error {np.sqrt(np.sum(PSD_residual_statavg))}")
-print(f"PSD_atmosphere average error {np.sqrt(np.sum(PSD_atmosphere_statavg))}")
+print(f"PSD_residual average error {np.sqrt(np.sum(PSD_residual_statavg) * delta_f)}")
+print(f"PSD_atmosphere average error {np.sqrt(np.sum(PSD_atmosphere_statavg) * delta_f)}")
+print(f"PSD_atmosphere analytical error {np.sqrt(np.sum(PSD_kolmogorov) * delta_f)}")
 # 7 or 8 index for fitting error (no padding)
 
-print(f"PSD_residual fitting error 7 {np.sqrt(np.sum(PSD_residual_statavg[7: ]))}")
-print(f"PSD_atmosphere fitting error 7 {np.sqrt(np.sum(PSD_atmosphere_statavg[7: ]))}")
-print(f"PSD_residual fitting error 8 {np.sqrt(np.sum(PSD_residual_statavg[8: ]))} for freq {PSD_residual_circavg_freq[8]}")
-print(f"PSD_atmosphere fitting error 8 {np.sqrt(np.sum(PSD_atmosphere_statavg[8: ]))} for freq {PSD_atmosphere_circavg_freq[8]}")
+
+#fitting error from the PSDs
+print(f"f_DM {f_DM}")
+print(f"PSD_residual fitting {np.sqrt(np.sum(PSD_residual_statavg[PSD_residual_circavg_freq>= f_DM]) * delta_f)}")
+print(f"PSD_atmosphere fitting {np.sqrt(np.sum(PSD_atmosphere_statavg[PSD_atmosphere_circavg_freq >= f_DM]) * delta_f)}")
+print(f"PSD_fitting fitting {np.sqrt(np.sum(PSD_fitting_statavg[PSD_atmosphere_circavg_freq >= f_DM]) * delta_f)}")
+print(f"PSD_atmosphere analytical fitting error 8 {np.sqrt(np.sum(PSD_kolmogorov[PSD_atmosphere_circavg_freq >= f_DM]) * delta_f)}")
 print("\n")
 
-print("length PSD fit", len(PSD_fitting_statavg))
-print("length PSD residual", len(PSD_residual_statavg))
-print("length PSD atmosphere", len(PSD_atmosphere_statavg))
+#44 and 9
+expon_ = np.log(PSD_residual_statavg[9]/PSD_residual_statavg[44])/np.log(PSD_residual_circavg_freq[9]/PSD_residual_circavg_freq[44])
+print(PSD_residual_circavg_freq)
+print(f'residual exponential {expon_}')
+
+
+
+
 plt.figure()
 plt.plot(PSD_residual_circavg_freq, PSD_residual_statavg, label = "PSD_residual_pwfs")
 plt.plot(PSD_atmosphere_circavg_freq, PSD_atmosphere_statavg, label = "atmosphere_PSD")
 plt.plot(PSD_fitting_circavg_freq, PSD_fitting_statavg, label = "fitting_err_PSD")
-plt.axvline(x=6.57, color='red', linestyle='-', linewidth=1.5)
+plt.plot(PSD_residual_circavg_freq, PSD_kolmogorov, label = "atmosphere_PSD_karman")
+plt.axvline(x=f_DM, color='red', linestyle='-', linewidth=1.5)
 plt.title("PSD residual vs atmosphere comparison")
 plt.ylabel("PSD")
 plt.xlabel("spatial frequency m^-1")
@@ -613,17 +640,66 @@ plt.xlim(right = PSD_residual_freq_x)
 plt.ylim(bottom = 1e-2)
 plt.legend()
 
+
+
+
+
+#---------------------------------------------------Zernike/KL decomposition---------------------------------------------------#
+label_str = 0
+if use_zernike:
+    label_str = "Zernike"
+elif use_KL:
+    label_str = "KL"
+
+ATM_OPD_generated_array = np.array(ATM_OPD_generated_list)
+
+coefficient_matrix_atmosphere_list = []
+coefficient_matrix_res_list        = []
+
+if use_zernike or use_KL:
+    for i in range(ATM_OPD_generated_array.shape[0]):
+        atmosphere_phase = 2 * np.pi * ATM_OPD_generated_list[i] / SRC.wavelength
+        coefficient_matrix_atmosphere = modes_inv @ atmosphere_phase[np.where(TEL.pupil > 0)]
+        coefficient_matrix_atmosphere_list.append(coefficient_matrix_atmosphere)
+
+    for i in range(len(residual_OPD_list)):
+        final_residual_phase = 2 * np.pi * residual_OPD_list[i] / SRC.wavelength
+        coefficient_matrix_res = modes_inv @ final_residual_phase[np.where(TEL.pupil > 0)]
+        coefficient_matrix_res_list.append(coefficient_matrix_res)
+
+    zernike_names = []
+    for i in range(len(coefficient_matrix_res_list[0])):
+        zernike_names.append(f"{i+1}")
+
+
+    coefficient_matrix_atmosphere_avg = np.mean(np.array(coefficient_matrix_atmosphere_list), axis = 0)
+    coefficient_matrix_res_avg        = np.mean(np.array(coefficient_matrix_res_list), axis = 0)
+
+
+    plt.figure()
+    plt.bar(zernike_names[:50], coefficient_matrix_res_avg[:50], color = "red", label = f"{label_str} coeffs for residual phase")
+    plt.title(f"{label_str} coefficients for corrected vs atmospher phase")
+    plt.bar(zernike_names[:50],coefficient_matrix_atmosphere_avg[:50], color = "black", alpha = 0.4, label = f"{label_str} coeffs for atmospheric phase")
+    #plt.yscale("log")
+    plt.tight_layout()
+    plt.legend()
+
+
+
+
+
 #---------------------------------------------------Error transfer function---------------------------------------------------#
-ETF = PSD_residual_statavg/PSD_atmosphere_statavg
+ETF = PSD_residual_statavg/PSD_kolmogorov
 
 plt.figure()
 plt.plot(PSD_residual_circavg_freq, ETF)
-plt.axvline(x=6.57, color='red', linestyle='-', linewidth=1.5)
+plt.axvline(x=f_DM, color='red', linestyle='-', linewidth=1.5)
 plt.title("Error transfer function")
 plt.ylabel("ETF")
 plt.xlabel("spatial frequency m^-1")
 plt.xscale("log")
 plt.yscale("log")
+plt.xlim(right = PSD_residual_freq_x)
 #plt.ylim(bottom = 1e-2)
 plt.legend()
 
