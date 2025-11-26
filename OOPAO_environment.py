@@ -285,6 +285,9 @@ class OOPAO_environment(gym.Env):
     def step(self, action):
         self.TIME += 1
 
+        total_error = np.std(self.TEL.OPD[np.where(self.TEL.pupil > 0)]) * 1e9
+
+
         action_tensor = torch.tensor(action, dtype = torch.float32, device = self.device)
         self.ACTION_DELAY_LIST.pop(0)
         self.ACTION_DELAY_LIST.append(action_tensor)
@@ -312,6 +315,7 @@ class OOPAO_environment(gym.Env):
 
 
         STREHL = np.exp(-np.var(self.TEL.src.phase[np.where(self.TEL.pupil == 1)]))
+        residual_error = np.std(self.TEL.OPD[np.where(self.TEL.pupil > 0)]) * 1e9
         self.SR.append(STREHL)
 
         self.CURRENT_STEPS += 1
@@ -319,7 +323,11 @@ class OOPAO_environment(gym.Env):
         TERMINATED = 0
         TRUNCATED = self.CURRENT_STEPS >= self.nLOOP
         # change to "tt_modes" and then change it in RL_model_test too
-        INFO = {"tt_modes": tt_modes_residual.cpu().numpy(), "strehl": STREHL}
+        self.TEL.computePSF(self.zeroPaddingFactor)
+        INFO = {"tt_modes": tt_modes_residual.cpu().numpy(), "strehl": STREHL,
+                "residual_err": residual_error, "total_err": total_error,
+                "TEL_PSF": self.TEL.PSF, "TEL_OPD": self.TEL.OPD, "fit_err": fitting_error,
+                "temp_err": atm_OPD_2_frame, }
 
         if TRUNCATED:
             self.CURRENT_STEPS = 0
