@@ -27,3 +27,7 @@ w = 3
 
 
 
+x = torch.tensor([1, 2, 3, 4])
+y = torch.tensor([1, 2, 3, 4])
+print(x.unsqueeze(0).shape)
+print(x.unsqueeze(1).shape)

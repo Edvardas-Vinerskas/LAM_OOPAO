@@ -4,7 +4,89 @@
     * I think you can just run the zernike loop multiple times so that it improves the same
     * for now the sampling is implemented manually
 
+* do your own interaction matrix from the zernike image which is somewhere in the file
 
+
+•	Need to compare more
+o	Inference time
+o	Phase reconstruction
+o	How is the model trained
+o	We train the model both in simulations and test it on sky successfully
+o	How is the Zernike WFS signal calculated? Just direct phase reconstruction from what I understand. Is there any loss of information on this front?
+o	You should do the phase reconstruction in OOPAO?
+	Currently I am using the linear interaction matrix matrix reconstruction
+	You can do the arcsin reconstruction in Vincent or Doelman paper
+	Further you may just trust the reinforcement learning algorithm
+	And of course compare all of them
+
+
+* fix delay for this 2 stage system
+* you have access to the residual zernike phase via the
+* plot the bar graph of the DM controle coefficients for a better understanding of normalisation
+
+* the std limit of the phase rms getting into zernike is about 75 nm for a wvl of 790
+    * so when training the RL zwfs on phase or whatever you can
+        * either input the phase with the appropriate rms
+        * or just do it from the pyramid (you should do this because it is more representative)
+
+#truncate your interaction matrices 1/10-1/30 of max value (but also check that you do not remove important modes)
+* for the zernike 500 Hz peak try plotting higher order KL modes and see if they retain the peak
+* go through all of the performance metric functions and check whether they behave as expected
+    * for example, for KL modes, you are decomposing the spatial 2D image into KL mode coefficients and then do the variance over time of them
+    * whereas for the temporal PSD you are taking the FFT of the timeseries of the modes instead of variance, which then tells you the temporal frequencies
+    * seems to be working as intended
+* what is the best way to turn on the zernike wavefront sensor?
+* in RL the rewards need to be potentially delayed
+* for the fitting error you should now have 2 bumps as you have 2 different cut-off frequencies
+* in your training code, implement checks for sufficient pixel density for r_0 and whatever else
+    * i.e. don't do it inside the environment class
+
+So the RL network in fact needs to know the values of the atmospheric phase screen in order to compensate for it
+    * zernike wfs sees the residual from the pyramid
+    * so using zwfs.signal + dm_zer.coefs you can reconstruct the pwfs residual
+    * then you also need the pwfs residual and the dm_pyr to reconstruct the full phase
+    * we are trying to predict the next phase screen in order to precompensate for it
+    * for now I guess I just input the zwfs and dm_zer but for future you should probably think about this more
+
+* implement the arcsin zernike reconstruction
+* don't forget that the network input should be between -1 and 1 for various reasons (normalisation and paper reading)
+* and of course for now you have only a single dynamics model but should have multiple in the future
+
+* for the DM actuator thing, they simulate a square DM with NxN actuators, they then apply a mask to get to the valid actuator number
+* where do I apply the scaling of the CNN output when doing the DM commands?
+* how to mitigate the problem that some actuators are not observed by the wfs?
+    * is this solved via the reprojection or something?
+
+Reward acquisition problem:
+    * the zwfs measurement is the independent measurement from which we can extract the reward.
+    * but then you have to use an independent reconstruction algorithm to convert zwfs measurement to DM controls
+        * and yet the whole point is that we have RL to control the DM
+    * Jalo is using the predicted state to calculate the reward which is independent of the policy
+
+*SO IN THE END THE MAIN ADVANTAGE IS THAT THE CONTROLLER FORMULATION IS MUCH MORE COMPLICATED COMPARED TO LINEAR INTEGRATOR CONTROL
+* going straight from pixel is thus another potential advantage
+
+* in the OOPAO environment, the reward is calculated by the frobenius norm and normalised by number of tt modes
+* why would you divide by the number of tt modes? stability?
+* seems like jalo does not divide, but in the paper it is expected value?
+* the expected value is because he averages over a few dynamics models
+* calculate the KL mode information for later in the step function ETFs and so on
+* you might need to .copy() arrays if you don't want their values to magically change
+* how is the action applied to control if it is a change in voltage and not the total voltage?
+* don't forget to reproject your policy output through KL modes
+* the reward of course acts as an implicit loss function so that is what you use to do backpropagation
+
+* does Jalo use some kind of validation for the dynamics model? seems like not
+* why in the train_policy function, the loss is calculated as the square of the next state (reward) PLUS some contribution from the action itself?
+* as seen from this example (dm[:] = (prev_commands * leak) + (action)), the action is added to the prev_commands
+
+* again recheck whether n_history is declared as 15 or 30 (seems that everything is correct when using 15?)
+* so the main advantage of the model based thing is that you can train the policy on it
+    * and it predicts states for reward calculation
+
+* FOR THE MEETING AT LEAST DO THE SIN RECONSTRUCTION OR SMTH
+* I can just load in the policy here no?
+* fix zernike delay implementation
 """
 
 
@@ -12,6 +94,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import SymLogNorm
 from matplotlib.patches import Circle
 import numpy as np
+from scipy import signal
 from numpy.fft import fftshift, fft, fft2, fftfreq, rfft, rfftfreq #need to shift just because of formatting
 
 import OOPAO
@@ -21,24 +104,26 @@ from OOPAO.DeformableMirror import DeformableMirror
 from OOPAO.Atmosphere import Atmosphere
 from OOPAO.Pyramid import Pyramid
 from OOPAO.ZWFS import ZWFS
+from OOPAO.ZWFS2 import ZWFS2
 from OOPAO.ShackHartmann import ShackHartmann
 from OOPAO.calibration.InteractionMatrix import InteractionMatrix
+from OOPAO.calibration.CalibrationVault import CalibrationVault
 from OOPAO.calibration.compute_KL_modal_basis import compute_KL_basis
 from OOPAO.Zernike import Zernike
 from OOPAO.Detector import Detector
 
 from functions import *
 
-
+#NOW DOING WITHOUT ZERNIKE FOR COMPARISON
 #---------------------------------------------------GLOBALS---------------------------------------------------#
 #define all OOPAO variables
 
 N_SUBAPERTURE_pyr   = 20
-N_SUBAPERTURE_zer   = 9
+N_SUBAPERTURE_zer   = 9 #3.2 spatial cut off frequency
 DIAMETER            = 1.52
 CENTRAL_OBSTRUCTION = 0 #0.15
 RESOLUTION          = N_SUBAPERTURE_pyr * 8
-FREQUENCY           = 1500
+FREQUENCY           = 1500 #pyramid is running at 500
 SAMPLING_TIME       = 1/FREQUENCY
 FOV                 = 10
 MECHANICAL_COUPLING = 0.35
@@ -51,7 +136,7 @@ WIND_SPEED          = [10, 20, 60] #[10, 20, 60]
 WIND_DIRECTION      = [0, 100, 160] #[0, 100, 160]
 FRACTIONAL_C_N2     = [0.6, 0.3, 0.1] #[0.5, 0.3, 0.2]
 ALTITUDE            = [0, 4500, 10000] #[0, 4500, 10000]
-Z_coefs             = 200 #200 #above 200 does not work great per Benoit
+Z_coefs             = 250 #200 #above 200 does not work great per Benoit
 
 
 
@@ -102,7 +187,7 @@ OTF_dl = fftshift(fft2(fftshift(TEL.PSF / np.sum(TEL.PSF))))
 x_axis, OTF_dl_averaged = circular_average((np.abs(OTF_dl)).shape, np.abs(OTF_dl))
 
 #---------------------------------------------------ATMOSPHERE---------------------------------------------------#
-ATM = Atmosphere(telescope    = TEL,
+ATM = Atmosphere(telescope           = TEL,
                         r0           = r_0,
                         L0           = L_0,
                         windSpeed    = WIND_SPEED,
@@ -131,12 +216,24 @@ DM_zer = DeformableMirror(telescope    = TEL,
                       nSubap       = N_SUBAPERTURE_zer,
                       mechCoupling = MECHANICAL_COUPLING)
 
+#this is our DM mask that should be used inside the models?
+#flatten the 2D DM output from the model (the model output should be 2D and all flattening should take place outside)
+#apply the mask
+#input the command into your OOPAO environment
+print(np.reshape(DM_zer.validAct, (10, 10)))
+mask = np.reshape(DM_zer.validAct, (10, 10))
+dm_x, dm_y = np.where(mask)
+print(mask)
+print(np.ones((10, 10))[mask].shape)
+
 
 #control radius calculation for dm
 control_radius_1 = ((N_SUBAPERTURE_pyr + 1) * SRC.wavelength) /(2 * TEL.D) * rad2arcsec
 control_radius_2 = ((N_SUBAPERTURE_zer + 1) * SRC.wavelength) /(2 * TEL.D) * rad2arcsec
 corr_zone_1 = Circle([0,0], control_radius_1, fc='none', ec='w', ls=':')
-corr_zone_2 = Circle([0,0], control_radius_2, fc='none', ec='w', ls=':')
+corr_zone_2 = Circle([0,0], control_radius_2, fc='none', ec='r', ls=':')
+corr_zone_1_LE = Circle([0,0], control_radius_1, fc='none', ec='w', ls=':')
+corr_zone_2_LE = Circle([0,0], control_radius_2, fc='none', ec='r', ls=':')
 
 #pitch check
 if (2 * DM_pyr.pitch) > r_0_src:
@@ -150,8 +247,8 @@ PWFS = Pyramid(nSubap         = N_SUBAPERTURE_pyr,
                    postProcessing = POST_PROCESS)
 
 
-zernike_WFS = ZWFS(tel = TEL, zpf = 8)
-zernike_WFS.cam = Detector(round(N_SUBAPERTURE_zer*zeroPaddingFactor))
+#zernike_WFS = ZWFS(tel = TEL, zpf = 8) # zpf is the diameter/resolution of the zernike mask in the fourier plane
+vZWFS = ZWFS2(tel = TEL, zpf = 8, diameter = 1.06)
 
 
 
@@ -188,11 +285,11 @@ if use_zernike:
 if use_KL:
 
     M2C_KL_pyr = compute_KL_basis(tel = TEL, atm = ATM, dm = DM_pyr)
-    M2C_pyr    = M2C_KL_pyr[:, :200]
+    M2C_pyr    = M2C_KL_pyr[:, :250]
     modes_pyr  = DM_pyr.modes @ M2C_pyr
 
-    M2C_KL_zer = compute_KL_basis(tel=TEL, atm=ATM, dm=DM_zer)
-    M2C_zer = M2C_KL_zer[:, :200]
+    M2C_KL_zer = compute_KL_basis(tel=TEL, atm=ATM, dm = DM_zer)
+    M2C_zer = M2C_KL_zer[:, :250]
     modes_zer = DM_zer.modes @ M2C_zer
 
 #---------------------------------------------------INTERACTION MATRIX---------------------------------------------------#
@@ -206,20 +303,51 @@ CALIB_pyr = InteractionMatrix(ngs        = SRC,
                           wfs            = PWFS,
                           M2C            = M2C_pyr,
                           atm            = ATM,
-                          nMeasurements  = 5,
-                          stroke         = stroke,
-                          noise          = "off")
-
-
-CALIB_zer = InteractionMatrix(ngs        = SRC,
-                          tel            = TEL,
-                          dm             = DM_zer,
-                          wfs            = zernike_WFS,
-                          M2C            = M2C_zer,
-                          atm            = ATM,
                           nMeasurements  = 1,
                           stroke         = stroke,
                           noise          = "off")
+
+
+#calibration for zernike (there are better methods out there for calibration under real conditions but this will suffice for now)
+TEL - ATM
+CALIB_zer = np.zeros((vZWFS.signal.shape[0], M2C_zer.shape[1]))
+
+
+#zernike_wfs calibration with DM_zer
+for i in range(M2C_zer.shape[1]):
+    v_plus = M2C_zer[:, i] * stroke
+    v_minus = -M2C_zer[:, i] * stroke
+
+
+    TEL.resetOPD()
+    DM_zer.coefs = v_plus
+    SRC * TEL * DM_zer * vZWFS
+    w_plus = vZWFS.signal
+
+
+    TEL.resetOPD()
+    DM_zer.coefs = v_minus
+    SRC * TEL * DM_zer * vZWFS
+    w_minus = vZWFS.signal
+
+
+    CALIB_zer[:, i] = (w_plus - w_minus) / (2 * stroke)
+
+
+
+#zernike_wfs phase reconstruction via sin function (the b value that is needed currently escapes me
+"""for i in range(M2C_zer.shape[1]):
+    # the self.zwfs1 is phase shifted -np.pi/2 LEFT HANDED
+    # the self.zwfs2 is phase shifted np.pi/2 RIGHT HANDED
+    I_delta = vZWFS.zwfs2.img_ZWFS - vZWFS.zwfs1.img_ZWFS
+
+    phi = np.arcsin(I_delta / (2 * b_0))"""
+
+
+
+# takes in modes and outputs wfs signal
+#FOR NOW YOU ARE NOT TRUNCATING ANY EIGENVALUES? CHANGE THIS IN THE FUTURE
+CALIB_zer_obj = CalibrationVault(CALIB_zer)
 
 
 #---------------------------------------------------FITTING ERROR CALC---------------------------------------------------#
@@ -259,19 +387,21 @@ TEL.resetOPD()
 DM_pyr.coefs = 0
 DM_zer.coefs = 0
 TEL + ATM
-SRC * TEL * DM_pyr * PWFS * DM_zer * zernike_WFS
+SRC * TEL * DM_pyr * PWFS * DM_zer * vZWFS
 TEL.print_optical_path()
 
 #delay implementation
-frame_delay         = 2
-delay               = frame_delay - 1 #frame delay of 1 is already built-in
-if frame_delay >= 2:
-    wfssignal_buffer = [np.zeros(PWFS.nSignal) for i in range(delay)]
+pwfs_frame_delay         = 2
+pwfs_delay               = pwfs_frame_delay - 1 #frame delay of 1 is already built-in
+if pwfs_frame_delay >= 2:
+    pwfssignal_buffer = [np.zeros(PWFS.nSignal) for i in range(pwfs_delay)]
+    vzwfssignal_buffer= [np.zeros(vZWFS.nSignal) for i in range(pwfs_delay)]
 else:
-    wfssignal_buffer = []
+    pwfssignal_buffer = []
+    vzwfssignal_buffer =[]
 
 #variables and performance metric initialisation
-nLoop                        = 1000
+nLoop                        = 500
 sr                           = np.zeros(nLoop)
 sr_running                   = np.zeros(nLoop)
 total_error                  = np.zeros(nLoop)
@@ -295,7 +425,7 @@ sim_fit_error_list_2D        = []
 
 
 #vibration implementation
-
+atm_OPD_temp_list = []
 
 
 
@@ -305,32 +435,44 @@ tel_psf_list = []
 CL_gain_pyr = 0.4
 CL_gain_zer = 0.4
 
-reconstructor_pyr = M2C_pyr @ CALIB_pyr.M
-reconstructor_zer = M2C_zer @ CALIB_zer.M
-
+reconstructor_pyr = M2C_pyr @ CALIB_pyr.M #takes in slopes and outputs modes, then takes in modes and outputs controle shape(357, 664)
+reconstructor_zer = M2C_zer @ CALIB_zer_obj.M #takes in wfs signal and outputs control
+ATM.generateNewPhaseScreen(seed = 10)
 for i in range(nLoop):
     #update phase screen
     ATM.update()
+    atm_opd = ATM.OPD
+    atm_OPD_temp_list.append(atm_opd)
 
     total_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
 
     #propagate through AO with the dm commands applied
-    SRC * TEL * DM_pyr * PWFS * DM_zer * zernike_WFS
+    SRC * TEL * DM_pyr * PWFS
+    TEL * DM_zer * vZWFS
     #propagate to the source with the dm commands applied (old dm commands)
     #the point of this line is that for the wfs propagation you would be using NGS
     SRC * TEL
 
 
-    #frame delay implementation
-    wfssignal_buffer.append(PWFS.signal)
-    pwfs_delayed_signal = wfssignal_buffer[0]
-    wfssignal_buffer.pop(0)
-
 
     #update the dm commands
     if i % 3 == 0:
-        DM_pyr.coefs = DM_pyr.coefs - CL_gain_pyr * np.matmul(reconstructor_pyr, PWFS.signal)
-    DM_zer.coefs = DM_zer.coefs - CL_gain_zer * np.matmul(reconstructor_zer, zernike_WFS.signal)
+        #frame delay implementation
+        pwfssignal_buffer.append(PWFS.signal)
+        pwfs_delayed_signal = pwfssignal_buffer[0]
+        pwfssignal_buffer.pop(0)
+
+        DM_pyr.coefs = DM_pyr.coefs - CL_gain_pyr * np.matmul(reconstructor_pyr, pwfs_delayed_signal)
+        DM_pyr_copy = DM_pyr.coefs.copy()
+
+    # frame delay implementation
+    vzwfssignal_buffer.append(vZWFS.signal)
+    vzwfs_delayed_signal = vzwfssignal_buffer[0]
+    vzwfssignal_buffer.pop(0)
+    DM_zer.coefs = DM_zer.coefs - CL_gain_zer * np.matmul(reconstructor_zer, vZWFS.signal)
+    DM_zer_copy = DM_zer.coefs.copy()
+
+
 
 
 
@@ -345,9 +487,9 @@ for i in range(nLoop):
     residual_OPD_list.append(TEL.OPD)
     print("residual_OPD_append")
 
-
-    TEL.computePSF(zeroPaddingFactor)
-    tel_psf_list.append(TEL.PSF)
+    if sr[i] > 0.5:
+        TEL.computePSF(zeroPaddingFactor)
+        tel_psf_list.append(TEL.PSF)
 
 
 
@@ -402,6 +544,7 @@ AO_PSF = AO_PSF/np.sum(AO_PSF)
 plt.imshow(AO_PSF, norm = SymLogNorm(1e-6), extent = [-fov/2, fov/2, -fov/2, fov/2])
 plt.title("AO corrected PSF")
 plt.gca().add_artist(corr_zone_1)
+plt.gca().add_artist(corr_zone_2)
 plt.xlabel("arcsec")
 plt.ylabel("arcsec")
 plt.colorbar()
@@ -413,10 +556,362 @@ AO_PSF_LE = AO_PSF_LE / np.sum(AO_PSF_LE)
 plt.figure()
 plt.imshow(AO_PSF_LE, norm = SymLogNorm(1e-6), extent = [-fov/2, fov/2, -fov/2, fov/2])
 plt.title("AO corrected PSF LE")
-plt.gca().add_artist(corr_zone_2)
+plt.gca().add_artist(corr_zone_1_LE)
+plt.gca().add_artist(corr_zone_2_LE)
 plt.xlabel("arcsec")
 plt.ylabel("arcsec")
 plt.colorbar()
+
+
+
+#---------------------------------------------------Spatial PSD---------------------------------------------------#
+#PSD is calculated using a square inside the tel.pupil
+x_square = int(np.sqrt(TEL.resolution ** 2 / 2))
+x_square_index = int((TEL.resolution - x_square) / 2 + 1)
+N_length = TEL.resolution - 2 * x_square_index
+
+
+#PSD normalisation factors
+delta_x = TEL.D / TEL.resolution
+delta_f = 1 / (delta_x * N_length)
+f_DM = 1/ (2 * DM_pyr.pitch)
+
+
+
+PSD_residual_circavg_list = []
+PSD_residual_circavg_freq = 0
+PSD_residual_freq_x       = 0
+#PSD calculation for residual OPD
+for j in range(len(residual_OPD_list)):
+    residual_OPD = residual_OPD_list[j][x_square_index:-x_square_index, x_square_index:-x_square_index]
+    residual_OPD = (residual_OPD - np.mean(residual_OPD)) * 1e9
+    PSD_residual = np.abs(fftshift(fft2(residual_OPD))) ** 2 * delta_x ** 2 / (x_square ** 2)
+    PSD_residual_freq_x = np.fft.fftfreq(PSD_residual.shape[0], d=(TEL.D / TEL.resolution))
+    PSD_residual_freq_x = np.max(PSD_residual_freq_x)
+    PSD_residual_freq_max = np.max(np.sqrt(2 * (PSD_residual_freq_x) ** 2))
+    PSD_residual_freq, PSD_residual_circavg = circular_sum_PSD(np.abs(PSD_residual).shape, np.abs(PSD_residual), PSD_residual_freq_max)
+    PSD_residual_circavg = PSD_residual_circavg * delta_f
+    print("\n")
+    print(f"TEL std {residual_error[ - len(residual_OPD_list) + j]}, TEL std from PSD {np.sqrt(np.sum(PSD_residual) * delta_f ** 2)}, TEL std from PSD {np.sqrt(np.sum(PSD_residual_circavg) * delta_f)}")
+
+
+
+    if j == 0:
+        PSD_residual_circavg_freq = PSD_residual_freq
+
+    PSD_residual_circavg_list.append(PSD_residual_circavg)
+
+
+"""PSD_fitting_circavg_list = []
+PSD_fitting_circavg_freq = 0
+#PSD calculation for fitting error
+for j in range(len(sim_fit_error_list_2D)):
+    fitting_OPD = sim_fit_error_list_2D[j][x_square_index:-x_square_index, x_square_index:-x_square_index]
+    fitting_OPD = (fitting_OPD - np.mean(fitting_OPD)) * 1e9
+    PSD_fitting = np.abs(fftshift(fft2(fitting_OPD))) ** 2 * delta_x ** 2 / (x_square ** 2)
+    PSD_fitting_freq_x = np.fft.fftfreq(PSD_fitting.shape[0], d=(TEL.D / TEL.resolution))
+    PSD_fitting_freq_x = np.max(PSD_fitting_freq_x)
+    PSD_fitting_freq_max = np.max(np.sqrt(2 * (PSD_fitting_freq_x) ** 2))
+    PSD_fitting_freq, PSD_fitting_circavg = circular_sum_PSD(np.abs(PSD_fitting).shape, np.abs(PSD_fitting), PSD_fitting_freq_max)
+    PSD_fitting_circavg = PSD_fitting_circavg * delta_f
+
+    if j == 0:
+        PSD_fitting_circavg_freq = PSD_fitting_freq
+
+    PSD_fitting_circavg_list.append(PSD_fitting_circavg)"""
+
+
+PSD_atmosphere_circavg_list = []
+PSD_atmosphere_circavg_freq = 0
+ATM_OPD_generated_list = []
+#PSD calculation for the atmosphere
+for i in range(20):
+    ATM.generateNewPhaseScreen(seed = i)
+    for j in range(int(nLoop / 20)):
+        ATM.update()
+        atmosphere_OPD = ATM.OPD[x_square_index:-x_square_index, x_square_index:-x_square_index]
+        atmosphere_OPD = (atmosphere_OPD - np.mean(atmosphere_OPD)) * 1e9
+        PSD_atmosphere = np.abs(fftshift(fft2(atmosphere_OPD))) ** 2 * delta_x ** 2 / (x_square ** 2)
+        PSD_atmosphere_freq_x = np.fft.fftfreq(PSD_atmosphere.shape[0], d = (TEL.D / TEL.resolution))
+        PSD_atmosphere_freq_x = np.max(PSD_atmosphere_freq_x)
+        PSD_atmosphere_freq_max = np.max(np.sqrt(2 * (PSD_atmosphere_freq_x) ** 2))
+        PSD_atmosphere_freq, PSD_atmosphere_circavg = circular_sum_PSD(np.abs(PSD_atmosphere).shape, np.abs(PSD_atmosphere), PSD_atmosphere_freq_max)
+        PSD_atmosphere_circavg = PSD_atmosphere_circavg * delta_f
+        ATM_OPD_generated_list.append(ATM.OPD)
+        print("\n")
+        print(f"ATM std {np.std(atmosphere_OPD)}, ATM std from PSD {np.sqrt(np.sum(PSD_atmosphere) * delta_f ** 2)}, ATM std from PSD {np.sqrt(np.sum(PSD_atmosphere_circavg) * delta_f)}")
+
+
+
+        PSD_atmosphere_circavg_list.append(PSD_atmosphere_circavg)
+        if i == 0:
+            PSD_atmosphere_circavg_freq = PSD_atmosphere_freq
+
+PSD_residual_circavg_list  = np.array(PSD_residual_circavg_list)
+PSD_atmosphere_circavg_list = np.array(PSD_atmosphere_circavg_list)
+
+
+#analytical kolmogorov spectrum
+def PSD_von_karman(f):
+    result = 2 * np.pi * f * 0.023 * (1/r_0_src) ** (5/3) * (f ** 2 + L_0 ** (-2)) ** (-11/6) * (SRC.wavelength * 1e9 / (2 * np.pi)) ** 2
+    return result
+
+PSD_kolmogorov = PSD_von_karman(PSD_residual_circavg_freq)
+
+
+
+PSD_residual_statavg = np.mean(PSD_residual_circavg_list, axis = 0)
+PSD_atmosphere_statavg = np.mean(PSD_atmosphere_circavg_list, axis = 0)
+#PSD_fitting_statavg = np.mean(PSD_fitting_circavg_list, axis = 0)
+print(f"PSD_residual average error {np.sqrt(np.sum(PSD_residual_statavg) * delta_f)}")
+print(f"PSD_atmosphere average error {np.sqrt(np.sum(PSD_atmosphere_statavg) * delta_f)}")
+print(f"PSD_atmosphere analytical error {np.sqrt(np.sum(PSD_kolmogorov) * delta_f)}")
+
+
+#fitting error from the PSDs
+print(f"f_DM {f_DM}")
+print(f"PSD_residual fitting {np.sqrt(np.sum(PSD_residual_statavg[PSD_residual_circavg_freq>= f_DM]) * delta_f)}")
+print(f"PSD_atmosphere fitting {np.sqrt(np.sum(PSD_atmosphere_statavg[PSD_atmosphere_circavg_freq >= f_DM]) * delta_f)}")
+#print(f"PSD_fitting fitting {np.sqrt(np.sum(PSD_fitting_statavg[PSD_atmosphere_circavg_freq >= f_DM]) * delta_f)}")
+print(f"PSD_atmosphere analytical fitting error {np.sqrt(np.sum(PSD_kolmogorov[PSD_atmosphere_circavg_freq >= f_DM]) * delta_f)}")
+print("\n")
+
+#44 and 9
+expon_ = np.log(PSD_residual_statavg[9]/PSD_residual_statavg[44])/np.log(PSD_residual_circavg_freq[9]/PSD_residual_circavg_freq[44])
+print(f'residual exponential {expon_}')
+
+
+
+
+plt.figure()
+plt.plot(PSD_residual_circavg_freq, PSD_residual_statavg, label = "PSD_residual_pwfs")
+plt.plot(PSD_atmosphere_circavg_freq, PSD_atmosphere_statavg, label = "atmosphere_PSD")
+#plt.plot(PSD_fitting_circavg_freq, PSD_fitting_statavg, label = "fitting_err_PSD")
+plt.plot(PSD_residual_circavg_freq, PSD_kolmogorov, label = "atmosphere_PSD_karman")
+plt.axvline(x=f_DM, color='red', linestyle='-', linewidth=1.5)
+plt.title("PSD residual vs atmosphere comparison")
+plt.ylabel("PSD")
+plt.xlabel("spatial frequency m^-1")
+plt.xscale("log")
+plt.yscale("log")
+plt.xlim(right = PSD_residual_freq_x)
+plt.ylim(bottom = 1e-2)
+plt.legend()
+
+
+
+#---------------------------------------------------Zernike/KL decomposition---------------------------------------------------#
+label_str = 0
+if use_zernike:
+    label_str = "Zernike"
+elif use_KL:
+    label_str = "KL"
+
+ATM_OPD_generated_array = np.array(ATM_OPD_generated_list)
+
+coefficient_matrix_atmosphere_list = []
+coefficient_matrix_res_list        = []
+
+if use_zernike or use_KL:
+    for i in range(ATM_OPD_generated_array.shape[0]):
+        atmosphere_phase = 2 * np.pi * ATM_OPD_generated_list[i] / SRC.wavelength
+        coefficient_matrix_atmosphere = modes_inv @ atmosphere_phase[np.where(TEL.pupil > 0)]
+        coefficient_matrix_atmosphere_list.append(coefficient_matrix_atmosphere)
+
+    for i in range(len(residual_OPD_list)):
+        final_residual_phase = 2 * np.pi * residual_OPD_list[i] / SRC.wavelength
+        coefficient_matrix_res = modes_inv @ final_residual_phase[np.where(TEL.pupil > 0)]
+        coefficient_matrix_res_list.append(coefficient_matrix_res)
+
+    zernike_names = []
+    for i in range(len(coefficient_matrix_res_list[0])):
+        zernike_names.append(f"{i+1}")
+
+
+    coefficient_matrix_atmosphere_var = np.var(np.array(coefficient_matrix_atmosphere_list), axis = 0)
+    coefficient_matrix_res_var        = np.var(np.array(coefficient_matrix_res_list), axis = 0)
+
+
+    plt.figure()
+    plt.bar(zernike_names, coefficient_matrix_res_var, color = "red", label = f"{label_str} coeffs for residual phase")
+    plt.title(f"{label_str} coefficients for corrected vs atmospher phase")
+    plt.bar(zernike_names, coefficient_matrix_atmosphere_var, color = "black", alpha = 0.4, label = f"{label_str} coeffs for atmospheric phase")
+    plt.yscale("log")
+    plt.tight_layout()
+    plt.legend()
+
+
+
+#---------------------------------------------------Temporal PSD---------------------------------------------------#
+#temporal PSD calculation from the std
+delta_t = SAMPLING_TIME
+f_samp = 1 / delta_t
+
+
+def welch_method_scipy(data, fs=f_samp, nperseg=256):
+    frequencies, psd = signal.welch(
+        data,
+        fs=fs,
+        window='hann',  # Hanning window
+        nperseg=nperseg,
+        scaling='density'
+    )
+    return frequencies, psd
+
+
+
+
+
+coefficient_matrix_res_list = np.array(coefficient_matrix_res_list)
+residual_tip_curve = coefficient_matrix_res_list[:, 0]
+residual_tilt_curve = coefficient_matrix_res_list[:, 1]
+residual_defocus_curve = coefficient_matrix_res_list[:, 2]
+residual_100_curve = coefficient_matrix_res_list[:, 100]
+residual_200_curve = coefficient_matrix_res_list[:, 200]
+
+
+temp_atm_coef_list = []
+for i in range(len(atm_OPD_temp_list)):
+    atmosphere_phase = 2 * np.pi * atm_OPD_temp_list[i] / SRC.wavelength
+    coefficient_matrix_atmosphere = modes_inv @ atmosphere_phase[np.where(TEL.pupil > 0)]
+    temp_atm_coef_list.append(coefficient_matrix_atmosphere)
+
+
+temp_atm_coef_array = np.array(temp_atm_coef_list)
+atm_tip_curve = temp_atm_coef_array[:, 0]
+atm_tilt_curve = temp_atm_coef_array[:, 1]
+atm_defocus_curve = temp_atm_coef_array[:, 2]
+atm_100_curve = temp_atm_coef_array[:, 100]
+atm_200_curve = temp_atm_coef_array[:, 200]
+
+
+#I am not sure about the normalisation (it just works)
+#tip
+PSD_residual_tip_freq_t, PSD_residual_tip = welch_method_scipy(residual_tip_curve)
+#PSD_residual_tip = np.abs(np.fft.rfft(residual_tip_curve)) ** 2 * delta_t * 2/ (len(residual_tip_curve))
+#PSD_residual_tip_freq_t = np.fft.rfftfreq(len(residual_tip_curve), d=delta_t)
+
+PSD_atm_tip_freq_t, PSD_atm_tip = welch_method_scipy(atm_tip_curve)
+#PSD_atm_tip = np.abs(np.fft.rfft(atm_tip_curve)) ** 2 * delta_t * 2/ (len(atm_tip_curve))
+#PSD_atm_tip_freq_t = np.fft.rfftfreq(len(atm_tip_curve), d=delta_t)
+
+#tilt
+PSD_residual_tilt_freq_t, PSD_residual_tilt = welch_method_scipy(residual_tilt_curve)
+#PSD_residual_tilt = np.abs(np.fft.rfft(residual_tilt_curve)) ** 2 * delta_t * 2/ (len(residual_tilt_curve))
+#PSD_residual_tilt_freq_t = np.fft.rfftfreq(len(residual_tilt_curve), d=delta_t)
+
+PSD_atm_tilt_freq_t, PSD_atm_tilt = welch_method_scipy(atm_tilt_curve)
+#PSD_atm_tilt = np.abs(np.fft.rfft(atm_tilt_curve)) ** 2 * delta_t * 2/ (len(atm_tilt_curve))
+#PSD_atm_tilt_freq_t = np.fft.rfftfreq(len(atm_tilt_curve), d=delta_t)
+
+#defocus
+PSD_residual_defocus_freq_t, PSD_residual_defocus = welch_method_scipy(residual_defocus_curve)
+#PSD_residual_defocus = np.abs(np.fft.rfft(residual_defocus_curve)) ** 2 * delta_t * 2/ (len(residual_defocus_curve))
+#PSD_residual_defocus_freq_t = np.fft.rfftfreq(len(residual_defocus_curve), d=delta_t)
+
+PSD_atm_defocus_freq_t, PSD_atm_defocus = welch_method_scipy(atm_defocus_curve)
+#PSD_atm_defocus = np.abs(np.fft.rfft(atm_defocus_curve)) ** 2 * delta_t * 2/ (len(atm_defocus_curve))
+#PSD_atm_defocus_freq_t = np.fft.rfftfreq(len(atm_defocus_curve), d=delta_t)
+
+#modes 100 and 200
+PSD_residual_100_freq_t, PSD_residual_100 = welch_method_scipy(residual_100_curve)
+PSD_residual_200_freq_t, PSD_residual_200 = welch_method_scipy(residual_200_curve)
+
+PSD_atm_100_freq_t, PSD_atm_100 = welch_method_scipy(atm_100_curve)
+PSD_atm_200_freq_t, PSD_atm_200 = welch_method_scipy(atm_200_curve)
+
+
+
+plt.figure()
+plt.plot(PSD_residual_tip_freq_t, PSD_residual_tip, label = "residual_PSD_tip")
+plt.plot(PSD_atm_tip_freq_t, PSD_atm_tip, label = "atm_PSD_tip")
+plt.title(f"residual PSD tip, gain {CL_gain_pyr}")
+plt.xlabel("frequency (Hz)")
+plt.yscale("log")
+plt.xscale("log")
+plt.legend()
+plt.ylabel("PSD")
+
+
+plt.figure()
+plt.plot(time, residual_tip_curve, label = "residual_tip_curve")
+plt.plot(time, atm_tip_curve, label = "atm_tip_curve")
+plt.title(f"residual/atm timeseries tip, gain {CL_gain_pyr}")
+plt.xlabel("time (s)")
+plt.legend()
+plt.ylabel("residual tip")
+
+
+plt.figure()
+plt.plot(PSD_residual_tilt_freq_t, PSD_residual_tilt, label = "residual_PSD_tilt")
+plt.plot(PSD_atm_tilt_freq_t, PSD_atm_tilt, label = "atm_PSD_tilt")
+plt.title(f"residual PSD tilt, gain {CL_gain_pyr}")
+plt.xlabel("frequency (Hz)")
+plt.yscale("log")
+plt.xscale("log")
+plt.legend()
+plt.ylabel("PSD")
+
+
+plt.figure()
+plt.plot(PSD_residual_defocus_freq_t, PSD_residual_defocus, label = "residual_PSD_defocus")
+plt.plot(PSD_atm_defocus_freq_t, PSD_atm_defocus, label = "atm_PSD_defocus")
+plt.title(f"residual PSD defocus, gain {CL_gain_pyr}")
+plt.xlabel("frequency (Hz)")
+plt.yscale("log")
+plt.xscale("log")
+plt.legend()
+plt.ylabel("PSD")
+
+
+plt.figure()
+plt.plot(PSD_residual_100_freq_t, PSD_residual_100, label = "PSD_residual_100")
+plt.plot(PSD_atm_100_freq_t, PSD_atm_100, label = "atm_PSD_100")
+plt.title(f"residual PSD 100, gain {CL_gain_pyr}")
+plt.xlabel("frequency (Hz)")
+plt.yscale("log")
+plt.xscale("log")
+plt.legend()
+plt.ylabel("PSD")
+
+
+
+plt.figure()
+plt.plot(PSD_residual_200_freq_t, PSD_residual_200, label = "PSD_residual_200")
+plt.plot(PSD_atm_200_freq_t, PSD_atm_200, label = "atm_PSD_200")
+plt.title(f"residual PSD 200, gain {CL_gain_pyr}")
+plt.xlabel("frequency (Hz)")
+plt.yscale("log")
+plt.xscale("log")
+plt.legend()
+plt.ylabel("PSD")
+
+
+
+
+
+#---------------------------------------------------temporal Error transfer function---------------------------------------------------#
+tETF_tip = PSD_residual_tip/PSD_atm_tip
+tETF_tilt = PSD_residual_tilt/PSD_atm_tilt
+tETF_defocus = PSD_residual_defocus/PSD_atm_defocus
+tETF_100 = PSD_residual_100/PSD_atm_100
+tETF_200 = PSD_residual_200/PSD_atm_200
+
+
+plt.figure()
+plt.plot(PSD_residual_tip_freq_t, tETF_tip, label = "ETF tip")
+plt.plot(PSD_residual_tilt_freq_t, tETF_tilt, label = "ETF tilt")
+plt.plot(PSD_residual_defocus_freq_t, tETF_defocus, label = "ETF defocus")
+plt.plot(PSD_residual_100_freq_t, tETF_100, label = "ETF 100")
+plt.plot(PSD_residual_200_freq_t, tETF_200, label = "ETF 200")
+plt.title("temporal error transfer functions")
+plt.ylabel("ETF")
+plt.xlabel("frequency Hz")
+plt.xscale("log")
+plt.yscale("log")
+plt.xlim(right = np.max(PSD_residual_tip_freq_t))
+plt.legend()
+
 
 plt.show()
 

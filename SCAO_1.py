@@ -301,6 +301,7 @@ plt.title("Reconstructed vs input dm modes")
 plt.ylabel("DM commands")
 plt.legend()
 plt.show()
+errro
 ##############################################################################################################
 
 #FITTING ERROR

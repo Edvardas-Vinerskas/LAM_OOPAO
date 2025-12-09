@@ -18,15 +18,9 @@ for the PSD problem:
 
 """    
 * try doing a zero delay loop to see if the residual completely gets rid of the temporal error
-* inject temporal frequencies into ATM.OPD (one above DM freq and one below)
 
-for the PSD problem:
-    * analyse the fitting error peaks? (do spatial and temporal PSDs?)
-
-* Compute temporal ETF
 * ETF x input should give you an understanding of how different frequencies are compensated for vs amplified
 
-* Add temporally varying tip-tilt
 * add a sine function to the KL or zernike modes and appropriately select the frequency I guess
     * and atm.update() with this new OPD
 
@@ -34,8 +28,16 @@ for the PSD problem:
 
 * LONG TERM TASK - ASSUME SOME ZERNIKE OUTPUT PHASE AND CONTROL A 9x9 DM (I left some papers for the weekend reading)
 
-* possible redo strehl calculations since marechal approximation is only valide within a certain region
 * fix the OTF calculation (surely I need to average the PSFs no?)
+
+* for the non-corrected tilt frequency just try out different gains
+    * plot integrator controller analytical control curve (i.e. watch the control lectures that you have been neglecting)
+    * read the RL book
+* For the KL modes the non-correction could either due to 
+    * non-truncation of SVD values
+    * or more likely gain, so once again try playing with it
+I am not sure why the LE PSF does not have the clear correction zone
+    * you should do a comparison with corrected and non-corrected and see what is the difference
 """
 
 
@@ -43,6 +45,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import SymLogNorm
 from matplotlib.patches import Circle
 import numpy as np
+from scipy import signal
 from numpy.fft import fftshift, fft, fft2, fftfreq, rfft, rfftfreq #need to shift just because of formatting
 
 import OOPAO
@@ -67,7 +70,7 @@ N_SUBAPERTURE       = 20
 DIAMETER            = 1.52
 CENTRAL_OBSTRUCTION = 0 #0.15
 RESOLUTION          = N_SUBAPERTURE * 8
-FREQUENCY           = 1000
+FREQUENCY           = 1500
 SAMPLING_TIME       = 1/FREQUENCY
 FOV                 = 10
 MECHANICAL_COUPLING = 0.35
@@ -151,6 +154,30 @@ DM = DeformableMirror(telescope    = TEL,
                       mechCoupling = MECHANICAL_COUPLING)
 
 
+xx = np.zeros(DM.coefs.shape)
+xx[-25] = 1
+DM.coefs = xx
+dm_opd1 = DM.OPD
+
+xx = np.zeros(DM.coefs.shape)
+xx[-100] = 1
+DM.coefs = xx
+dm_opd2 = DM.OPD
+
+
+xx = np.zeros(DM.coefs.shape)
+xx[-200] = 1
+DM.coefs = xx
+dm_opd3 = DM.OPD
+
+
+listerine = np.array((dm_opd1, dm_opd2, dm_opd3))
+for i in range(3):
+    print(listerine.shape)
+    plt.figure()
+    plt.imshow(listerine[0])
+    plt.show()
+    listerine = np.roll(listerine, 2, axis=0) #+moves down, -moves up
 #control radius calculation for dm
 control_radius = ((N_SUBAPERTURE + 1) * SRC.wavelength) /(2 * TEL.D) * rad2arcsec
 corr_zone_1 = Circle([0,0], control_radius, fc='none', ec='w', ls=':')
@@ -277,7 +304,7 @@ else:
     wfssignal_buffer = []
 
 #variables and performance metric initialisation
-nLoop                        = 1000
+nLoop                        = 1536
 sr                           = np.zeros(nLoop)
 sr_running                   = np.zeros(nLoop)
 total_error                  = np.zeros(nLoop)
@@ -308,9 +335,11 @@ defocus = ZZ.modesFullRes[:,:,2]
 
 
 aa = np.random.uniform(-1, 1)
-bb = np.sqrt(1 - aa ** 2)
+bb = np.random.uniform(-1, 1)
+cc = np.random.uniform(-1, 1)
 phi_aa = np.random.uniform(-np.pi, np.pi)
 phi_bb = np.random.uniform(-np.pi, np.pi)
+phi_cc = np.random.uniform(-np.pi, np.pi)
 
 
 def sine(f, t, phi):
@@ -326,19 +355,24 @@ tel_psf_list = []
 CL_gain = 0.4
 reconstructor = M2C @ CALIB.M
 
+tip_f     = 10
+tilt_f    = 50
+defocus_f = 100
+
 #what is inside the loop is basically what should be in the step function of the RL OOPAO environment
 for i in range(nLoop):
 
     #temporal vibration injection
-    tip_vibr  = sine(10, i * SAMPLING_TIME, phi_aa) * tip
-    tilt_vibr = sine(7, i * SAMPLING_TIME, phi_bb) * tilt
-    vibr = 1e-7 * (aa * tip_vibr + bb * tilt_vibr) * 10
+    tip_vibr  = sine(tip_f, i * SAMPLING_TIME, phi_aa) * tip
+    tilt_vibr = sine(tilt_f, i * SAMPLING_TIME, phi_bb) * tilt
+    defocus_vibr = sine(defocus_f, i * SAMPLING_TIME, phi_bb) * defocus
+    vibr = 1e-7 * (aa * tip_vibr + bb * tilt_vibr)# + cc * defocus_vibr)
 
     #update phase screen
     ATM.update()
     atm_opd = ATM.OPD
     atm_OPD_temp_list.append(atm_opd)
-    ATM.update(atm_opd + vibr)
+    ATM.update(atm_opd)# + vibr)
 
 
     total_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
@@ -371,7 +405,7 @@ for i in range(nLoop):
 
 
     # temporal error calculation for every frame for 1, 2, 3 frame delay
-    atm_OPD_list.append(ATM.OPD) #this includes the error from vibration too
+    atm_OPD_list.append(ATM.OPD) #this includes the error from vibration too (and maybe it shouldn't)
     atm_OPD_list.pop(0)
 
     atm_coefs_t = modes_inv @ atm_OPD_list[-1][np.where(TEL.pupil > 0)]
@@ -402,9 +436,9 @@ for i in range(nLoop):
     residual_OPD_list.append(TEL.OPD)
     sim_fit_error_list_2D.append(fitting_error)
 
-
-    TEL.computePSF(zeroPaddingFactor)
-    tel_psf_list.append(TEL.PSF)
+    if sr[i] > 0.5:
+        TEL.computePSF(zeroPaddingFactor)
+        tel_psf_list.append(TEL.PSF)
 
 
 #---------------------------------------------------PLOTTING---------------------------------------------------#
@@ -653,6 +687,7 @@ plt.legend()
 
 
 #---------------------------------------------------Zernike/KL decomposition---------------------------------------------------#
+#I mean this must be temporal
 label_str = 0
 if use_zernike:
     label_str = "Zernike"
@@ -680,14 +715,14 @@ if use_zernike or use_KL:
         zernike_names.append(f"{i+1}")
 
 
-    coefficient_matrix_atmosphere_var = np.average(np.abs(np.array(coefficient_matrix_atmosphere_list)) ** 2, axis = 0)
-    coefficient_matrix_res_var        = np.average(np.abs(np.array(coefficient_matrix_res_list)) ** 2, axis = 0)
+    coefficient_matrix_atmosphere_var = np.var(np.array(coefficient_matrix_atmosphere_list), axis = 0)
+    coefficient_matrix_res_var        = np.var(np.array(coefficient_matrix_res_list), axis = 0)
 
 
     plt.figure()
-    plt.bar(zernike_names, np.abs(coefficient_matrix_res_var), color = "red", label = f"{label_str} coeffs for residual phase")
+    plt.bar(zernike_names, coefficient_matrix_res_var, color = "red", label = f"{label_str} coeffs for residual phase")
     plt.title(f"{label_str} coefficients for corrected vs atmospher phase")
-    plt.bar(zernike_names,np.abs(coefficient_matrix_atmosphere_var), color = "black", alpha = 0.4, label = f"{label_str} coeffs for atmospheric phase")
+    plt.bar(zernike_names, coefficient_matrix_atmosphere_var, color = "black", alpha = 0.4, label = f"{label_str} coeffs for atmospheric phase")
     plt.yscale("log")
     plt.tight_layout()
     plt.legend()
@@ -695,9 +730,24 @@ if use_zernike or use_KL:
 
 
 #---------------------------------------------------Temporal PSD---------------------------------------------------#
-
 #temporal PSD calculation from the std
 delta_t = SAMPLING_TIME
+f_samp = 1 / delta_t
+
+
+def welch_method_scipy(data, fs=f_samp, nperseg=256):
+    frequencies, psd = signal.welch(
+        data,
+        fs=fs,
+        window='hann',  # Hanning window
+        nperseg=nperseg,
+        scaling='density'
+    )
+    return frequencies, psd
+
+
+
+
 
 coefficient_matrix_res_list = np.array(coefficient_matrix_res_list)
 residual_tip_curve = coefficient_matrix_res_list[:, 0]
@@ -718,26 +768,33 @@ atm_tilt_curve = temp_atm_coef_array[:, 1]
 atm_defocus_curve = temp_atm_coef_array[:, 2]
 
 
+#I am not sure about the normalisation
 #tip
-PSD_residual_tip = np.abs(np.fft.rfft(residual_tip_curve)) ** 2 * delta_t / (len(residual_tip_curve))
-PSD_residual_tip_freq_t = np.fft.rfftfreq(len(residual_tip_curve), d=delta_t)
+PSD_residual_tip_freq_t, PSD_residual_tip = welch_method_scipy(residual_tip_curve)
+#PSD_residual_tip = np.abs(np.fft.rfft(residual_tip_curve)) ** 2 * delta_t * 2/ (len(residual_tip_curve))
+#PSD_residual_tip_freq_t = np.fft.rfftfreq(len(residual_tip_curve), d=delta_t)
 
-PSD_atm_tip = np.abs(np.fft.rfft(atm_tip_curve)) ** 2 * delta_t / (len(atm_tip_curve))
-PSD_atm_tip_freq_t = np.fft.rfftfreq(len(atm_tip_curve), d=delta_t)
+PSD_atm_tip_freq_t, PSD_atm_tip = welch_method_scipy(atm_tip_curve)
+#PSD_atm_tip = np.abs(np.fft.rfft(atm_tip_curve)) ** 2 * delta_t * 2/ (len(atm_tip_curve))
+#PSD_atm_tip_freq_t = np.fft.rfftfreq(len(atm_tip_curve), d=delta_t)
 
 #tilt
-PSD_residual_tilt = np.abs(np.fft.rfft(residual_tilt_curve)) ** 2 * delta_t / (len(residual_tilt_curve))
-PSD_residual_tilt_freq_t = np.fft.rfftfreq(len(residual_tilt_curve), d=delta_t)
+PSD_residual_tilt_freq_t, PSD_residual_tilt = welch_method_scipy(residual_tilt_curve)
+#PSD_residual_tilt = np.abs(np.fft.rfft(residual_tilt_curve)) ** 2 * delta_t * 2/ (len(residual_tilt_curve))
+#PSD_residual_tilt_freq_t = np.fft.rfftfreq(len(residual_tilt_curve), d=delta_t)
 
-PSD_atm_tilt = np.abs(np.fft.rfft(atm_tilt_curve)) ** 2 * delta_t / (len(atm_tilt_curve))
-PSD_atm_tilt_freq_t = np.fft.rfftfreq(len(atm_tilt_curve), d=delta_t)
+PSD_atm_tilt_freq_t, PSD_atm_tilt = welch_method_scipy(atm_tilt_curve)
+#PSD_atm_tilt = np.abs(np.fft.rfft(atm_tilt_curve)) ** 2 * delta_t * 2/ (len(atm_tilt_curve))
+#PSD_atm_tilt_freq_t = np.fft.rfftfreq(len(atm_tilt_curve), d=delta_t)
 
 #defocus
-PSD_residual_defocus = np.abs(np.fft.rfft(residual_defocus_curve)) ** 2 * delta_t / (len(residual_defocus_curve))
-PSD_residual_defocus_freq_t = np.fft.rfftfreq(len(residual_defocus_curve), d=delta_t)
+PSD_residual_defocus_freq_t, PSD_residual_defocus = welch_method_scipy(residual_defocus_curve)
+#PSD_residual_defocus = np.abs(np.fft.rfft(residual_defocus_curve)) ** 2 * delta_t * 2/ (len(residual_defocus_curve))
+#PSD_residual_defocus_freq_t = np.fft.rfftfreq(len(residual_defocus_curve), d=delta_t)
 
-PSD_atm_defocus = np.abs(np.fft.rfft(atm_defocus_curve)) ** 2 * delta_t / (len(atm_defocus_curve))
-PSD_atm_defocus_freq_t = np.fft.rfftfreq(len(atm_defocus_curve), d=delta_t)
+PSD_atm_defocus_freq_t, PSD_atm_defocus = welch_method_scipy(atm_defocus_curve)
+#PSD_atm_defocus = np.abs(np.fft.rfft(atm_defocus_curve)) ** 2 * delta_t * 2/ (len(atm_defocus_curve))
+#PSD_atm_defocus_freq_t = np.fft.rfftfreq(len(atm_defocus_curve), d=delta_t)
 
 
 plt.figure()
@@ -752,6 +809,15 @@ plt.ylabel("PSD")
 
 
 plt.figure()
+plt.plot(time, residual_tip_curve, label = "residual_PSD_tip")
+plt.plot(time, atm_tip_curve, label = "atm_PSD_tip")
+plt.title(f"timeseries tip residual vs atmosphere, gain {CL_gain}")
+plt.xlabel("time (s)")
+plt.legend()
+plt.ylabel("residual")
+
+
+plt.figure()
 plt.plot(PSD_residual_tilt_freq_t, PSD_residual_tilt, label = "residual_PSD_tilt")
 plt.plot(PSD_atm_tilt_freq_t, PSD_atm_tilt, label = "atm_PSD_tilt")
 plt.title(f"residual PSD tilt, gain {CL_gain}")
@@ -763,6 +829,15 @@ plt.ylabel("PSD")
 
 
 plt.figure()
+plt.plot(time, residual_tilt_curve, label = "residual_PSD_tilt")
+plt.plot(time, atm_tilt_curve, label = "atm_PSD_tilt")
+plt.title(f"timeseries tilt residual vs atmosphere, gain {CL_gain}")
+plt.xlabel("time (s)")
+plt.legend()
+plt.ylabel("residual")
+
+
+plt.figure()
 plt.plot(PSD_residual_defocus_freq_t, PSD_residual_defocus, label = "residual_PSD_defocus")
 plt.plot(PSD_atm_defocus_freq_t, PSD_atm_defocus, label = "atm_PSD_defocus")
 plt.title(f"residual PSD defocus, gain {CL_gain}")
@@ -771,6 +846,15 @@ plt.yscale("log")
 plt.xscale("log")
 plt.legend()
 plt.ylabel("PSD")
+
+
+plt.figure()
+plt.plot(time, residual_defocus_curve, label = "residual_PSD_defocus")
+plt.plot(time, atm_defocus_curve, label = "atm_PSD_defocus")
+plt.title(f"timeseries defocus residual vs atmosphere, gain {CL_gain}")
+plt.xlabel("time (s)")
+plt.legend()
+plt.ylabel("residual")
 
 
 #---------------------------------------------------spatial Error transfer function---------------------------------------------------#

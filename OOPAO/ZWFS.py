@@ -55,7 +55,7 @@ class ZWFS:
         transmittance: float
             The portion of flux going into the mask 
         zpf: int 
-            In FFT propagation method, it is the Zero padding factor. In MFT propagation method it correspond to the diameter of the mask in fourier plane (ie the resolution of the fourier transform inside the mask): default value 4.
+            In FFT propagation method, it is the Zero padding factor. In MFT propagation method it corresponds to the diameter of the mask in fourier plane (ie the resolution of the fourier transform inside the mask): default value 4.
         phase_shift_unit: string
             If one want to express the depth in lambda, pi, or radian. default : radian
         propagation_method: string
