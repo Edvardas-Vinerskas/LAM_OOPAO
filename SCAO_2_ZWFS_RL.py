@@ -28,7 +28,7 @@ import matplotlib.pyplot as plt
 
 
 from po4ao_PAPYRUS.po4ao_config_PAPYRUS import config
-from po4ao_PAPYRUS.po4ao_models_PAPYRUS import EnsembleDynamicsFast, ConvPolicyFastFast
+from po4ao_PAPYRUS.po4ao_models_PAPYRUS_upd import EnsembleDynamicsFast, ConvPolicyFastFast
 from po4ao_PAPYRUS.po4ao_util_PAPYRUS import EfficientExperienceReplay, SharedAdam
 
 env = OOPAO_environment_ZWFS()
@@ -45,14 +45,14 @@ filters_per_layer = 32
 n_filt = filters_per_layer
 seeder = 5
 
-iters                = 2
+iters                = 2 #TODO change how you plot the strehl ratio to include warmup and all of the online updating
 episode_length       = 500
 initial_sigma        = 0.3
 min_sigma            = 0
 warmup_episodes      = 8
 loss_penalty         = 0.1
 
-n_history            = 64 #30
+n_history            = 30 #30
 planning_horizon     = 4
 data_shape           = env.data_shape
 control_delay         = 1
@@ -82,7 +82,7 @@ def sample_noise(sigma, flt, xvalid, yvalid):
     action_im[xvalid, yvalid] = action_vec
     return action_im
 
-@torch.no_grad()
+
 def sample_noise_pyr(sigma, flt):
     action_vec = np.matmul(flt, sigma * np.sign(np.random.randn(sample_shape_pyr)))
     return action_vec
@@ -238,7 +238,8 @@ def train_policy(optimizer: SharedAdam, policy: ConvPolicyFastFast, dynamics: En
 
             next_state = next_state * OOPAO_scaling_down
             #sum up of rewards over the horizon time frame
-            losses += loss_fn(next_state[:, 0] * OOPAO_scaling_up, action * OOPAO_scaling_up)
+            #losses += loss_fn(next_state[:, 0] * OOPAO_scaling_up, action * OOPAO_scaling_up)
+            losses += loss_fn(torch.mean(next_state, dim=1) * OOPAO_scaling_up, action * OOPAO_scaling_up)
 
             # roll history (0 index is removed)
             past_act = torch.cat([past_act[:, 1:, :, :], action], dim=1)
@@ -434,7 +435,7 @@ def loss_fn(state,action):
 
 
 def main():
-    directory_name = 'vZWFS_1st_2nd_noise_03_wooftw_seed_chang_hist64'
+    directory_name = 'vZWFS_1st_2nd_noise_03_wooftw_seed_chang_dyn_mask'
 
     save_buffer = True
     load_buffer = False
@@ -517,7 +518,7 @@ def main():
 
     if load_buffer == False:
         for i in range(warmup_episodes): #warmup_episodes
-            obs, _ = env.reset(seed=(i + 1))
+            obs, _ = env.reset(seed=np.random.randint(0, 256))
             start = time.time()
             #-----------------------------------sample generation-----------------------------------#
             reward_sum, past_obs, past_act, obs, strehl_warmup = run_episode_warmup(replay, replay_warmup, sigma, episode_length, KL_projection.to(device0), KL_projection_pyr, xvalid0, yvalid0)
@@ -730,7 +731,7 @@ def main():
 
 
     #everythin I need is saved here?
-    torch.save(rewards, os.path.join(savedir_model, f"rewards.pt"))
+    torch.save(rewards, os.path.join(savedir_model, f"rewards.pt")) #reward sum for each episode
     torch.save(replay.states, os.path.join(savedir_model, f"states.pt"))
     torch.save(replay.actions, os.path.join(savedir_model, f"actions.pt"))
 

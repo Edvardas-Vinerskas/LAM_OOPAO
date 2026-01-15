@@ -31,16 +31,18 @@ modes_fake_inv = np.linalg.pinv(np.squeeze(modes_fake[env.TEL.pupilLogical, :]))
 
 
 #TODO don't forget to also change your atmosphere parameters when loading files (atm_OPD_array)
-RL         = False
+#TODO could you in fact rewrite this so unneccesary stuff is not loaded?
+RL         = True
 integrator = True
-ideal      = False
-stage_2    = False
-directory_name_RL  = 'vZWFS_1st_2nd_noise_03_wooftw'
-directory_name_int = 'PWFS_test_KL_1500_nowind_40_40'
-directory_name_ideal = 'PWFS_metrics_1500_ideal'
-label_RL = "RL"
-label_int = "int_1500"
-label_ideal = "ideal_1500"
+ideal      = True
+stage_2    = True
+directory_name_RL  = 'vZWFS_1st_2nd_noise_03_wooftw_seed_chang_gaussian_noise'
+directory_name_int = 'vZWFS_metrics_integrator_2'
+directory_name_ideal = 'vZWFS_1st_2nd_noise_03_wooftw_seed_chang_dyn_mask'
+label_RL = "gaussian_noise"
+label_int = "integrator_2"
+label_ideal = "dyn_mask"
+mask_thresh = 0.5
 
 
 
@@ -148,7 +150,7 @@ if stage_2:
 plt.figure()
 if RL:          plt.plot(time_plot_RL, strehl_array_1st_RL, label=f"strehl_1st_{label_RL}")
 if integrator:  plt.plot(time_plot_int, strehl_array_1st_int, label=f"strehl_1st_{label_int}")
-if ideal:       plt.plot(time_plot_ideal, strehl_array_1st_ideal, label=f"strehl_1st_{label_ideal}")
+#if ideal:       plt.plot(time_plot_ideal, strehl_array_1st_ideal, label=f"strehl_1st_{label_ideal}")
 
 if not stage_2:
     if RL: plt.plot(time_plot_RL, sr_running_1st_RL, label=f"running_strehl_1st_{label_RL}")
@@ -157,7 +159,7 @@ if stage_2:
     if RL: plt.plot(time_plot_RL, sr_running_2nd_RL, color = 'red', label=f"running_strehl_2nd_{label_RL}")
 
     if integrator: plt.plot(time_plot_int, strehl_array_2nd_int, color = '#ffa600', label=f"strehl_2nd_{label_int}")
-    #if ideal: plt.plot(time_plot_ideal, strehl_array_2nd_ideal, label="strehl_2nd_ideal")
+    if ideal: plt.plot(time_plot_ideal, strehl_array_2nd_ideal, label=f"strehl_2nd_{label_ideal}")
 
 
 plt.title("Strehl ratio")
@@ -179,7 +181,7 @@ else:
 
 coefficient_matrix_res_list_RL        = []
 coefficient_matrix_res_list_RL_full   = []
-residual_OPD_array_05_RL = residual_OPD_array_RL[strehl_mask_RL > 0.5]
+residual_OPD_array_05_RL = residual_OPD_array_RL[strehl_mask_RL > mask_thresh]
 for i in range(len(residual_OPD_array_05_RL)):
     final_residual_phase_RL = 2 * np.pi * residual_OPD_array_05_RL[i] / env.SRC.wavelength
     coefficient_matrix_res_RL = modes_fake_inv @ final_residual_phase_RL[np.where(env.TEL.pupil > 0)]
@@ -200,7 +202,7 @@ else:
     strehl_mask_int = strehl_array_1st_int
 coefficient_matrix_res_list_int        = []
 coefficient_matrix_res_list_int_full   = []
-residual_OPD_array_05_int = residual_OPD_array_int[strehl_mask_int > 0.5]
+residual_OPD_array_05_int = residual_OPD_array_int[strehl_mask_int > mask_thresh]
 for i in range(len(residual_OPD_array_05_int)):
     final_residual_phase_int = 2 * np.pi * residual_OPD_array_05_int[i] / env.SRC.wavelength
     coefficient_matrix_res_int = modes_fake_inv @ final_residual_phase_int[np.where(env.TEL.pupil > 0)]
@@ -221,7 +223,7 @@ else:
     strehl_mask_ideal = strehl_array_1st_ideal
 coefficient_matrix_res_list_ideal        = []
 coefficient_matrix_res_list_ideal_full   = []
-residual_OPD_array_05_ideal = residual_OPD_array_ideal[strehl_mask_ideal > 0.5]
+residual_OPD_array_05_ideal = residual_OPD_array_ideal[strehl_mask_ideal > mask_thresh]
 for i in range(len(residual_OPD_array_05_ideal)):
     final_residual_phase_ideal = 2 * np.pi * residual_OPD_array_05_ideal[i] / env.SRC.wavelength
     coefficient_matrix_res_ideal = modes_fake_inv @ final_residual_phase_ideal[np.where(env.TEL.pupil > 0)]

@@ -81,7 +81,7 @@ LIGHT_RATIO         = 0.1
 POST_PROCESS        = "slopesMaps"
 r_0                 = 0.15
 L_0                 = 25
-WIND_SPEED          = [40, 40] #[10, 20, 60]
+WIND_SPEED          = [60, 60] #[10, 20, 60]
 WIND_DIRECTION      = [0, 100] #[0, 100, 160]
 FRACTIONAL_C_N2     = [0.6, 0.4] #[0.5, 0.3, 0.2]
 ALTITUDE            = [0, 4500] #[0, 4500, 10000]
@@ -421,7 +421,7 @@ for i in range(nLoop):
 #TODO what other plots are missing?
 
 save_files = True
-directory_name = 'PWFS_test_KL_1500_nowind_40_40'
+directory_name = 'PWFS_test_KL_1500_nowind_60_60'
 savedir = f'temp_save_dir/{directory_name}/'
 
 

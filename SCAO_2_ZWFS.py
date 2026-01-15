@@ -2,7 +2,7 @@
 """
 TODO figure out how Zernike object works, specificaly what does ZWFS.signal represent
     i.e. read some papers
-TODO I have removed the 2 frame delay
+
 
 * the std limit of the phase rms getting into zernike is about 75 nm for a wvl of 790
     * so when training the RL zwfs on phase or whatever you can
@@ -477,7 +477,7 @@ for i in range(nLoop):
 #TODO change the 2000 timeery condition
 #TODO what other plots are missing?
 save_files = True
-directory_name = 'test_1st_1500'
+directory_name = 'vZWFS_metrics_integrator_2'
 savedir = f'temp_save_dir/{directory_name}/'
 
 if not os.path.exists(savedir):
@@ -517,7 +517,7 @@ if save_files == True:
 
 
     print('data saved')
-
+err
 
 
 #---------------------------------------------------Error decomposition---------------------------------------------------#
