@@ -38,6 +38,7 @@ for the PSD problem:
     * or more likely gain, so once again try playing with it
 I am not sure why the LE PSF does not have the clear correction zone
     * you should do a comparison with corrected and non-corrected and see what is the difference
+    
 """
 
 
@@ -46,6 +47,7 @@ from matplotlib.colors import SymLogNorm
 from matplotlib.patches import Circle
 import numpy as np
 from scipy import signal
+import os
 from numpy.fft import fftshift, fft, fft2, fftfreq, rfft, rfftfreq #need to shift just because of formatting
 
 import OOPAO
@@ -73,21 +75,22 @@ RESOLUTION          = N_SUBAPERTURE * 8
 FREQUENCY           = 1500
 SAMPLING_TIME       = 1/FREQUENCY
 FOV                 = 10
-MECHANICAL_COUPLING = 0.35
+MECH_COUPLING       = 0.35
 MODULATION          = 3
 LIGHT_RATIO         = 0.1
 POST_PROCESS        = "slopesMaps"
 r_0                 = 0.15
 L_0                 = 25
-WIND_SPEED          = [10, 20, 60] #[10, 20, 60]
-WIND_DIRECTION      = [0, 100, 160] #[0, 100, 160]
-FRACTIONAL_C_N2     = [0.6, 0.3, 0.1] #[0.5, 0.3, 0.2]
-ALTITUDE            = [0, 4500, 10000] #[0, 4500, 10000]
+WIND_SPEED          = [40, 40] #[10, 20, 60]
+WIND_DIRECTION      = [0, 100] #[0, 100, 160]
+FRACTIONAL_C_N2     = [0.6, 0.4] #[0.5, 0.3, 0.2]
+ALTITUDE            = [0, 4500] #[0, 4500, 10000]
 Z_coefs             = 250 #200 #above 200 does not work great per Benoit
+KL_no               = 250
 
 
 
-zeroPaddingFactor = 6
+zeroPaddingFactor = 4
 rad2arcsec        = 180 * 60 * 60 / np.pi
 
 
@@ -146,38 +149,12 @@ ATM = Atmosphere(telescope    = TEL,
 ATM.initializeAtmosphere(telescope = TEL)
 
 
-
 #---------------------------------------------------DEFORMABLE_MIRROR---------------------------------------------------#
 
 DM = DeformableMirror(telescope    = TEL,
                       nSubap       = N_SUBAPERTURE,
-                      mechCoupling = MECHANICAL_COUPLING)
+                      mechCoupling = MECH_COUPLING)
 
-
-xx = np.zeros(DM.coefs.shape)
-xx[-25] = 1
-DM.coefs = xx
-dm_opd1 = DM.OPD
-
-xx = np.zeros(DM.coefs.shape)
-xx[-100] = 1
-DM.coefs = xx
-dm_opd2 = DM.OPD
-
-
-xx = np.zeros(DM.coefs.shape)
-xx[-200] = 1
-DM.coefs = xx
-dm_opd3 = DM.OPD
-
-
-listerine = np.array((dm_opd1, dm_opd2, dm_opd3))
-for i in range(3):
-    print(listerine.shape)
-    plt.figure()
-    plt.imshow(listerine[0])
-    plt.show()
-    listerine = np.roll(listerine, 2, axis=0) #+moves down, -moves up
 #control radius calculation for dm
 control_radius = ((N_SUBAPERTURE + 1) * SRC.wavelength) /(2 * TEL.D) * rad2arcsec
 corr_zone_1 = Circle([0,0], control_radius, fc='none', ec='w', ls=':')
@@ -231,7 +208,7 @@ ZZ.computeZernike(telObject2 = TEL)
 if use_KL:
 
     M2C_KL = compute_KL_basis(tel = TEL, atm = ATM, dm = DM)
-    M2C    = M2C_KL[:, :250]
+    M2C    = M2C_KL[:, :KL_no]
     modes  = DM.modes @ M2C
 
 #---------------------------------------------------INTERACTION MATRIX---------------------------------------------------#
@@ -287,7 +264,7 @@ CAM = Detector(integrationTime = 100 * TEL.samplingTime,  # integration time of 
 #---------------------------------------------------SIMULATION---------------------------------------------------#
 #for now we are only using SRC
 
-ATM.generateNewPhaseScreen(seed = 2)
+ATM.generateNewPhaseScreen(seed = 10)
 #reset everything just in case
 TEL.resetOPD()
 DM.coefs = 0
@@ -304,7 +281,7 @@ else:
     wfssignal_buffer = []
 
 #variables and performance metric initialisation
-nLoop                        = 1536
+nLoop                        = 2000
 sr                           = np.zeros(nLoop)
 sr_running                   = np.zeros(nLoop)
 total_error                  = np.zeros(nLoop)
@@ -360,6 +337,7 @@ tilt_f    = 50
 defocus_f = 100
 
 #what is inside the loop is basically what should be in the step function of the RL OOPAO environment
+ATM.generateNewPhaseScreen(seed = 10)
 for i in range(nLoop):
 
     #temporal vibration injection
@@ -372,16 +350,11 @@ for i in range(nLoop):
     ATM.update()
     atm_opd = ATM.OPD
     atm_OPD_temp_list.append(atm_opd)
-    ATM.update(atm_opd)# + vibr)
+    #ATM.update(atm_opd + vibr)
 
 
     total_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
 
-    #propagate through AO with the dm commands applied
-    SRC * TEL * DM * WFS
-    #propagate to the source with the dm commands applied (old dm commands)
-    #the point of this line is that for the wfs propagation you would be using NGS
-    SRC * TEL
 
 
     #frame delay implementation
@@ -394,7 +367,8 @@ for i in range(nLoop):
     DM.coefs = DM.coefs - CL_gain * np.matmul(reconstructor, delayed_signal)
     dm_coefs_copy = DM.coefs
 
-
+    # propagate through AO with the dm commands applied
+    SRC * TEL * DM * WFS
 
     #fitting error calculation for every frame (written for 2 frame delay)
     mode_coefs = modes_inv @ atm_OPD_list[-3][np.where(TEL.pupil > 0)]
@@ -403,8 +377,8 @@ for i in range(nLoop):
     simulational_fitting_error = np.std(fitting_error[np.where(TEL.pupil > 0)]) * 1e9
     sim_fit_error_list.append(simulational_fitting_error)
 
-
-    # temporal error calculation for every frame for 1, 2, 3 frame delay
+    #TODO you might need to move this above fitting error calculation?
+    #temporal error calculation for every frame for 1, 2, 3 frame delay
     atm_OPD_list.append(ATM.OPD) #this includes the error from vibration too (and maybe it shouldn't)
     atm_OPD_list.pop(0)
 
@@ -436,11 +410,54 @@ for i in range(nLoop):
     residual_OPD_list.append(TEL.OPD)
     sim_fit_error_list_2D.append(fitting_error)
 
-    if sr[i] > 0.5:
-        TEL.computePSF(zeroPaddingFactor)
-        tel_psf_list.append(TEL.PSF)
+
+    TEL.computePSF(zeroPaddingFactor)
+    tel_psf_list.append(TEL.PSF)
 
 
+#TODO clean up later
+#TODO for some plots you need to check the sr > 0.5 condition
+#TODO change the 2000 timeery condition
+#TODO what other plots are missing?
+
+save_files = True
+directory_name = 'PWFS_test_KL_1500_nowind_40_40'
+savedir = f'temp_save_dir/{directory_name}/'
+
+
+if save_files == True:
+    if not os.path.exists(savedir):
+        os.makedirs(savedir)
+
+    residual_error_array = np.asarray(residual_error)
+    np.save(f"temp_save_dir/{directory_name}/residual_error", residual_error_array)
+
+    strehl_array_1st = np.asarray(sr)
+    np.save(f"temp_save_dir/{directory_name}/strehl_array_1st", strehl_array_1st)
+
+    tel_psf_array = np.asarray(tel_psf_list)
+    np.save(f"temp_save_dir/{directory_name}/tel_psf_array", tel_psf_array)
+
+    residual_OPD_array = np.asarray(residual_OPD_list) #for use in spatial PSD/KL modes var and correlation
+    #you can later do the spatial PSD when you save the required atm parameter
+    np.save(f"temp_save_dir/{directory_name}/residual_OPD_array", residual_OPD_array)
+
+    atm_OPD_array = np.asarray(atm_OPD_temp_list) #not sure where I would use it
+    np.save(f"temp_save_dir/{directory_name}/atm_OPD_array", atm_OPD_array)
+
+    total_err_array = np.asarray(total_error) #not useful for now
+    np.save(f"temp_save_dir/{directory_name}/total_err_array", total_err_array)
+
+    #YOU SHOULD ALSO CHECK IF YOU ONLY HAVE AN EPISODE OF DATA IN ALL OF THESE BECAUSE I DON'T REMEMBER
+    time_plot = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
+    np.save(f"temp_save_dir/{directory_name}/time_array", time_plot)
+    np.save(f"temp_save_dir/{directory_name}/frequency", FREQUENCY)
+
+
+
+    print('data saved')
+
+errr
 #---------------------------------------------------PLOTTING---------------------------------------------------#
 sim_fit_error_list = np.array(sim_fit_error_list)
 sim_temp_error_2_frame_delay = np.array(sim_temp_error_2_frame_delay)
@@ -448,27 +465,27 @@ sim_fit_temp_sum = np.sqrt(sim_temp_error_2_frame_delay ** 2 + sim_fit_error_lis
 
 
 
-time = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
+time_plot = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
 
 
 
 fitting_error_analytical = (0.23) ** (1/2) * (DM.pitch/ r_0_src) ** (5 / 6) * SRC.wavelength / (2 * np.pi) * 1e9
-fitting_error_analytical = np.ones(len(time)) * fitting_error_analytical
+fitting_error_analytical = np.ones(len(time_plot)) * fitting_error_analytical
 
 fitting_error_sim_avg = np.mean(sim_fit_error_list)
-fitting_error_sim_avg = np.ones(len(time)) * fitting_error_sim_avg
+fitting_error_sim_avg = np.ones(len(time_plot)) * fitting_error_sim_avg
 
 residual_sim_difference = residual_error - sim_fit_temp_sum
 
 
 #---------------------------------------------------Error decomposition---------------------------------------------------#
 plt.figure()
-plt.plot(time, residual_error, label = "residual")
+plt.plot(time_plot, residual_error, label = "residual")
 #plt.plot(time, sim_temp_error_2_frame_delay, label = "simulational temporal error 2 frame delay")
-plt.plot(time, fitting_error_analytical, label = "analyical fitting error")
-plt.plot(time, fitting_error_sim_avg, label = "simulational average fitting error")
-plt.plot(time, sim_fit_error_list, label = "simulational fitting error")
-plt.plot(time, sim_fit_temp_sum, label = "fitting + temporal 2 frame delay")
+plt.plot(time_plot, fitting_error_analytical, label = "analyical fitting error")
+plt.plot(time_plot, fitting_error_sim_avg, label = "simulational average fitting error")
+plt.plot(time_plot, sim_fit_error_list, label = "simulational fitting error")
+plt.plot(time_plot, sim_fit_temp_sum, label = "fitting + temporal 2 frame delay")
 plt.title("error decomposition (nm)")
 plt.xlabel("time s")
 plt.yscale("log")
@@ -492,8 +509,8 @@ sr_running = np.convolve(sr_padded, kernel, mode='valid')
 
 
 plt.figure()
-plt.plot(time, sr, label = "strehl")
-plt.plot(time, sr_running, label = "running_strehl")
+plt.plot(time_plot, sr, label = "strehl")
+plt.plot(time_plot, sr_running, label = "running_strehl")
 plt.title("Strehl ratio")
 plt.xlabel("time s")
 plt.ylim(bottom = (sr_mean - 0.3))
@@ -809,8 +826,8 @@ plt.ylabel("PSD")
 
 
 plt.figure()
-plt.plot(time, residual_tip_curve, label = "residual_PSD_tip")
-plt.plot(time, atm_tip_curve, label = "atm_PSD_tip")
+plt.plot(time_plot, residual_tip_curve, label = "residual_PSD_tip")
+plt.plot(time_plot, atm_tip_curve, label = "atm_PSD_tip")
 plt.title(f"timeseries tip residual vs atmosphere, gain {CL_gain}")
 plt.xlabel("time (s)")
 plt.legend()
@@ -829,12 +846,14 @@ plt.ylabel("PSD")
 
 
 plt.figure()
-plt.plot(time, residual_tilt_curve, label = "residual_PSD_tilt")
-plt.plot(time, atm_tilt_curve, label = "atm_PSD_tilt")
+plt.plot(time_plot, residual_tilt_curve, label = "residual_PSD_tilt")
+plt.plot(time_plot, atm_tilt_curve, label = "atm_PSD_tilt")
 plt.title(f"timeseries tilt residual vs atmosphere, gain {CL_gain}")
 plt.xlabel("time (s)")
 plt.legend()
 plt.ylabel("residual")
+
+
 
 
 plt.figure()
@@ -849,8 +868,8 @@ plt.ylabel("PSD")
 
 
 plt.figure()
-plt.plot(time, residual_defocus_curve, label = "residual_PSD_defocus")
-plt.plot(time, atm_defocus_curve, label = "atm_PSD_defocus")
+plt.plot(time_plot, residual_defocus_curve, label = "residual_PSD_defocus")
+plt.plot(time_plot, atm_defocus_curve, label = "atm_PSD_defocus")
 plt.title(f"timeseries defocus residual vs atmosphere, gain {CL_gain}")
 plt.xlabel("time (s)")
 plt.legend()

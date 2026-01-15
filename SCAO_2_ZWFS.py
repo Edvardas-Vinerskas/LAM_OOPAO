@@ -1,92 +1,28 @@
 
 """
-* need to also implement different loop frequencies
-    * I think you can just run the zernike loop multiple times so that it improves the same
-    * for now the sampling is implemented manually
-
-* do your own interaction matrix from the zernike image which is somewhere in the file
-
-
-•	Need to compare more
-o	Inference time
-o	Phase reconstruction
-o	How is the model trained
-o	We train the model both in simulations and test it on sky successfully
-o	How is the Zernike WFS signal calculated? Just direct phase reconstruction from what I understand. Is there any loss of information on this front?
-o	You should do the phase reconstruction in OOPAO?
-	Currently I am using the linear interaction matrix matrix reconstruction
-	You can do the arcsin reconstruction in Vincent or Doelman paper
-	Further you may just trust the reinforcement learning algorithm
-	And of course compare all of them
-
-
-* fix delay for this 2 stage system
-* you have access to the residual zernike phase via the
-* plot the bar graph of the DM controle coefficients for a better understanding of normalisation
+TODO figure out how Zernike object works, specificaly what does ZWFS.signal represent
+    i.e. read some papers
+TODO I have removed the 2 frame delay
 
 * the std limit of the phase rms getting into zernike is about 75 nm for a wvl of 790
     * so when training the RL zwfs on phase or whatever you can
         * either input the phase with the appropriate rms
         * or just do it from the pyramid (you should do this because it is more representative)
 
-#truncate your interaction matrices 1/10-1/30 of max value (but also check that you do not remove important modes)
-* for the zernike 500 Hz peak try plotting higher order KL modes and see if they retain the peak
-* go through all of the performance metric functions and check whether they behave as expected
-    * for example, for KL modes, you are decomposing the spatial 2D image into KL mode coefficients and then do the variance over time of them
-    * whereas for the temporal PSD you are taking the FFT of the timeseries of the modes instead of variance, which then tells you the temporal frequencies
-    * seems to be working as intended
-* what is the best way to turn on the zernike wavefront sensor?
-* in RL the rewards need to be potentially delayed
-* for the fitting error you should now have 2 bumps as you have 2 different cut-off frequencies
-* in your training code, implement checks for sufficient pixel density for r_0 and whatever else
-    * i.e. don't do it inside the environment class
 
-So the RL network in fact needs to know the values of the atmospheric phase screen in order to compensate for it
-    * zernike wfs sees the residual from the pyramid
-    * so using zwfs.signal + dm_zer.coefs you can reconstruct the pwfs residual
-    * then you also need the pwfs residual and the dm_pyr to reconstruct the full phase
-    * we are trying to predict the next phase screen in order to precompensate for it
-    * for now I guess I just input the zwfs and dm_zer but for future you should probably think about this more
-
-* implement the arcsin zernike reconstruction
-* don't forget that the network input should be between -1 and 1 for various reasons (normalisation and paper reading)
-* and of course for now you have only a single dynamics model but should have multiple in the future
-
-* for the DM actuator thing, they simulate a square DM with NxN actuators, they then apply a mask to get to the valid actuator number
-* where do I apply the scaling of the CNN output when doing the DM commands?
-* how to mitigate the problem that some actuators are not observed by the wfs?
-    * is this solved via the reprojection or something?
-
-Reward acquisition problem:
-    * the zwfs measurement is the independent measurement from which we can extract the reward.
-    * but then you have to use an independent reconstruction algorithm to convert zwfs measurement to DM controls
-        * and yet the whole point is that we have RL to control the DM
-    * Jalo is using the predicted state to calculate the reward which is independent of the policy
-
-*SO IN THE END THE MAIN ADVANTAGE IS THAT THE CONTROLLER FORMULATION IS MUCH MORE COMPLICATED COMPARED TO LINEAR INTEGRATOR CONTROL
 * going straight from pixel is thus another potential advantage
-
-* in the OOPAO environment, the reward is calculated by the frobenius norm and normalised by number of tt modes
-* why would you divide by the number of tt modes? stability?
-* seems like jalo does not divide, but in the paper it is expected value?
-* the expected value is because he averages over a few dynamics models
-* calculate the KL mode information for later in the step function ETFs and so on
 * you might need to .copy() arrays if you don't want their values to magically change
-* how is the action applied to control if it is a change in voltage and not the total voltage?
-* don't forget to reproject your policy output through KL modes
-* the reward of course acts as an implicit loss function so that is what you use to do backpropagation
 
 * does Jalo use some kind of validation for the dynamics model? seems like not
-* why in the train_policy function, the loss is calculated as the square of the next state (reward) PLUS some contribution from the action itself?
-* as seen from this example (dm[:] = (prev_commands * leak) + (action)), the action is added to the prev_commands
+    * but this does not matter that much since you will be updating constantly
+    * from theory I remember that the dynamics models overfit or similar where (RL dude) and that is why we need multiple dynamics model to average out the result
 
-* again recheck whether n_history is declared as 15 or 30 (seems that everything is correct when using 15?)
-* so the main advantage of the model based thing is that you can train the policy on it
-    * and it predicts states for reward calculation
 
-* FOR THE MEETING AT LEAST DO THE SIN RECONSTRUCTION OR SMTH
-* I can just load in the policy here no?
-* fix zernike delay implementation
+* you have fixed the 500 Hz problem via woofer tweeter but
+    *how is the atmosphere signal aliased due to the 2 stage AO running at different speeds?
+
+* insert type checking into your code
+* and unit tests
 """
 
 
@@ -94,6 +30,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import SymLogNorm
 from matplotlib.patches import Circle
 import numpy as np
+import os
 from scipy import signal
 from numpy.fft import fftshift, fft, fft2, fftfreq, rfft, rfftfreq #need to shift just because of formatting
 
@@ -126,21 +63,21 @@ RESOLUTION          = N_SUBAPERTURE_pyr * 8
 FREQUENCY           = 1500 #pyramid is running at 500
 SAMPLING_TIME       = 1/FREQUENCY
 FOV                 = 10
-MECHANICAL_COUPLING = 0.35
+MECH_COUPLING       = 0.35
 MODULATION          = 3
 LIGHT_RATIO         = 0.1
 POST_PROCESS        = "slopesMaps"
 r_0                 = 0.15
 L_0                 = 25
-WIND_SPEED          = [10, 20, 60] #[10, 20, 60]
-WIND_DIRECTION      = [0, 100, 160] #[0, 100, 160]
-FRACTIONAL_C_N2     = [0.6, 0.3, 0.1] #[0.5, 0.3, 0.2]
-ALTITUDE            = [0, 4500, 10000] #[0, 4500, 10000]
+WIND_SPEED          = [10, 20] #[10, 20, 60]
+WIND_DIRECTION      = [0, 100] #[0, 100, 160]
+FRACTIONAL_C_N2     = [0.6, 0.4] #[0.5, 0.3, 0.2]
+ALTITUDE            = [0, 4500] #[0, 4500, 10000]
 Z_coefs             = 250 #200 #above 200 does not work great per Benoit
 
 
 
-zeroPaddingFactor = 4
+zeroPaddingFactor = 6
 rad2arcsec        = 180 * 60 * 60 / np.pi
 
 
@@ -209,22 +146,20 @@ def temp_vib(k, f, t, shape):
 #---------------------------------------------------DEFORMABLE_MIRROR---------------------------------------------------#
 
 DM_pyr = DeformableMirror(telescope    = TEL,
-                      nSubap       = N_SUBAPERTURE_pyr,
-                      mechCoupling = MECHANICAL_COUPLING)
+                          nSubap       = N_SUBAPERTURE_pyr,
+                          mechCoupling = MECH_COUPLING)
 
 DM_zer = DeformableMirror(telescope    = TEL,
-                      nSubap       = N_SUBAPERTURE_zer,
-                      mechCoupling = MECHANICAL_COUPLING)
+                          nSubap       = N_SUBAPERTURE_zer,
+                          mechCoupling = MECH_COUPLING)
 
-#this is our DM mask that should be used inside the models?
-#flatten the 2D DM output from the model (the model output should be 2D and all flattening should take place outside)
-#apply the mask
-#input the command into your OOPAO environment
-print(np.reshape(DM_zer.validAct, (10, 10)))
-mask = np.reshape(DM_zer.validAct, (10, 10))
-dm_x, dm_y = np.where(mask)
-print(mask)
-print(np.ones((10, 10))[mask].shape)
+
+#this is our DM mask that should be used inside the models
+#mask = np.reshape(DM_zer.validAct, (10, 10)) 2D boolean mask of valid actuators
+#woofer_tweeter correction
+N_1 = np.squeeze(DM_pyr.modes[TEL.pupilLogical, :])
+N_2_inv = np.linalg.pinv(np.squeeze(DM_zer.modes[TEL.pupilLogical, :]))
+N2N1 = np.matmul(N_2_inv, N_1)
 
 
 #control radius calculation for dm
@@ -248,8 +183,28 @@ PWFS = Pyramid(nSubap         = N_SUBAPERTURE_pyr,
 
 
 #zernike_WFS = ZWFS(tel = TEL, zpf = 8) # zpf is the diameter/resolution of the zernike mask in the fourier plane
-vZWFS = ZWFS2(tel = TEL, zpf = 8, diameter = 1.06)
+"""vZWFS = ZWFS2(tel         = TEL,
+              zpf         = 30,
+              diameter    = 2.14,
+              phase_shift = [-0.75 * np.pi,0.3 * np.pi])
+"""
+vZWFS = ZWFS2(tel         = TEL,
+              zpf         = 8,
+              diameter    = 1.06,
+              phase_shift = [-np.pi/2,np.pi/2])
 
+#TODO later recheck the vZWFS sensor according to what Matthieu said
+#zpf use 30 (size of the mask in pixels)
+#diameter of 2.14
+#phase shift 0.3 pi - -0.75 pi
+#THE ABOVE ARE THE SYSTEM REPRESENTATIVE PARAMETER
+#answer the question how is the dynamic range and sensitivity impacted by the
+    #diameter
+    #phase shift change
+#look at wfs_measure function (are you supposed to use this one in interaction matrix?)
+
+#there is arctan and arcsin reconstructor inside the updated zwfs classes
+#and remember that the problem with these reconstructors that you did need iterative correction
 
 
 #---------------------------------------------------MODAL_BASIS---------------------------------------------------#
@@ -381,11 +336,13 @@ CAM = Detector(integrationTime = 100 * TEL.samplingTime,  # integration time of 
 
 #---------------------------------------------------SIMULATION---------------------------------------------------#
 
-ATM.generateNewPhaseScreen(seed = 2)
+ATM.generateNewPhaseScreen(seed = 10)
 #reset everything just in case
 TEL.resetOPD()
 DM_pyr.coefs = 0
 DM_zer.coefs = 0
+DM_zer_copy = 0
+DM_zer_copy_woof_tweet = 0
 TEL + ATM
 SRC * TEL * DM_pyr * PWFS * DM_zer * vZWFS
 TEL.print_optical_path()
@@ -401,14 +358,18 @@ else:
     vzwfssignal_buffer =[]
 
 #variables and performance metric initialisation
-nLoop                        = 500
+nLoop                        = 2000
 sr                           = np.zeros(nLoop)
+sr_1st                       = []
 sr_running                   = np.zeros(nLoop)
 total_error                  = np.zeros(nLoop)
 residual_error               = np.zeros(nLoop)
 
 #variables for PSD calculation
 residual_OPD_list            = []
+residual_OPD_list_pwfs       = []
+#vibration implementation
+atm_OPD_temp_list = []
 final_residual_OPD           = 0
 final_atmosphere_OPD         = 0
 final_dm_OPD                 = 0
@@ -424,10 +385,6 @@ sim_fit_error_list           = []
 sim_fit_error_list_2D        = []
 
 
-#vibration implementation
-atm_OPD_temp_list = []
-
-
 
 tel_psf_list = []
 
@@ -438,42 +395,66 @@ CL_gain_zer = 0.4
 reconstructor_pyr = M2C_pyr @ CALIB_pyr.M #takes in slopes and outputs modes, then takes in modes and outputs controle shape(357, 664)
 reconstructor_zer = M2C_zer @ CALIB_zer_obj.M #takes in wfs signal and outputs control
 ATM.generateNewPhaseScreen(seed = 10)
+"""ZZ = Zernike(telObject = TEL,
+                       J = 5)
+ZZ.computeZernike(telObject2 = TEL)
+tip     = ZZ.modesFullRes[:,:,0]
+def sine(f, t):
+    result = np.sin(2 * np.pi * (f * t))
+    return result
+"""
+
+PWFS_signal_avg = 0
+PWFS_signal_avg_norm = 0
 for i in range(nLoop):
+    #tip_vibr = 1e-7 * sine(40, i * SAMPLING_TIME) * tip
     #update phase screen
     ATM.update()
-    atm_opd = ATM.OPD
+    atm_opd = ATM.OPD.copy()
     atm_OPD_temp_list.append(atm_opd)
 
     total_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
 
-    #propagate through AO with the dm commands applied
-    SRC * TEL * DM_pyr * PWFS
-    TEL * DM_zer * vZWFS
-    #propagate to the source with the dm commands applied (old dm commands)
-    #the point of this line is that for the wfs propagation you would be using NGS
-    SRC * TEL
-
-
+    # PWFS slope averaging over 3 frames
+    PWFS_signal_avg += (PWFS.signal_2D + PWFS.referenceSignal_2D) * PWFS.norma
+    PWFS_signal_avg_norm += PWFS.norma
 
     #update the dm commands
-    if i % 3 == 0:
-        #frame delay implementation
-        pwfssignal_buffer.append(PWFS.signal)
+    if (i + 1) % 3 == 0:
+        #PWFS slope averaging over 3 frames (should be implemented correctly, but if something goes wrong you can turn this off and check)
+        PWFS_signal_avg = PWFS_signal_avg / PWFS_signal_avg_norm - PWFS.referenceSignal_2D
+        PWFS_signal_avg = PWFS_signal_avg[np.where(PWFS.validSignal == 1)]
+
+        #frame delay implementation (pyramid)
+        pwfssignal_buffer.append(PWFS_signal_avg)
         pwfs_delayed_signal = pwfssignal_buffer[0]
         pwfssignal_buffer.pop(0)
 
         DM_pyr.coefs = DM_pyr.coefs - CL_gain_pyr * np.matmul(reconstructor_pyr, pwfs_delayed_signal)
         DM_pyr_copy = DM_pyr.coefs.copy()
 
-    # frame delay implementation
+
+        PWFS_signal_avg = 0
+        PWFS_signal_avg_norm = 0
+
+    # frame delay implementation (zernike)
     vzwfssignal_buffer.append(vZWFS.signal)
     vzwfs_delayed_signal = vzwfssignal_buffer[0]
     vzwfssignal_buffer.pop(0)
-    DM_zer.coefs = DM_zer.coefs - CL_gain_zer * np.matmul(reconstructor_zer, vZWFS.signal)
-    DM_zer_copy = DM_zer.coefs.copy()
 
 
+    DM_zer_coefs = DM_zer_copy - CL_gain_zer * np.matmul(reconstructor_zer, vzwfs_delayed_signal)
+    DM_zer_copy = DM_zer_coefs.copy()
+    #woofer_tweeter corr
+    DM_zer.coefs = DM_zer_copy - np.matmul(N2N1, DM_pyr.coefs)
 
+
+    #propagate through AO with the dm commands applied
+    SRC * TEL * DM_pyr * PWFS
+    if (i + 1) % 3 == 0:
+        residual_OPD_list_pwfs.append(TEL.OPD)
+        sr_1st.append(np.exp(-np.var(TEL.src.phase[np.where(TEL.pupil == 1)])))
+    TEL * DM_zer * vZWFS
 
 
     #performance metrics
@@ -483,26 +464,71 @@ for i in range(nLoop):
     print(f"strehl {sr[i]}")
 
 
-    #if sr[i] > 0.5:
     residual_OPD_list.append(TEL.OPD)
-    print("residual_OPD_append")
 
-    if sr[i] > 0.5:
-        TEL.computePSF(zeroPaddingFactor)
-        tel_psf_list.append(TEL.PSF)
+    #when plotting high strehl PSF, just
+    TEL.computePSF(zeroPaddingFactor)
+    tel_psf_list.append(TEL.PSF)
 
 
+
+#TODO clean up later
+#TODO for some plots you need to check the sr > 0.5 condition
+#TODO change the 2000 timeery condition
+#TODO what other plots are missing?
+save_files = True
+directory_name = 'test_1st_1500'
+savedir = f'temp_save_dir/{directory_name}/'
+
+if not os.path.exists(savedir):
+    os.makedirs(savedir)
+
+if save_files == True:
+    residual_error_array = np.asarray(residual_error)
+    np.save(f"temp_save_dir/{directory_name}/residual_error", residual_error_array)
+
+
+    strehl_array_1st = np.asarray(sr_1st)
+    strehl_array_1st = np.repeat(strehl_array_1st, 3)
+    strehl_array_1st = np.insert(strehl_array_1st, 0, [0, 0])
+    np.save(f"temp_save_dir/{directory_name}/strehl_array_1st", strehl_array_1st)
+
+    strehl_array_2nd = np.asarray(sr)
+    np.save(f"temp_save_dir/{directory_name}/strehl_array_2nd", strehl_array_2nd)
+
+    tel_psf_array = np.asarray(tel_psf_list)
+    np.save(f"temp_save_dir/{directory_name}/tel_psf_array", tel_psf_array)
+
+    residual_OPD_array = np.asarray(residual_OPD_list) #for use in spatial PSD/KL modes var and correlation
+    #you can later do the spatial PSD when you save the required atm parameter
+    np.save(f"temp_save_dir/{directory_name}/residual_OPD_array", residual_OPD_array)
+
+    atm_OPD_array = np.asarray(atm_OPD_temp_list) #not sure where I would use it
+    np.save(f"temp_save_dir/{directory_name}/atm_OPD_array", atm_OPD_array)
+
+    total_err_array = np.asarray(total_error) #not useful for now
+    np.save(f"temp_save_dir/{directory_name}/total_err_array", total_err_array)
+
+    #YOU SHOULD ALSO CHECK IF YOU ONLY HAVE AN EPISODE OF DATA IN ALL OF THESE BECAUSE I DON'T REMEMBER
+    time_plot = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
+    np.save(f"temp_save_dir/{directory_name}/time_array", time_plot)
+    np.save(f"temp_save_dir/{directory_name}/frequency", FREQUENCY)
+
+
+
+    print('data saved')
 
 
 
 #---------------------------------------------------Error decomposition---------------------------------------------------#
-time = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
+time_plot = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
 plt.figure()
-plt.plot(time, residual_error, label = "residual")
+plt.plot(time_plot, residual_error, label = "residual")
 #plt.plot(time, sim_temp_error_2_frame_delay, label = "simulational temporal error 2 frame delay")
 plt.title("error decomposition (nm)")
 plt.xlabel("time s")
 plt.yscale("log")
+plt.grid(True)
 plt.legend()
 
 
@@ -523,11 +549,13 @@ sr_running = np.convolve(sr_padded, kernel, mode='valid')
 
 
 plt.figure()
-plt.plot(time, sr, label = "strehl")
-plt.plot(time, sr_running, label = "running_strehl")
+plt.plot(time_plot, sr, label = "strehl")
+plt.plot(time_plot, sr_running, label = "running_strehl")
+plt.plot(time_plot, sr_1st, label = "1st stage strehl")
 plt.title("Strehl ratio")
 plt.xlabel("time s")
 plt.ylim(bottom = (sr_mean - 0.3))
+plt.grid(True)
 plt.legend()
 
 
@@ -547,6 +575,7 @@ plt.gca().add_artist(corr_zone_1)
 plt.gca().add_artist(corr_zone_2)
 plt.xlabel("arcsec")
 plt.ylabel("arcsec")
+plt.grid(True)
 plt.colorbar()
 
 tel_psf_list = np.array(tel_psf_list)
@@ -560,6 +589,7 @@ plt.gca().add_artist(corr_zone_1_LE)
 plt.gca().add_artist(corr_zone_2_LE)
 plt.xlabel("arcsec")
 plt.ylabel("arcsec")
+plt.grid(True)
 plt.colorbar()
 
 
@@ -602,7 +632,7 @@ for j in range(len(residual_OPD_list)):
     PSD_residual_circavg_list.append(PSD_residual_circavg)
 
 
-"""PSD_fitting_circavg_list = []
+'''PSD_fitting_circavg_list = []
 PSD_fitting_circavg_freq = 0
 #PSD calculation for fitting error
 for j in range(len(sim_fit_error_list_2D)):
@@ -618,7 +648,7 @@ for j in range(len(sim_fit_error_list_2D)):
     if j == 0:
         PSD_fitting_circavg_freq = PSD_fitting_freq
 
-    PSD_fitting_circavg_list.append(PSD_fitting_circavg)"""
+    PSD_fitting_circavg_list.append(PSD_fitting_circavg)'''
 
 
 PSD_atmosphere_circavg_list = []
@@ -696,6 +726,7 @@ plt.xscale("log")
 plt.yscale("log")
 plt.xlim(right = PSD_residual_freq_x)
 plt.ylim(bottom = 1e-2)
+plt.grid(True)
 plt.legend()
 
 
@@ -788,30 +819,18 @@ atm_200_curve = temp_atm_coef_array[:, 200]
 #I am not sure about the normalisation (it just works)
 #tip
 PSD_residual_tip_freq_t, PSD_residual_tip = welch_method_scipy(residual_tip_curve)
-#PSD_residual_tip = np.abs(np.fft.rfft(residual_tip_curve)) ** 2 * delta_t * 2/ (len(residual_tip_curve))
-#PSD_residual_tip_freq_t = np.fft.rfftfreq(len(residual_tip_curve), d=delta_t)
-
 PSD_atm_tip_freq_t, PSD_atm_tip = welch_method_scipy(atm_tip_curve)
-#PSD_atm_tip = np.abs(np.fft.rfft(atm_tip_curve)) ** 2 * delta_t * 2/ (len(atm_tip_curve))
-#PSD_atm_tip_freq_t = np.fft.rfftfreq(len(atm_tip_curve), d=delta_t)
+
 
 #tilt
 PSD_residual_tilt_freq_t, PSD_residual_tilt = welch_method_scipy(residual_tilt_curve)
-#PSD_residual_tilt = np.abs(np.fft.rfft(residual_tilt_curve)) ** 2 * delta_t * 2/ (len(residual_tilt_curve))
-#PSD_residual_tilt_freq_t = np.fft.rfftfreq(len(residual_tilt_curve), d=delta_t)
-
 PSD_atm_tilt_freq_t, PSD_atm_tilt = welch_method_scipy(atm_tilt_curve)
-#PSD_atm_tilt = np.abs(np.fft.rfft(atm_tilt_curve)) ** 2 * delta_t * 2/ (len(atm_tilt_curve))
-#PSD_atm_tilt_freq_t = np.fft.rfftfreq(len(atm_tilt_curve), d=delta_t)
+
 
 #defocus
 PSD_residual_defocus_freq_t, PSD_residual_defocus = welch_method_scipy(residual_defocus_curve)
-#PSD_residual_defocus = np.abs(np.fft.rfft(residual_defocus_curve)) ** 2 * delta_t * 2/ (len(residual_defocus_curve))
-#PSD_residual_defocus_freq_t = np.fft.rfftfreq(len(residual_defocus_curve), d=delta_t)
-
 PSD_atm_defocus_freq_t, PSD_atm_defocus = welch_method_scipy(atm_defocus_curve)
-#PSD_atm_defocus = np.abs(np.fft.rfft(atm_defocus_curve)) ** 2 * delta_t * 2/ (len(atm_defocus_curve))
-#PSD_atm_defocus_freq_t = np.fft.rfftfreq(len(atm_defocus_curve), d=delta_t)
+
 
 #modes 100 and 200
 PSD_residual_100_freq_t, PSD_residual_100 = welch_method_scipy(residual_100_curve)
@@ -829,15 +848,17 @@ plt.title(f"residual PSD tip, gain {CL_gain_pyr}")
 plt.xlabel("frequency (Hz)")
 plt.yscale("log")
 plt.xscale("log")
+plt.grid(True)
 plt.legend()
 plt.ylabel("PSD")
 
 
 plt.figure()
-plt.plot(time, residual_tip_curve, label = "residual_tip_curve")
-plt.plot(time, atm_tip_curve, label = "atm_tip_curve")
+plt.plot(time_plot, residual_tip_curve, label = "residual_tip_curve")
+plt.plot(time_plot, atm_tip_curve, label = "atm_tip_curve")
 plt.title(f"residual/atm timeseries tip, gain {CL_gain_pyr}")
 plt.xlabel("time (s)")
+plt.grid(True)
 plt.legend()
 plt.ylabel("residual tip")
 
@@ -849,6 +870,7 @@ plt.title(f"residual PSD tilt, gain {CL_gain_pyr}")
 plt.xlabel("frequency (Hz)")
 plt.yscale("log")
 plt.xscale("log")
+plt.grid(True)
 plt.legend()
 plt.ylabel("PSD")
 
@@ -860,6 +882,7 @@ plt.title(f"residual PSD defocus, gain {CL_gain_pyr}")
 plt.xlabel("frequency (Hz)")
 plt.yscale("log")
 plt.xscale("log")
+plt.grid(True)
 plt.legend()
 plt.ylabel("PSD")
 
@@ -871,6 +894,7 @@ plt.title(f"residual PSD 100, gain {CL_gain_pyr}")
 plt.xlabel("frequency (Hz)")
 plt.yscale("log")
 plt.xscale("log")
+plt.grid(True)
 plt.legend()
 plt.ylabel("PSD")
 
@@ -883,6 +907,7 @@ plt.title(f"residual PSD 200, gain {CL_gain_pyr}")
 plt.xlabel("frequency (Hz)")
 plt.yscale("log")
 plt.xscale("log")
+plt.grid(True)
 plt.legend()
 plt.ylabel("PSD")
 
@@ -910,8 +935,43 @@ plt.xlabel("frequency Hz")
 plt.xscale("log")
 plt.yscale("log")
 plt.xlim(right = np.max(PSD_residual_tip_freq_t))
+plt.grid(True)
 plt.legend()
 
+#---------------------------------------------------correlation calculation---------------------------------------------------#
+
+#here it is the covariance divided by standard deviation
+def correlation_f(phase_1, phase_2):
+    phase_1 = phase_1[np.where(TEL.pupil == 1)]
+    phase_2 = phase_2[np.where(TEL.pupil == 1)]
+
+    phase_1_centered = phase_1 - np.mean(phase_1)
+    phase_2_centered = phase_2 - np.mean(phase_2)
+    correlation = np.corrcoef(phase_1_centered, phase_2_centered)[0, 1]
+
+    return correlation
+
+
+atm_corr_coefs = []
+residual_pwfs_corr_coefs = []
+residual_zwfs_corr_coefs = []
+for i in range(len(atm_OPD_temp_list[:200])):
+    a1 = correlation_f(atm_OPD_temp_list[0], atm_OPD_temp_list[i])
+    atm_corr_coefs.append(a1)
+for i in range(len(residual_OPD_list_pwfs[300:500])):
+    r1 = correlation_f(residual_OPD_list_pwfs[300], residual_OPD_list_pwfs[300 + i])
+    residual_pwfs_corr_coefs.append(r1)
+
+    r2 = correlation_f(residual_OPD_list[300], residual_OPD_list[300 + i])
+    residual_zwfs_corr_coefs.append(r2)
+
+plt.figure()
+plt.title("atmosphere vs residual correlation")
+plt.plot(atm_corr_coefs, label = "atm corr")
+plt.plot(residual_pwfs_corr_coefs, label = "res corr pwfs")
+plt.plot(residual_zwfs_corr_coefs, label = "res corr zwfs")
+plt.grid(True)
+plt.legend()
 
 plt.show()
 

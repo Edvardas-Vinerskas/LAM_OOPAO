@@ -4,19 +4,16 @@ Created on Fri Jun 21 11:33:27 2024
 
 @author: mmotte
 """
-import inspect
-import multiprocessing
-import sys
-import time
+
 import warnings
-import matplotlib.pyplot as plt
+
 import numpy as np
-import scipy.ndimage as sp
+
 from numpy.fft import fft2,ifft2,fftshift
 from .Detector import Detector
 
 import logging  # For logging messages
-import tqdm  # Progress bar
+
 
 logging.basicConfig(level=logging.INFO)  # Set up logging
 logger = logging.getLogger(__name__)  # Create logger
@@ -55,7 +52,7 @@ class ZWFS:
         transmittance: float
             The portion of flux going into the mask 
         zpf: int 
-            In FFT propagation method, it is the Zero padding factor. In MFT propagation method it corresponds to the diameter of the mask in fourier plane (ie the resolution of the fourier transform inside the mask): default value 4.
+            In FFT propagation method, it is the Zero padding factor. In MFT propagation method it correspond to the diameter of the mask in fourier plane (ie the resolution of the fourier transform inside the mask): default value 4.
         phase_shift_unit: string
             If one want to express the depth in lambda, pi, or radian. default : radian
         propagation_method: string
@@ -127,10 +124,12 @@ class ZWFS:
         self.amplitude_mask = self.Z_bool*np.sqrt(self.transmittance)
         # _, self.Ib = self.propagation(mask = self.amplitude_mask, phase = 0)
         self.Ip = self.telescope.pupilReflectivity**2*self.transmittance
+        self._img_ZWFS = 0
+        self._signal = 0
         self.wfs_measure(phase_in=np.zeros(self.telescope.pupil.shape))
         
-        self.ref_signal = self.signal
-        self.img_ref = self.img_ZWFS
+        self._ref_signal = self.signal
+        self._img_ref = self.img_ZWFS
     def ZWFS_bool(self):
         if self.propagation_method == 'MFT':
             Zradius_pixels = self.resolution/2
@@ -192,14 +191,13 @@ class ZWFS:
             # print(b-a)
         # print(np.sum(IM_detect))
         return EM_det,IM_detect
-    def wfs_measure(self, phase_in = None, reconstructor = None, known_EM = False, reconstructor_iteration:int = 1, estimated_phase = 0):
+    def wfs_measure(self, phase_in = None, reconstruction_method = None, known_EM = False, reconstructor_iteration:int = 1, estimated_phase = 0):
         if reconstructor_iteration<1:
             warnings.warn('Number of iteration ofr the reconstructor should be superior or equal to 1, Taking 1')
             reconstructor_iteration = 1
         if phase_in is not None:
             self.telescope.src.phase = phase_in
         self.EM_detect, self.img_ZWFS = self.propagation()
-        self.signal =  self.img_ZWFS[self.pupil_mask].ravel()#np.reshape(self.img_ZWFS, (self.nSignal,))
         if known_EM:
             Psi_b,self.Ib = self.propagation(mask = self.amplitude_mask, computing_Ib=True)
             self.beta = np.angle(Psi_b)
@@ -210,12 +208,9 @@ class ZWFS:
         self.sin_phase = self.phase_sin()
         # if np.size(np.where(np.abs(self.sin_phase)==1)[1])>0:
         #     self.sin_phase/=np.nanmax(np.abs(self.sin_phase))
-        if reconstructor is not None:
-            self.retrieved_phase = self.reconstructor(reconstructor, iteration= reconstructor_iteration)
-        try:
-            self.signal-=self.ref_signal
-        except:
-            None
+        if reconstruction_method is not None:
+            self.retrieved_phase = self.reconstructor(reconstruction_method, iteration= reconstructor_iteration)
+    
         # self.signal =  np.reshape(self.img_ZWFS, (self.nSignal,))
     def phase_sin(self, Ib = None, Ip = None, img_ZWFS = None, phase_shift = None, clipping = True):
         if Ib is None:
@@ -223,7 +218,7 @@ class ZWFS:
         if Ip is None:
             Ip = self.Ip
         if img_ZWFS is None:
-            img_ZWFS = self.img_ZWFS
+            img_ZWFS = self.img_ZWFS.copy()
         if phase_shift is None:
             phase_shift = self.phase_shift
         # sin_phase = (img_ZWFS-Ip-4*Ib*(np.sin(phase_shift/2))**2)/(4*np.sqrt(Ib*Ip)*np.sin(phase_shift/2))
@@ -236,6 +231,9 @@ class ZWFS:
         sin_phase[~self.pupil_mask] = 0.0
         # sin_phase[self.telescope.pupil==0]=0
         return sin_phase
+    def reinitialise_class(self):
+        self.reset_Ib_beta()
+        self.wfs_measure(phase_in=np.zeros(self.telescope.pupil.shape))
     def reset_Ib_beta(self):
         Psi_b,self.Ib = self.propagation(mask = self.amplitude_mask, phase = 0, computing_Ib=True)
         self.beta = np.angle(Psi_b)
@@ -272,6 +270,7 @@ class ZWFS:
         except Exception as e:
             logger.warning("Reconstruction failed: %s", e, exc_info=True)
             return None
+    
     def _MFT(self, Na:int, Nb:int, m, EMF_pupil, mask = 1):
         Nb = np.int64(Nb)
         Na = np.int64(Na)
@@ -282,8 +281,41 @@ class ZWFS:
         Ft = (m/(Na*Nb)*np.exp(-2*1j*np.pi*(u@x.T))@EMF_pupil@np.exp(-2*1j*np.pi*(x@u.T)))
         iFt = m/(Na*Nb)*np.exp(2*1j*np.pi*(x@u.T))@(Ft*mask)@np.exp(2*1j*np.pi*(u@x.T))
         return Ft, iFt
-    
-    
+    @property
+    def img_ZWFS(self):
+        return self._img_ZWFS
+    @img_ZWFS.setter
+    def img_ZWFS(self, val):
+        try:
+            self._signal = val[self.pupil_mask]-self.ref_signal
+        except:
+            self._signal = val[self.pupil_mask]
+        self._img_ZWFS = val
+    @property
+    def signal(self):
+        return self._signal
+    @signal.setter
+    def signal(self,val):
+        self._img_ZWFS = np.zeros(self._img_ZWFS.shape)
+        self._img_ZWFS[self.pupil_mask] = val
+        self._signal = val
+    @property
+    def img_ref(self):
+        return self._img_ref
+    @img_ref.setter
+    def img_ref(self, val):
+        self._ref_signal = val[self.pupil_mask]
+        self._img_ref = val
+    @property
+    def ref_signal(self):
+        return self._ref_signal
+    @ref_signal.setter
+    def ref_signal(self,val):
+        self._img_ref = np.zeros(self._img_ref.shape)
+        self._img_ref[self.pupil_mask] = val
+        self._ref_signal = val
+   
+        
     def __mul__(self,obj): 
         if obj.tag=='detector':
             obj._integrated_time+=self.telescope.samplingTime

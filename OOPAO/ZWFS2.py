@@ -20,9 +20,9 @@ from OOPAO.Detector import Detector
 import numpy as np
 import matplotlib.pyplot as plt
 from OOPAO.ZWFS import ZWFS
-class ZWFS2:
+class ZWFS2: #zpf 30, diameter 2.14, phase_shift [-0.75 * np.pi,0.3 * np.pi]
     def __init__(self, tel = None, diameter:float = None, phase_shift = [-np.pi/2,np.pi/2], flux_ratio:float = 1/2, transmittance:complex = 1, zpf = 4, phase_shift_unit = 'radian', propagation_method = 'MFT', ZWFS1 = None, ZWFS2=None):
-        self._img_ZWFS = 0
+
         
         if tel is not None:
             self.telescope = tel
@@ -48,7 +48,11 @@ class ZWFS2:
         # self.zwfs2.Ib_ref = self.zwfs2.Ib
         self.zpf = zpf
         self.wfs_measure()
-        self.ref_signal = np.append(self.zwfs1.ref_signal, self.zwfs2.ref_signal)
+        self._ref_signal = np.append(self.zwfs1.ref_signal, self.zwfs2.ref_signal)
+        self._signal = np.append(self.zwfs1.signal, self.zwfs2.signal)
+        self.pupil_mask = np.concatenate((self.zwfs1.pupil_mask ,self.zwfs2.pupil_mask), axis = 1)
+        self._img_ref = np.concatenate((self.zwfs1.img_ref ,self.zwfs2.img_ref), axis = 1)
+        self._img_ZWFS = np.concatenate((self.zwfs1.img_ZWFS,self.zwfs2.img_ZWFS), axis = 1)
         self.tag = 'ZWFS'
     def wfs_measure(self, phase_in = None, reconstructor = None, reconstructor_iteration = 1, known_EM = False):
         if reconstructor_iteration<1:
@@ -62,10 +66,12 @@ class ZWFS2:
         self.img_ZWFS = np.concatenate((self.zwfs1.img_ZWFS,self.zwfs2.img_ZWFS), axis = 1)#(-self.zwfs1.img_ZWFS+self.zwfs2.img_ZWFS)/(2*self.telescope.pupil**2+1-(self.zwfs1.img_ZWFS+self.zwfs2.img_ZWFS))
         # # self.img_ZWFS[self.telescope.pupil==0]=0
         # self.signal = self.img_ZWFS.reshape(self.img_ZWFS.size)
-        self.signal = np.append(self.zwfs1.signal, self.zwfs2.signal)
         self.nSignal = self.signal.size
        
-
+    def reinitialise_class(self):
+        self.zwfs1.reset_Ib_beta()
+        self.zwfs2.reset_Ib_beta()
+        self.wfs_measure(phase_in=np.zeros(self.telescope.pupil.shape))
     def reconstructor(self, reconstructor = 'atan', iteration = 1):
         self.zwfs1.reset_Ib_beta()
         self.zwfs2.reset_Ib_beta()
@@ -109,9 +115,40 @@ class ZWFS2:
                 self.zwfs2.sin_phase = self.zwfs2.phase_sin(clipping=True)
         retrieved_phase[(self.zwfs2.telescope.pupil==1)&(self.zwfs1.telescope.pupil==1)]-=retrieved_phase[(self.zwfs2.telescope.pupil==1)&(self.zwfs1.telescope.pupil==1)].mean()
         return retrieved_phase
+    def _unconcatenate(self,vzimg):
+        z1 = vzimg[:,:vzimg.shape[1]//2]
+        z2 = vzimg[:,vzimg.shape[1]//2:]
+        return z1, z2
     @property
     def img_ZWFS(self):
-        return np.concatenate((self.zwfs1.img_ZWFS,self.zwfs2.img_ZWFS), axis = 1)
+        self._img_ZWFS = np.concatenate((self.zwfs1.img_ZWFS,self.zwfs2.img_ZWFS), axis = 1)
+        return self._img_ZWFS
     @img_ZWFS.setter
     def img_ZWFS(self,val):
+        self.zwfs1.img_ZWFS, self.zwfs2.img_ZWFS = self._unconcatenate(val)
         self._img_ZWFS = val
+    @property
+    def ref_signal(self):
+        return np.append(self.zwfs1.ref_signal, self.zwfs2.ref_signal)
+    @ref_signal.setter
+    def ref_signal(self,val):
+        self._img_ref = np.zeros(self.pupil_mask.shape)
+        self._img_ref[self.pupil_mask] = val
+        self.zwfs1.img_ref, self.zwfs2.img_ref = self._unconcatenate(self._img_ref)
+    @property
+    def signal(self):
+        return np.append(self.zwfs1.signal, self.zwfs2.signal)
+    @signal.setter
+    def signal(self,val):
+        self._signal = val
+    @property
+    def img_ref(self):
+        self._img_ref = np.concatenate((self.zwfs1.img_ref ,self.zwfs2.img_ref), axis = 1)
+        return self._img_ref
+    @img_ref.setter
+    def img_ref(self, val):
+        img1, img2 = self._unconcatenate(val)
+        self.zwfs1.img_ref = img1   # <- PAS _img_ref
+        self.zwfs2.img_ref = img2
+        self._img_ref = val
+        self._ref_signal = np.append(self.zwfs1.ref_signal, self.zwfs2.ref_signal)
