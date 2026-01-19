@@ -230,10 +230,9 @@ CAM = Detector(integrationTime = 100 * TEL.samplingTime,  # integration time of 
 
 ATM.generateNewPhaseScreen(seed = 10)
 #reset everything just in case
-TEL.resetOPD()
+SRC.reset()
 DM.coefs = 0
-TEL + ATM
-SRC * TEL * DM * WFS
+SRC ** ATM * TEL * DM * WFS
 TEL.print_optical_path()
 
 #variables and performance metric initialisation

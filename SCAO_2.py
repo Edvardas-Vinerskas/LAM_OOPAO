@@ -38,7 +38,13 @@ for the PSD problem:
     * or more likely gain, so once again try playing with it
 I am not sure why the LE PSF does not have the clear correction zone
     * you should do a comparison with corrected and non-corrected and see what is the difference
-    
+
+
+For now, tel.resetOPD() is still functional but it will display a warning. To reset the light propagation, the reset() method from the Source object can be triggered using the ** operator: 
+
+src**tel : will correspond to a free-space propagation applying the pupil and Telescope effects
+src**atm : will propagate the light through the atmosphere layers (No pupil applied)
+src**atm*tel : will propagate the light through the atmosphere and then Telescope (applying the pupil and Telescope effects) 
 """
 
 
@@ -266,10 +272,9 @@ CAM = Detector(integrationTime = 100 * TEL.samplingTime,  # integration time of 
 
 ATM.generateNewPhaseScreen(seed = 10)
 #reset everything just in case
-TEL.resetOPD()
+SRC.reset()
 DM.coefs = 0
-TEL + ATM
-SRC * TEL * DM * WFS
+SRC ** ATM * TEL * DM * WFS
 TEL.print_optical_path()
 
 #delay implementation

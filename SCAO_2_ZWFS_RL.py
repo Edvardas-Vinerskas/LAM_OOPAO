@@ -435,7 +435,7 @@ def loss_fn(state,action):
 
 
 def main():
-    directory_name = 'vZWFS_1st_2nd_noise_03_wooftw_seed_chang_dyn_mask'
+    directory_name = 'vZWFS_1st_2nd_noise_03_wooftw_seed_chang_dyn_mask_2'
 
     save_buffer = True
     load_buffer = False

@@ -264,7 +264,6 @@ CALIB_pyr = InteractionMatrix(ngs        = SRC,
 
 
 #calibration for zernike (there are better methods out there for calibration under real conditions but this will suffice for now)
-TEL - ATM
 CALIB_zer = np.zeros((vZWFS.signal.shape[0], M2C_zer.shape[1]))
 
 
@@ -274,15 +273,15 @@ for i in range(M2C_zer.shape[1]):
     v_minus = -M2C_zer[:, i] * stroke
 
 
-    TEL.resetOPD()
+    SRC.reset()
     DM_zer.coefs = v_plus
-    SRC * TEL * DM_zer * vZWFS
+    SRC ** TEL * DM_zer * vZWFS
     w_plus = vZWFS.signal
 
 
-    TEL.resetOPD()
+    SRC.reset()
     DM_zer.coefs = v_minus
-    SRC * TEL * DM_zer * vZWFS
+    SRC ** TEL * DM_zer * vZWFS
     w_minus = vZWFS.signal
 
 
@@ -338,13 +337,12 @@ CAM = Detector(integrationTime = 100 * TEL.samplingTime,  # integration time of 
 
 ATM.generateNewPhaseScreen(seed = 10)
 #reset everything just in case
-TEL.resetOPD()
+SRC.reset()
 DM_pyr.coefs = 0
 DM_zer.coefs = 0
 DM_zer_copy = 0
 DM_zer_copy_woof_tweet = 0
-TEL + ATM
-SRC * TEL * DM_pyr * PWFS * DM_zer * vZWFS
+SRC ** ATM * TEL * DM_pyr * PWFS * DM_zer * vZWFS
 TEL.print_optical_path()
 
 #delay implementation

@@ -141,7 +141,6 @@ class OOPAO_environment_ZWFS(gym.Env):
                                                stroke        = stroke)
 
         #ZWFS calibration
-        self.TEL - self.ATM
         CALIB_zer = np.zeros((self.vZWFS.signal.shape[0], self.M2C_zer.shape[1]))
 
         #zernike_wfs calibration with DM_zer
@@ -149,14 +148,14 @@ class OOPAO_environment_ZWFS(gym.Env):
             v_plus  = self.M2C_zer[:, i] * stroke
             v_minus = -self.M2C_zer[:, i] * stroke
 
-            self.TEL.resetOPD()
+            self.SRC.reset()
             self.DM_zer.coefs = v_plus
-            self.SRC * self.TEL * self.DM_zer * self.vZWFS
+            self.SRC ** self.TEL * self.DM_zer * self.vZWFS
             w_plus = self.vZWFS.signal
 
-            self.TEL.resetOPD()
+            self.SRC.reset()
             self.DM_zer.coefs = v_minus
-            self.SRC * self.TEL * self.DM_zer * self.vZWFS
+            self.SRC ** self.TEL * self.DM_zer * self.vZWFS
             w_minus = self.vZWFS.signal
 
             CALIB_zer[:, i] = (w_plus - w_minus) / (2 * stroke)
@@ -170,12 +169,11 @@ class OOPAO_environment_ZWFS(gym.Env):
 
         #---------------------------------------------------INITIALIZATION---------------------------------------------------#
         self.ATM.generateNewPhaseScreen(seed = self.seed)
-        self.TEL.resetOPD()
+        self.SRC.reset()
         self.DM_pyr.coefs = np.zeros(self.DM_pyr.coefs.shape)
         self.DM_zer.coefs = np.zeros(self.DM_zer.coefs.shape)
         self.DM_zer_copy  = 0
-        self.TEL + self.ATM
-        self.SRC * self.TEL * self.DM_pyr * self.PWFS
+        self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.PWFS
         self.TEL * self.DM_zer * self.vZWFS
         self.TEL.print_optical_path()
 
@@ -231,7 +229,6 @@ class OOPAO_environment_ZWFS(gym.Env):
 
     def reset(self, seed = None, options = None):
         # IMPORTANT: Must call this first to seed the random number generator
-        self.TEL + self.ATM
         super().reset(seed=seed)
 
         if seed is None:
@@ -256,7 +253,7 @@ class OOPAO_environment_ZWFS(gym.Env):
 
 
         # propagate to wfs and apply new dm commands to the dm
-        self.SRC * self.TEL * self.DM_pyr * self.PWFS
+        self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.PWFS
         self.TEL * self.DM_zer * self.vZWFS
 
         vzwfs_signal_proj = self.reconstructor_zer @ self.vZWFS.signal

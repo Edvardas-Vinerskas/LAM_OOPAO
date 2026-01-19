@@ -126,10 +126,9 @@ class OOPAO_environment_PWFS(gym.Env):
 
         #---------------------------------------------------INITIALIZATION---------------------------------------------------#
         self.ATM.generateNewPhaseScreen(seed = self.seed)
-        self.TEL.resetOPD()
+        self.SRC.reset()
         self.DM_pyr.coefs = np.zeros(self.DM_pyr.coefs.shape)
-        self.TEL + self.ATM
-        self.SRC * self.TEL * self.DM_pyr * self.PWFS
+        self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.PWFS
         self.TEL.print_optical_path()
 
 
@@ -173,7 +172,6 @@ class OOPAO_environment_PWFS(gym.Env):
 
     def reset(self, seed = None, options = None):
         # IMPORTANT: Must call this first to seed the random number generator
-        self.TEL + self.ATM
         super().reset(seed=seed)
 
         if seed is None:
@@ -194,7 +192,7 @@ class OOPAO_environment_PWFS(gym.Env):
 
 
         # propagate to wfs and apply new dm commands to the dm
-        self.SRC * self.TEL * self.DM_pyr * self.PWFS
+        self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.PWFS
 
         pwfs_signal_proj = self.reconstructor_pyr @ self.PWFS.signal
         # redoing in 2D
