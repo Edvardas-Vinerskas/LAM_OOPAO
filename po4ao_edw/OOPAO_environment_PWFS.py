@@ -158,7 +158,7 @@ class OOPAO_environment_PWFS(gym.Env):
         self.DM_pyr.coefs = 0
 
         # propagate to wfs and apply new dm commands to the dm
-        self.SRC * self.TEL * self.DM_pyr * self.PWFS
+        self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.PWFS
 
         pwfs_signal_proj = self.reconstructor_pyr @ self.PWFS.signal
 
@@ -213,7 +213,7 @@ class OOPAO_environment_PWFS(gym.Env):
         atm_opd = self.ATM.OPD.copy()
 
 
-        total_error = np.std(self.TEL.OPD[np.where(self.TEL.pupil > 0)]) * 1e9
+        total_error = np.std(self.ATM.OPD[np.where(self.TEL.pupil > 0)]) * 1e9
 
 
         # frame delay implementation
@@ -228,7 +228,7 @@ class OOPAO_environment_PWFS(gym.Env):
 
 
         # propagate to wfs and apply new dm commands to the dm
-        self.SRC * self.TEL * self.DM_pyr * self.PWFS
+        self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.PWFS
 
 
         pwfs_signal_torch_proj = self.reconstructor_pyr @ self.PWFS.signal

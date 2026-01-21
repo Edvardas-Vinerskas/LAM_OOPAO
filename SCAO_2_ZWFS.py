@@ -342,7 +342,8 @@ DM_pyr.coefs = 0
 DM_zer.coefs = 0
 DM_zer_copy = 0
 DM_zer_copy_woof_tweet = 0
-SRC ** ATM * TEL * DM_pyr * PWFS * DM_zer * vZWFS
+SRC ** ATM * TEL * DM_pyr * PWFS
+SRC ** ATM * TEL * DM_pyr * DM_zer * vZWFS
 TEL.print_optical_path()
 
 #delay implementation
@@ -411,7 +412,7 @@ for i in range(nLoop):
     atm_opd = ATM.OPD.copy()
     atm_OPD_temp_list.append(atm_opd)
 
-    total_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
+    total_error[i] = np.std(ATM.OPD[np.where(TEL.pupil > 0)]) * 1e9
 
     # PWFS slope averaging over 3 frames
     PWFS_signal_avg += (PWFS.signal_2D + PWFS.referenceSignal_2D) * PWFS.norma
@@ -448,11 +449,11 @@ for i in range(nLoop):
 
 
     #propagate through AO with the dm commands applied
-    SRC * TEL * DM_pyr * PWFS
+    SRC ** ATM * TEL * DM_pyr * PWFS
     if (i + 1) % 3 == 0:
         residual_OPD_list_pwfs.append(TEL.OPD)
         sr_1st.append(np.exp(-np.var(TEL.src.phase[np.where(TEL.pupil == 1)])))
-    TEL * DM_zer * vZWFS
+    SRC ** ATM * TEL * DM_pyr *  DM_zer * vZWFS
 
 
     #performance metrics

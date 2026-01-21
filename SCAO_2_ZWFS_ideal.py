@@ -54,7 +54,7 @@ Z_coefs             = 250 #200 #above 200 does not work great per Benoit
 
 
 
-zeroPaddingFactor = 4
+zeroPaddingFactor = 6
 rad2arcsec        = 180 * 60 * 60 / np.pi
 
 
@@ -297,7 +297,8 @@ SRC.reset()
 DM_pyr.coefs = 0
 DM_zer.coefs = 0
 DM_zer_copy = 0
-SRC ** ATM * TEL * DM_pyr * PWFS * DM_zer * vZWFS
+SRC ** ATM * TEL * DM_pyr * PWFS
+SRC ** ATM * TEL * DM_pyr * DM_zer * vZWFS
 TEL.print_optical_path()
 
 #variables and performance metric initialisation
@@ -336,7 +337,7 @@ for i in range(nLoop):
     atm_OPD_list.append(atm_opd)
     atm_OPD_list.pop(0)
 
-    total_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
+    total_error[i] = np.std(ATM.OPD[np.where(TEL.pupil > 0)]) * 1e9
 
     #update the dm commands
     if (i + 1) % 3 == 0:
@@ -358,11 +359,11 @@ for i in range(nLoop):
     DM_zer.coefs = DM_zer_copy - np.matmul(N2N1, DM_pyr.coefs)
 
     # propagate through AO with the dm commands applied
-    SRC * TEL * DM_pyr * PWFS
+    SRC ** ATM * TEL * DM_pyr * PWFS
     if (i + 1) % 3 == 0:
         residual_OPD_list_pwfs.append(TEL.OPD)
         sr_1st.append(np.exp(-np.var(TEL.src.phase[np.where(TEL.pupil == 1)])))
-    TEL * DM_zer * vZWFS
+    SRC ** ATM * TEL * DM_pyr * DM_zer * vZWFS
 
 
     #performance metrics

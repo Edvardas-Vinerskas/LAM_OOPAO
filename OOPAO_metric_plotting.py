@@ -17,8 +17,8 @@ from po4ao_edw.OOPAO_environment_PWFS import OOPAO_environment_PWFS
 from po4ao_edw.OOPAO_environment_ZWFS import OOPAO_environment_ZWFS
 
 
-env = OOPAO_environment_ZWFS()
-#env = OOPAO_environment_PWFS()
+#env = OOPAO_environment_ZWFS()
+env = OOPAO_environment_PWFS()
 
 DM_fake = DeformableMirror(telescope = env.TEL,
                            nSubap    = 40,
@@ -32,15 +32,15 @@ modes_fake_inv = np.linalg.pinv(np.squeeze(modes_fake[env.TEL.pupilLogical, :]))
 
 #TODO don't forget to also change your atmosphere parameters when loading files (atm_OPD_array)
 #TODO could you in fact rewrite this so unneccesary stuff is not loaded?
-RL         = True
+RL         = False
 integrator = True
-ideal      = True
-stage_2    = True
-directory_name_RL  = 'vZWFS_1st_2nd_noise_03_wooftw_seed_chang_gaussian_noise'
-directory_name_int = 'vZWFS_metrics_integrator_2'
-directory_name_ideal = 'vZWFS_1st_2nd_noise_03_wooftw_seed_chang_dyn_mask_2'
+ideal      = False
+stage_2    = False
+directory_name_RL  = 'PWFS_test_test'#vZWFS_1st_2nd_noise_03_wooftw_seed_chang_gaussian_noise
+directory_name_int = 'PWFS_test_test'
+directory_name_ideal = 'PWFS_test_test'#vZWFS_1st_2nd_noise_03_wooftw_seed_chang_dyn_mask_2
 label_RL = "gaussian_noise"
-label_int = "integrator_2"
+label_int = "integrator"
 label_ideal = "dyn_mask"
 mask_thresh = 0.5
 
@@ -58,8 +58,10 @@ residual_OPD_array_RL = np.load(f"temp_save_dir/{directory_name_RL}/residual_OPD
 #you can later do the spatial PSD when you save the required atm parameter
 atm_OPD_array_RL = np.load(f"temp_save_dir/{directory_name_RL}/atm_OPD_array.npy") #not sure where I would use it
 total_err_array_RL = np.load(f"temp_save_dir/{directory_name_RL}/total_err_array.npy") #not useful for now
-dynamics_loss = np.load(f"temp_save_dir/{directory_name_RL}/dynamics_loss.npy") #not useful for now
-policy_loss = np.load(f"temp_save_dir/{directory_name_RL}/policy_loss.npy") #not useful for now
+
+if RL == True:
+    dynamics_loss = np.load(f"temp_save_dir/{directory_name_RL}/dynamics_loss.npy") #not useful for now
+    policy_loss = np.load(f"temp_save_dir/{directory_name_RL}/policy_loss.npy") #not useful for now
 
 #YOU SHOULD ALSO CHECK IF YOU ONLY HAVE AN EPISODE OF DATA IN ALL OF THESE BECAUSE I DON4T REMEMBER
 frequency_RL = np.load(f"temp_save_dir/{directory_name_RL}/frequency.npy")

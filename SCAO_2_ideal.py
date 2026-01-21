@@ -54,7 +54,7 @@ KL_no               = 250
 
 
 
-zeroPaddingFactor = 4
+zeroPaddingFactor = 6
 rad2arcsec        = 180 * 60 * 60 / np.pi
 
 
@@ -260,7 +260,7 @@ for i in range(nLoop):
     atm_opd = ATM.OPD
     atm_OPD_temp_list.append(atm_opd)
 
-    total_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
+    total_error[i] = np.std(ATM.OPD[np.where(TEL.pupil > 0)]) * 1e9
 
     # update the dm commands
     mode_coefs = modes_inv @ atm_opd[np.where(TEL.pupil > 0)]
@@ -268,7 +268,7 @@ for i in range(nLoop):
     dm_coefs_copy = DM.coefs
 
     #propagate through AO with the dm commands applied
-    SRC * TEL * DM * WFS
+    SRC ** ATM * TEL * DM * WFS
 
 
     #performance metrics
@@ -287,34 +287,35 @@ for i in range(nLoop):
 
 
 #TODO clean up later
+save_files = False
+if save_files == True:
+    residual_error_array = np.asarray(residual_error)
+    np.save(f"temp_save_dir/{directory_name}/residual_error", residual_error_array)
 
-residual_error_array = np.asarray(residual_error)
-np.save(f"temp_save_dir/{directory_name}/residual_error", residual_error_array)
+    strehl_array_1st = np.asarray(sr)
+    np.save(f"temp_save_dir/{directory_name}/strehl_array_1st", strehl_array_1st)
 
-strehl_array_1st = np.asarray(sr)
-np.save(f"temp_save_dir/{directory_name}/strehl_array_1st", strehl_array_1st)
+    tel_psf_array = np.asarray(tel_psf_list)
+    np.save(f"temp_save_dir/{directory_name}/tel_psf_array", tel_psf_array)
 
-tel_psf_array = np.asarray(tel_psf_list)
-np.save(f"temp_save_dir/{directory_name}/tel_psf_array", tel_psf_array)
+    residual_OPD_array = np.asarray(residual_OPD_list) #for use in spatial PSD/KL modes var and correlation
+    #you can later do the spatial PSD when you save the required atm parameter
+    np.save(f"temp_save_dir/{directory_name}/residual_OPD_array", residual_OPD_array)
 
-residual_OPD_array = np.asarray(residual_OPD_list) #for use in spatial PSD/KL modes var and correlation
-#you can later do the spatial PSD when you save the required atm parameter
-np.save(f"temp_save_dir/{directory_name}/residual_OPD_array", residual_OPD_array)
+    atm_OPD_array = np.asarray(atm_OPD_temp_list) #not sure where I would use it
+    np.save(f"temp_save_dir/{directory_name}/atm_OPD_array", atm_OPD_array)
 
-atm_OPD_array = np.asarray(atm_OPD_temp_list) #not sure where I would use it
-np.save(f"temp_save_dir/{directory_name}/atm_OPD_array", atm_OPD_array)
+    total_err_array = np.asarray(total_error) #not useful for now
+    np.save(f"temp_save_dir/{directory_name}/total_err_array", total_err_array)
 
-total_err_array = np.asarray(total_error) #not useful for now
-np.save(f"temp_save_dir/{directory_name}/total_err_array", total_err_array)
-
-#YOU SHOULD ALSO CHECK IF YOU ONLY HAVE AN EPISODE OF DATA IN ALL OF THESE BECAUSE I DON'T REMEMBER
-time_plot = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
-np.save(f"temp_save_dir/{directory_name}/time_array", time_plot)
-np.save(f"temp_save_dir/{directory_name}/frequency", FREQUENCY)
+    #YOU SHOULD ALSO CHECK IF YOU ONLY HAVE AN EPISODE OF DATA IN ALL OF THESE BECAUSE I DON'T REMEMBER
+    time_plot = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
+    np.save(f"temp_save_dir/{directory_name}/time_array", time_plot)
+    np.save(f"temp_save_dir/{directory_name}/frequency", FREQUENCY)
 
 
 
-print('data saved')
+    print('data saved')
 
 
 

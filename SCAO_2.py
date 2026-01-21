@@ -87,7 +87,7 @@ LIGHT_RATIO         = 0.1
 POST_PROCESS        = "slopesMaps"
 r_0                 = 0.15
 L_0                 = 25
-WIND_SPEED          = [60, 60] #[10, 20, 60]
+WIND_SPEED          = [10, 20] #[10, 20, 60]
 WIND_DIRECTION      = [0, 100] #[0, 100, 160]
 FRACTIONAL_C_N2     = [0.6, 0.4] #[0.5, 0.3, 0.2]
 ALTITUDE            = [0, 4500] #[0, 4500, 10000]
@@ -96,7 +96,7 @@ KL_no               = 250
 
 
 
-zeroPaddingFactor = 4
+zeroPaddingFactor = 6
 rad2arcsec        = 180 * 60 * 60 / np.pi
 
 
@@ -286,7 +286,7 @@ else:
     wfssignal_buffer = []
 
 #variables and performance metric initialisation
-nLoop                        = 2000
+nLoop                        = 500
 sr                           = np.zeros(nLoop)
 sr_running                   = np.zeros(nLoop)
 total_error                  = np.zeros(nLoop)
@@ -358,7 +358,7 @@ for i in range(nLoop):
     #ATM.update(atm_opd + vibr)
 
 
-    total_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
+    total_error[i] = np.std(ATM.OPD[np.where(TEL.pupil > 0)]) * 1e9
 
 
 
@@ -373,7 +373,7 @@ for i in range(nLoop):
     dm_coefs_copy = DM.coefs
 
     # propagate through AO with the dm commands applied
-    SRC * TEL * DM * WFS
+    SRC ** ATM * TEL * DM * WFS
 
     #fitting error calculation for every frame (written for 2 frame delay)
     mode_coefs = modes_inv @ atm_OPD_list[-3][np.where(TEL.pupil > 0)]
@@ -425,8 +425,8 @@ for i in range(nLoop):
 #TODO change the 2000 timeery condition
 #TODO what other plots are missing?
 
-save_files = True
-directory_name = 'PWFS_test_KL_1500_nowind_60_60'
+save_files = False
+directory_name = 'PWFS_test_test'
 savedir = f'temp_save_dir/{directory_name}/'
 
 
@@ -462,7 +462,7 @@ if save_files == True:
 
     print('data saved')
 
-errr
+err
 #---------------------------------------------------PLOTTING---------------------------------------------------#
 sim_fit_error_list = np.array(sim_fit_error_list)
 sim_temp_error_2_frame_delay = np.array(sim_temp_error_2_frame_delay)
@@ -737,8 +737,8 @@ if use_zernike or use_KL:
         zernike_names.append(f"{i+1}")
 
 
-    coefficient_matrix_atmosphere_var = np.var(np.array(coefficient_matrix_atmosphere_list), axis = 0)
-    coefficient_matrix_res_var        = np.var(np.array(coefficient_matrix_res_list), axis = 0)
+    coefficient_matrix_atmosphere_var = np.var(np.asarray(coefficient_matrix_atmosphere_list), axis = 0)
+    coefficient_matrix_res_var        = np.var(np.asarray(coefficient_matrix_res_list), axis = 0)
 
 
     plt.figure()

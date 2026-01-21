@@ -174,7 +174,7 @@ class OOPAO_environment_ZWFS(gym.Env):
         self.DM_zer.coefs = np.zeros(self.DM_zer.coefs.shape)
         self.DM_zer_copy  = 0
         self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.PWFS
-        self.TEL * self.DM_zer * self.vZWFS
+        self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.DM_zer * self.vZWFS
         self.TEL.print_optical_path()
 
 
@@ -214,8 +214,8 @@ class OOPAO_environment_ZWFS(gym.Env):
         self.DM_zer_copy  = 0
 
         # propagate to wfs and apply new dm commands to the dm
-        self.SRC * self.TEL * self.DM_pyr * self.PWFS
-        self.TEL * self.DM_zer * self.vZWFS
+        self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.PWFS
+        self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.DM_zer * self.vZWFS
 
         vzwfs_signal_proj = self.reconstructor_zer @ self.vZWFS.signal
 
@@ -254,7 +254,7 @@ class OOPAO_environment_ZWFS(gym.Env):
 
         # propagate to wfs and apply new dm commands to the dm
         self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.PWFS
-        self.TEL * self.DM_zer * self.vZWFS
+        self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.DM_zer * self.vZWFS
 
         vzwfs_signal_proj = self.reconstructor_zer @ self.vZWFS.signal
         # redoing in 2D
@@ -275,7 +275,7 @@ class OOPAO_environment_ZWFS(gym.Env):
         atm_opd = self.ATM.OPD.copy()
 
 
-        total_error = np.std(self.TEL.OPD[np.where(self.TEL.pupil > 0)]) * 1e9
+        total_error = np.std(self.ATM.OPD[np.where(self.TEL.pupil > 0)]) * 1e9
 
 
         # PWFS slope averaging over 3 frames
@@ -313,10 +313,10 @@ class OOPAO_environment_ZWFS(gym.Env):
 
         # propagate to wfs and apply new dm commands to the dm
         #only activate the second stage after the first stage closes the loop
-        self.SRC * self.TEL * self.DM_pyr * self.PWFS
+        self.SRC ** self.TEL * self.DM_pyr * self.PWFS
         if (self.CURRENT_STEPS + 1) % 3 == 0:
             self.strehl_1st = np.exp(-np.var(self.TEL.src.phase[np.where(self.TEL.pupil == 1)]))
-        self.TEL * self.DM_zer * self.vZWFS
+        self.SRC ** self.TEL * self.DM_pyr * self.DM_zer * self.vZWFS
 
         vzwfs_signal_torch_proj = self.reconstructor_zer @ self.vZWFS.signal
 
