@@ -64,7 +64,7 @@ class Pyramid:
                 -'fullFrame' or 'slopesMaps':
                     - Use of full detector or slopes-maps computation.
                     - Normalization is done using the mean value of the whole frame.
-                    -'fullFrame_incidence_flux','slopesMaps_incidence_flux':
+                -'fullFrame_incidence_flux','slopesMaps_incidence_flux':
                     - Use of full detector or slopes-maps computation.
                     - Normalization is done using the mean value of the incident flux in photons.
                 -''fullFrame_sum_flux','slopesMaps_sum_flux':

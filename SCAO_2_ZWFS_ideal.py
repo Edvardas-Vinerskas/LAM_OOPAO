@@ -32,12 +32,11 @@ from functions import *
 #define all OOPAO variables
 
 N_SUBAPERTURE_pyr   = 20
-N_SUBAPERTURE_zer   = 9 #3.2 spatial cut off frequency
+N_SUBAPERTURE_zer   = 9
 DIAMETER            = 1.52
 CENTRAL_OBSTRUCTION = 0 #0.15
 RESOLUTION          = N_SUBAPERTURE_pyr * 8
 FREQUENCY           = 1500 #pyramid is running at 500
-directory_name      = 'vZWFS_metrics_ideal_no_wind'
 SAMPLING_TIME       = 1/FREQUENCY
 FOV                 = 10
 MECH_COUPLING       = 0.35
@@ -46,7 +45,7 @@ LIGHT_RATIO         = 0.1
 POST_PROCESS        = "slopesMaps"
 r_0                 = 0.15
 L_0                 = 25
-WIND_SPEED          = [0.1, 0.1] #[10, 20, 60]
+WIND_SPEED          = [10, 20] #[10, 20, 60]
 WIND_DIRECTION      = [0, 100] #[0, 100, 160]
 FRACTIONAL_C_N2     = [0.6, 0.4] #[0.5, 0.3, 0.2]
 ALTITUDE            = [0, 4500] #[0, 4500, 10000]
@@ -166,7 +165,7 @@ PWFS = Pyramid(nSubap         = N_SUBAPERTURE_pyr,
               phase_shift = [-0.75 * np.pi,0.3 * np.pi])
 """
 vZWFS = ZWFS2(tel         = TEL,
-              zpf         = 8,
+              zpf         = 30,
               diameter    = 1.06,
               phase_shift = [-np.pi/2,np.pi/2])
 
@@ -381,39 +380,41 @@ for i in range(nLoop):
 
 
 
+save_files = True
+directory_name = 'vZWFS_metrics_ideal'
+if save_files == True:
+    residual_error_array = np.asarray(residual_error)
+    np.save(f"temp_save_dir/{directory_name}/residual_error", residual_error_array)
 
-residual_error_array = np.asarray(residual_error)
-np.save(f"temp_save_dir/{directory_name}/residual_error", residual_error_array)
+    strehl_array_1st = np.asarray(sr_1st)
+    strehl_array_1st = np.repeat(strehl_array_1st, 3)
+    strehl_array_1st = np.insert(strehl_array_1st, 0, [0, 0])
+    np.save(f"temp_save_dir/{directory_name}/strehl_array_1st", strehl_array_1st)
 
-strehl_array_1st = np.asarray(sr_1st)
-strehl_array_1st = np.repeat(strehl_array_1st, 3)
-strehl_array_1st = np.insert(strehl_array_1st, 0, [0, 0])
-np.save(f"temp_save_dir/{directory_name}/strehl_array_1st", strehl_array_1st)
+    strehl_array_2nd = np.asarray(sr)
+    np.save(f"temp_save_dir/{directory_name}/strehl_array_2nd", strehl_array_2nd)
 
-strehl_array_2nd = np.asarray(sr)
-np.save(f"temp_save_dir/{directory_name}/strehl_array_2nd", strehl_array_2nd)
+    tel_psf_array = np.asarray(tel_psf_list)
+    np.save(f"temp_save_dir/{directory_name}/tel_psf_array", tel_psf_array)
 
-tel_psf_array = np.asarray(tel_psf_list)
-np.save(f"temp_save_dir/{directory_name}/tel_psf_array", tel_psf_array)
+    residual_OPD_array = np.asarray(residual_OPD_list) #for use in spatial PSD/KL modes var and correlation
+    #you can later do the spatial PSD when you save the required atm parameter
+    np.save(f"temp_save_dir/{directory_name}/residual_OPD_array", residual_OPD_array)
 
-residual_OPD_array = np.asarray(residual_OPD_list) #for use in spatial PSD/KL modes var and correlation
-#you can later do the spatial PSD when you save the required atm parameter
-np.save(f"temp_save_dir/{directory_name}/residual_OPD_array", residual_OPD_array)
+    atm_OPD_array = np.asarray(atm_OPD_temp_list) #not sure where I would use it
+    np.save(f"temp_save_dir/{directory_name}/atm_OPD_array", atm_OPD_array)
 
-atm_OPD_array = np.asarray(atm_OPD_temp_list) #not sure where I would use it
-np.save(f"temp_save_dir/{directory_name}/atm_OPD_array", atm_OPD_array)
+    total_err_array = np.asarray(total_error) #not useful for now
+    np.save(f"temp_save_dir/{directory_name}/total_err_array", total_err_array)
 
-total_err_array = np.asarray(total_error) #not useful for now
-np.save(f"temp_save_dir/{directory_name}/total_err_array", total_err_array)
-
-#YOU SHOULD ALSO CHECK IF YOU ONLY HAVE AN EPISODE OF DATA IN ALL OF THESE BECAUSE I DON'T REMEMBER
-time_plot = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
-np.save(f"temp_save_dir/{directory_name}/time_array", time_plot)
-np.save(f"temp_save_dir/{directory_name}/frequency", FREQUENCY)
+    #YOU SHOULD ALSO CHECK IF YOU ONLY HAVE AN EPISODE OF DATA IN ALL OF THESE BECAUSE I DON'T REMEMBER
+    time_plot = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
+    np.save(f"temp_save_dir/{directory_name}/time_array", time_plot)
+    np.save(f"temp_save_dir/{directory_name}/frequency", FREQUENCY)
 
 
 
-print('data saved')
+    print('data saved')
 
 
 

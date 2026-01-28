@@ -46,6 +46,10 @@ class OOPAO_environment_ZWFS(gym.Env):
         self.zeroPaddingFactor = 6
         self.seed = 10
 
+        self.pwfs_photNoise = True
+        self.pwfs_readNoise = 6
+        self.pwfs_quanteff = 0.8
+
 
 
         #---------------------------------------------------SOURCE---------------------------------------------------#
@@ -112,7 +116,7 @@ class OOPAO_environment_ZWFS(gym.Env):
                            phase_shift = [-0.75 * np.pi,0.3 * np.pi])"""
 
         self.vZWFS = ZWFS2(tel          = self.TEL,
-                           zpf          = 8,
+                           zpf          = 30,
                            diameter     = 1.06,
                            phase_shift  = [-np.pi/2,np.pi/2])
 
@@ -131,6 +135,11 @@ class OOPAO_environment_ZWFS(gym.Env):
         stroke = self.SRC.wavelength / 16
         #---------------------------------------------------INTERACTION MATRIX---------------------------------------------------#
 
+        self.PWFS.cam.photonNoise = self.pwfs_photNoise
+        self.PWFS.cam.readoutNoise = self.pwfs_readNoise
+        # self.PWFS.cam.darkCurrent = 100 #for some reason the integration time is not automatically retrieved from the telescope object
+        self.PWFS.cam.QE = self.pwfs_quanteff
+
         self.CALIB_pyr = InteractionMatrix(ngs               = self.NGS,
                                                tel           = self.TEL,
                                                dm            = self.DM_pyr,
@@ -138,10 +147,11 @@ class OOPAO_environment_ZWFS(gym.Env):
                                                M2C           = self.M2C_pyr,
                                                atm           = self.ATM,
                                                nMeasurements = 1,
-                                               stroke        = stroke)
+                                               stroke        = stroke,
+                                               noise          = "on")
 
         #ZWFS calibration
-        CALIB_zer = np.zeros((self.vZWFS.signal.shape[0], self.M2C_zer.shape[1]))
+        CALIB_zer = np.zeros((self.vZWFS.signal_cam.shape[0], self.M2C_zer.shape[1]))
 
         #zernike_wfs calibration with DM_zer
         for i in range(self.M2C_zer.shape[1]):
@@ -151,12 +161,12 @@ class OOPAO_environment_ZWFS(gym.Env):
             self.SRC.reset()
             self.DM_zer.coefs = v_plus
             self.SRC ** self.TEL * self.DM_zer * self.vZWFS
-            w_plus = self.vZWFS.signal
+            w_plus = self.vZWFS.signal_cam
 
             self.SRC.reset()
             self.DM_zer.coefs = v_minus
             self.SRC ** self.TEL * self.DM_zer * self.vZWFS
-            w_minus = self.vZWFS.signal
+            w_minus = self.vZWFS.signal_cam
 
             CALIB_zer[:, i] = (w_plus - w_minus) / (2 * stroke)
 
@@ -200,6 +210,11 @@ class OOPAO_environment_ZWFS(gym.Env):
         self.PWFS_signal_avg = 0
         self.PWFS_signal_avg_norm = 0
 
+        self.PWFS.cam.photonNoise = self.pwfs_photNoise
+        self.PWFS.cam.readoutNoise = self.pwfs_readNoise
+        # self.PWFS.cam.darkCurrent = 100 #for some reason the integration time is not automatically retrieved from the telescope object
+        self.PWFS.cam.QE = self.pwfs_quanteff
+
         mask_1D = self.DM_zer.validAct.copy()
         mask_reshaped = mask_1D.reshape((self.N_SUBAPERTURE_zer + 1, self.N_SUBAPERTURE_zer + 1))
         self.mask = torch.from_numpy(mask_reshaped).bool()
@@ -217,7 +232,7 @@ class OOPAO_environment_ZWFS(gym.Env):
         self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.PWFS
         self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.DM_zer * self.vZWFS
 
-        vzwfs_signal_proj = self.reconstructor_zer @ self.vZWFS.signal
+        vzwfs_signal_proj = self.reconstructor_zer @ self.vZWFS.signal_cam
 
         # redoing in 2D
         vzwfs_signal_proj_2D = torch.zeros((self.N_SUBAPERTURE_zer + 1, self.N_SUBAPERTURE_zer + 1), dtype=torch.float32)
@@ -256,7 +271,7 @@ class OOPAO_environment_ZWFS(gym.Env):
         self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.PWFS
         self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.DM_zer * self.vZWFS
 
-        vzwfs_signal_proj = self.reconstructor_zer @ self.vZWFS.signal
+        vzwfs_signal_proj = self.reconstructor_zer @ self.vZWFS.signal_cam
         # redoing in 2D
         vzwfs_signal_proj_2D = torch.zeros((self.N_SUBAPERTURE_zer + 1, self.N_SUBAPERTURE_zer + 1), dtype=torch.float32)
         vzwfs_signal_proj_2D[self.mask] = torch.from_numpy(vzwfs_signal_proj).float()
@@ -313,12 +328,13 @@ class OOPAO_environment_ZWFS(gym.Env):
 
         # propagate to wfs and apply new dm commands to the dm
         #only activate the second stage after the first stage closes the loop
-        self.SRC ** self.TEL * self.DM_pyr * self.PWFS
+        self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.PWFS
         if (self.CURRENT_STEPS + 1) % 3 == 0:
             self.strehl_1st = np.exp(-np.var(self.TEL.src.phase[np.where(self.TEL.pupil == 1)]))
-        self.SRC ** self.TEL * self.DM_pyr * self.DM_zer * self.vZWFS
+        self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.DM_zer * self.vZWFS
 
-        vzwfs_signal_torch_proj = self.reconstructor_zer @ self.vZWFS.signal
+
+        vzwfs_signal_torch_proj = self.reconstructor_zer @ self.vZWFS.signal_cam
 
         #redoing in 2D the zwfs signal
         vzwfs_signal_torch_proj_2D = torch.zeros((self.N_SUBAPERTURE_zer + 1, self.N_SUBAPERTURE_zer + 1), dtype = torch.float32)

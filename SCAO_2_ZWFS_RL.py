@@ -45,11 +45,11 @@ filters_per_layer = 32
 n_filt = filters_per_layer
 seeder = 5
 
-iters                = 2 #TODO change how you plot the strehl ratio to include warmup and all of the online updating
+iters                = 6 #TODO change how you plot the strehl ratio to include warmup and all of the online updating
 episode_length       = 500
-initial_sigma        = 0.3
+initial_sigma        = 0.1
 min_sigma            = 0
-warmup_episodes      = 8
+warmup_episodes      = 6
 loss_penalty         = 0.1
 
 n_history            = 30 #30
@@ -435,7 +435,7 @@ def loss_fn(state,action):
 
 
 def main():
-    directory_name = 'vZWFS_1st_2nd_noise_03_wooftw_seed_chang_dyn_mask_2'
+    directory_name = 'vZWFS_1st_2nd_noise_01_phnoise0_read2_QE08'
 
     save_buffer = True
     load_buffer = False
@@ -648,17 +648,17 @@ def main():
         p.grad = None
 
 
-
+    obs, _ = env.reset(seed=10)
     obs = env.flatten_dm()
     INFO_list = 0
+    INFO_list_final = []
     episode_length_last_pol = 0
     for i in range(iters): #for now set to 1 for faster computation (or set it to 2 for some parallel training?)
 
         start = time.time()
 
-        obs, _ = env.reset(seed=10)
         if i == iters - 1:
-            episode_length_last_pol = 4 * episode_length
+            episode_length_last_pol = episode_length
             reward_sum, past_obs, past_act, obs, INFO_list = run_episode_policy(past_obs, past_act, obs, replay, policy_copy, sigma,
                                                                      episode_length_last_pol)
         else:
@@ -666,7 +666,7 @@ def main():
                                                                                 episode_length)
 
         rewards[i + warmup_episodes] = reward_sum
-
+        INFO_list_final.extend(INFO_list)
 
         try:
             training_finished = finished_q.get(False)
@@ -698,7 +698,10 @@ def main():
     #TODO for integrator comparison you should also maybe warmup the RL on the same seed as integrator and then continue with RL policy evaluation with the continuation of said seed
     #also need to save the individual strehls for episode policy
     #for the fair comparison reset the atmosphere for the episode policy
-    INFO_dict = {key: [d[key] for d in INFO_list] for key in INFO_list[0].keys()}
+    #INFO_dict = {key: [d[key] for d in INFO_list] for key in INFO_list[0].keys()}
+    INFO_dict = {key: [d[key] for d in INFO_list_final] for key in INFO_list_final[0].keys()}
+
+
     residual_error = np.asarray(INFO_dict['residual_error'])
     np.save(f"temp_save_dir/{directory_name}/residual_error", residual_error)
 
@@ -724,7 +727,7 @@ def main():
 
     #YOU SHOULD ALSO CHECK IF YOU ONLY HAVE AN EPISODE OF DATA IN ALL OF THESE BECAUSE I DON'T REMEMBER
     frequency = env.FREQUENCY
-    time_plot = np.arange(0, episode_length_last_pol / frequency, 1/frequency)
+    time_plot = np.arange(0, iters * episode_length / frequency, 1/frequency)
     np.save(f"temp_save_dir/{directory_name}/time_array", time_plot)
     np.save(f"temp_save_dir/{directory_name}/frequency", frequency)
 

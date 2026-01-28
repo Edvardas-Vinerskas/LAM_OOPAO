@@ -73,7 +73,7 @@ from functions import *
 
 #---------------------------------------------------GLOBALS---------------------------------------------------#
 #define all OOPAO variables
-
+#TODO save all of these variables somewhere
 N_SUBAPERTURE       = 20
 DIAMETER            = 1.52
 CENTRAL_OBSTRUCTION = 0 #0.15
@@ -90,10 +90,13 @@ L_0                 = 25
 WIND_SPEED          = [10, 20] #[10, 20, 60]
 WIND_DIRECTION      = [0, 100] #[0, 100, 160]
 FRACTIONAL_C_N2     = [0.6, 0.4] #[0.5, 0.3, 0.2]
-ALTITUDE            = [0, 4500] #[0, 4500, 10000]
+ALTITUDE            = [0, 45000] #[0, 45000, 4500, 10000]
 Z_coefs             = 250 #200 #above 200 does not work great per Benoit
 KL_no               = 250
 
+photNoise           = False
+readNoise           = 0
+quanteff            = 1
 
 
 zeroPaddingFactor = 6
@@ -219,7 +222,10 @@ if use_KL:
 
 #---------------------------------------------------INTERACTION MATRIX---------------------------------------------------#
 
-
+WFS.cam.photonNoise = photNoise
+WFS.cam.readoutNoise = readNoise
+#WFS.cam.darkCurrent = 100 #for some reason the integration time is not automatically retrieved from the telescope object
+WFS.cam.QE = quanteff
 
 stroke = SRC.wavelength / 16
 CALIB = InteractionMatrix(ngs            = SRC,
@@ -286,7 +292,7 @@ else:
     wfssignal_buffer = []
 
 #variables and performance metric initialisation
-nLoop                        = 500
+nLoop                        = 1000
 sr                           = np.zeros(nLoop)
 sr_running                   = np.zeros(nLoop)
 total_error                  = np.zeros(nLoop)
@@ -341,10 +347,14 @@ tip_f     = 10
 tilt_f    = 50
 defocus_f = 100
 
+
+WFS.cam.photonNoise = photNoise
+WFS.cam.readoutNoise = readNoise
+#WFS.cam.darkCurrent = 100 #for some reason the integration time is not automatically retrieved from the telescope object
+WFS.cam.QE = quanteff
 #what is inside the loop is basically what should be in the step function of the RL OOPAO environment
 ATM.generateNewPhaseScreen(seed = 10)
 for i in range(nLoop):
-
     #temporal vibration injection
     tip_vibr  = sine(tip_f, i * SAMPLING_TIME, phi_aa) * tip
     tilt_vibr = sine(tilt_f, i * SAMPLING_TIME, phi_bb) * tilt
@@ -425,8 +435,8 @@ for i in range(nLoop):
 #TODO change the 2000 timeery condition
 #TODO what other plots are missing?
 
-save_files = False
-directory_name = 'PWFS_test_test'
+save_files = True
+directory_name = 'PWFS_500_integrator_wind_10_100deg_test-v2'
 savedir = f'temp_save_dir/{directory_name}/'
 
 

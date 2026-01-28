@@ -17,8 +17,8 @@ from po4ao_edw.OOPAO_environment_PWFS import OOPAO_environment_PWFS
 from po4ao_edw.OOPAO_environment_ZWFS import OOPAO_environment_ZWFS
 
 
-#env = OOPAO_environment_ZWFS()
-env = OOPAO_environment_PWFS()
+env = OOPAO_environment_ZWFS()
+#env = OOPAO_environment_PWFS()
 
 DM_fake = DeformableMirror(telescope = env.TEL,
                            nSubap    = 40,
@@ -36,12 +36,12 @@ RL         = False
 integrator = True
 ideal      = False
 stage_2    = False
-directory_name_RL  = 'PWFS_test_test'#vZWFS_1st_2nd_noise_03_wooftw_seed_chang_gaussian_noise
-directory_name_int = 'PWFS_test_test'
-directory_name_ideal = 'PWFS_test_test'#vZWFS_1st_2nd_noise_03_wooftw_seed_chang_dyn_mask_2
-label_RL = "gaussian_noise"
-label_int = "integrator"
-label_ideal = "dyn_mask"
+directory_name_RL  = 'vZWFS_1st_2nd_noise_02_phnoise0_read2_QE08'#vZWFS_1st_2nd_noise_03_wooftw_seed_chang_gaussian_noise
+directory_name_int = 'PWFS_500_integrator_wind_10_100deg_test-v2'
+directory_name_ideal = 'vZWFS_metrics_ideal'#vZWFS_1st_2nd_noise_03_wooftw_seed_chang_dyn_mask
+label_RL = "RL"
+label_int = "int"
+label_ideal = "ideal"
 mask_thresh = 0.5
 
 
@@ -150,8 +150,8 @@ if stage_2:
 
 
 plt.figure()
-if RL:          plt.plot(time_plot_RL, strehl_array_1st_RL, label=f"strehl_1st_{label_RL}")
-if integrator:  plt.plot(time_plot_int, strehl_array_1st_int, label=f"strehl_1st_{label_int}")
+if RL:          plt.plot(time_plot_RL, strehl_array_1st_RL, color = '#1f77b4', label=f"strehl_1st_{label_RL}")
+if integrator:  plt.plot(time_plot_int, strehl_array_1st_int, color = '#ff7f0e', label=f"strehl_1st_{label_int}")
 #if ideal:       plt.plot(time_plot_ideal, strehl_array_1st_ideal, label=f"strehl_1st_{label_ideal}")
 
 if not stage_2:

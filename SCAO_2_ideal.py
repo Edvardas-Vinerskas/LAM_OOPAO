@@ -36,7 +36,6 @@ DIAMETER            = 1.52
 CENTRAL_OBSTRUCTION = 0 #0.15
 RESOLUTION          = N_SUBAPERTURE * 8
 FREQUENCY           = 1500
-directory_name      = 'PWFS_metrics_1500_ideal'
 SAMPLING_TIME       = 1/FREQUENCY
 FOV                 = 10
 MECH_COUPLING       = 0.35
@@ -287,7 +286,8 @@ for i in range(nLoop):
 
 
 #TODO clean up later
-save_files = False
+save_files = True
+directory_name = 'PWFS_metrics_1500_ideal'
 if save_files == True:
     residual_error_array = np.asarray(residual_error)
     np.save(f"temp_save_dir/{directory_name}/residual_error", residual_error_array)

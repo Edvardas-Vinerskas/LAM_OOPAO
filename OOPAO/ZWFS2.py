@@ -64,6 +64,8 @@ class ZWFS2: #zpf 30, diameter 2.14, phase_shift [-0.75 * np.pi,0.3 * np.pi]
         if reconstructor is not None:
             self.retrieved_phase = self.reconstructor(reconstructor, iteration= reconstructor_iteration)
         self.img_ZWFS = np.concatenate((self.zwfs1.img_ZWFS,self.zwfs2.img_ZWFS), axis = 1)#(-self.zwfs1.img_ZWFS+self.zwfs2.img_ZWFS)/(2*self.telescope.pupil**2+1-(self.zwfs1.img_ZWFS+self.zwfs2.img_ZWFS))
+        self.signal_2D_cam = np.concatenate((self.zwfs1.signal_2D_cam, self.zwfs2.signal_2D_cam), axis=1)
+        self.signal_cam = np.concatenate((self.zwfs1.signal_cam, self.zwfs2.signal_cam))
         # # self.img_ZWFS[self.telescope.pupil==0]=0
         # self.signal = self.img_ZWFS.reshape(self.img_ZWFS.size)
         self.nSignal = self.signal.size
@@ -159,6 +161,7 @@ class ZWFS2: #zpf 30, diameter 2.14, phase_shift [-0.75 * np.pi,0.3 * np.pi]
             src_list = [src]
         elif src.tag == 'asterism':
             src_list = src.src
+        signal_2D_list = []
         signal_list = []
 
 
@@ -166,8 +169,10 @@ class ZWFS2: #zpf 30, diameter 2.14, phase_shift [-0.75 * np.pi,0.3 * np.pi]
             src.optical_path.append([self.tag, self])
             self.src = src
             self.wfs_measure(phase_in=self.src.phase)
-            signal_list.append(self.signal)
+            signal_2D_list.append(self.signal_2D_cam)
+            signal_list.append(self.signal_cam)
 
+        self.signal_2D = np.squeeze(np.array(signal_2D_list))
         self.signal = np.squeeze(np.array(signal_list))
 
         return

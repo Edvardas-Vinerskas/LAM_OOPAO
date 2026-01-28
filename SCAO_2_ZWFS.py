@@ -1,7 +1,6 @@
 
 """
-TODO figure out how Zernike object works, specificaly what does ZWFS.signal represent
-    i.e. read some papers
+
 
 
 * the std limit of the phase rms getting into zernike is about 75 nm for a wvl of 790
@@ -56,7 +55,7 @@ from functions import *
 #define all OOPAO variables
 
 N_SUBAPERTURE_pyr   = 20
-N_SUBAPERTURE_zer   = 9 #3.2 spatial cut off frequency
+N_SUBAPERTURE_zer   = 9
 DIAMETER            = 1.52
 CENTRAL_OBSTRUCTION = 0 #0.15
 RESOLUTION          = N_SUBAPERTURE_pyr * 8
@@ -73,7 +72,13 @@ WIND_SPEED          = [10, 20] #[10, 20, 60]
 WIND_DIRECTION      = [0, 100] #[0, 100, 160]
 FRACTIONAL_C_N2     = [0.6, 0.4] #[0.5, 0.3, 0.2]
 ALTITUDE            = [0, 4500] #[0, 4500, 10000]
-Z_coefs             = 250 #200 #above 200 does not work great per Benoit
+Z_coefs             = 250
+CL_gain_pyr         = 0.4
+CL_gain_zer         = 0.4
+
+pwfs_photNoise      = True
+pwfs_readNoise      = 6#4
+pwfs_quanteff       = 0.8
 
 
 
@@ -189,7 +194,7 @@ PWFS = Pyramid(nSubap         = N_SUBAPERTURE_pyr,
               phase_shift = [-0.75 * np.pi,0.3 * np.pi])
 """
 vZWFS = ZWFS2(tel         = TEL,
-              zpf         = 8,
+              zpf         = 30,
               diameter    = 1.06,
               phase_shift = [-np.pi/2,np.pi/2])
 
@@ -248,7 +253,10 @@ if use_KL:
     modes_zer = DM_zer.modes @ M2C_zer
 
 #---------------------------------------------------INTERACTION MATRIX---------------------------------------------------#
-
+PWFS.cam.photonNoise = pwfs_photNoise
+PWFS.cam.readoutNoise = pwfs_readNoise
+#PWFS.cam.darkCurrent = 100 #for some reason the integration time is not automatically retrieved from the telescope object
+PWFS.cam.QE = pwfs_quanteff
 
 
 stroke = SRC.wavelength / 16
@@ -260,11 +268,11 @@ CALIB_pyr = InteractionMatrix(ngs        = SRC,
                           atm            = ATM,
                           nMeasurements  = 1,
                           stroke         = stroke,
-                          noise          = "off")
+                          noise          = "on")
 
 
 #calibration for zernike (there are better methods out there for calibration under real conditions but this will suffice for now)
-CALIB_zer = np.zeros((vZWFS.signal.shape[0], M2C_zer.shape[1]))
+CALIB_zer = np.zeros((vZWFS.signal_cam.shape[0], M2C_zer.shape[1]))
 
 
 #zernike_wfs calibration with DM_zer
@@ -276,13 +284,13 @@ for i in range(M2C_zer.shape[1]):
     SRC.reset()
     DM_zer.coefs = v_plus
     SRC ** TEL * DM_zer * vZWFS
-    w_plus = vZWFS.signal
+    w_plus = vZWFS.signal_cam
 
 
     SRC.reset()
     DM_zer.coefs = v_minus
     SRC ** TEL * DM_zer * vZWFS
-    w_minus = vZWFS.signal
+    w_minus = vZWFS.signal_cam
 
 
     CALIB_zer[:, i] = (w_plus - w_minus) / (2 * stroke)
@@ -351,7 +359,7 @@ pwfs_frame_delay         = 2
 pwfs_delay               = pwfs_frame_delay - 1 #frame delay of 1 is already built-in
 if pwfs_frame_delay >= 2:
     pwfssignal_buffer = [np.zeros(PWFS.nSignal) for i in range(pwfs_delay)]
-    vzwfssignal_buffer= [np.zeros(vZWFS.nSignal) for i in range(pwfs_delay)]
+    vzwfssignal_buffer= [np.zeros(vZWFS.signal_cam.shape[0]) for i in range(pwfs_delay)]
 else:
     pwfssignal_buffer = []
     vzwfssignal_buffer =[]
@@ -387,10 +395,6 @@ sim_fit_error_list_2D        = []
 
 tel_psf_list = []
 
-
-CL_gain_pyr = 0.4
-CL_gain_zer = 0.4
-
 reconstructor_pyr = M2C_pyr @ CALIB_pyr.M #takes in slopes and outputs modes, then takes in modes and outputs controle shape(357, 664)
 reconstructor_zer = M2C_zer @ CALIB_zer_obj.M #takes in wfs signal and outputs control
 ATM.generateNewPhaseScreen(seed = 10)
@@ -405,6 +409,23 @@ def sine(f, t):
 
 PWFS_signal_avg = 0
 PWFS_signal_avg_norm = 0
+
+
+PWFS.cam.photonNoise = pwfs_photNoise
+PWFS.cam.readoutNoise = pwfs_readNoise
+#PWFS.cam.darkCurrent = 100 #for some reason the integration time is not automatically retrieved from the telescope object
+PWFS.cam.QE = pwfs_quanteff
+
+#TODO you need to turn on ZWFS noise in the ZWFS object
+#
+"""vZWFS.zwfs1.cam.photonNoise = True
+vZWFS.zwfs1.cam.readoutNoise = 2000000
+vZWFS.zwfs1.cam.QE = 0.8
+
+vZWFS.zwfs2.cam.photonNoise = True
+vZWFS.zwfs2.cam.readoutNoise = 2000000
+vZWFS.zwfs2.cam.QE = 0.8"""
+sr_first_ = 0
 for i in range(nLoop):
     #tip_vibr = 1e-7 * sine(40, i * SAMPLING_TIME) * tip
     #update phase screen
@@ -437,11 +458,12 @@ for i in range(nLoop):
         PWFS_signal_avg_norm = 0
 
     # frame delay implementation (zernike)
-    vzwfssignal_buffer.append(vZWFS.signal)
+    vzwfssignal_buffer.append(vZWFS.signal_cam)
     vzwfs_delayed_signal = vzwfssignal_buffer[0]
     vzwfssignal_buffer.pop(0)
 
-
+    #very funny that if you only turn on the second stage 200 iterations after the 1st stage has converged, then it fails
+    #if i > 60:
     DM_zer_coefs = DM_zer_copy - CL_gain_zer * np.matmul(reconstructor_zer, vzwfs_delayed_signal)
     DM_zer_copy = DM_zer_coefs.copy()
     #woofer_tweeter corr
@@ -452,7 +474,8 @@ for i in range(nLoop):
     SRC ** ATM * TEL * DM_pyr * PWFS
     if (i + 1) % 3 == 0:
         residual_OPD_list_pwfs.append(TEL.OPD)
-        sr_1st.append(np.exp(-np.var(TEL.src.phase[np.where(TEL.pupil == 1)])))
+        sr_first_ = np.exp(-np.var(TEL.src.phase[np.where(TEL.pupil == 1)]))
+        sr_1st.append(sr_first_)
     SRC ** ATM * TEL * DM_pyr *  DM_zer * vZWFS
 
 
@@ -460,7 +483,8 @@ for i in range(nLoop):
     sr[i] = np.exp(-np.var(TEL.src.phase[np.where(TEL.pupil == 1)]))
     residual_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
     print("Loop" + str(i) + "/" + str(nLoop) + " " + "AO residual: " + str(residual_error[i]) + "nm" + "total err: " + str(total_error[i]) + "nm")
-    print(f"strehl {sr[i]}")
+    print(f"strehl 1st {sr_first_}")
+    print(f"strehl 2nd {sr[i]}")
 
 
     residual_OPD_list.append(TEL.OPD)
@@ -476,7 +500,7 @@ for i in range(nLoop):
 #TODO change the 2000 timeery condition
 #TODO what other plots are missing?
 save_files = True
-directory_name = 'vZWFS_metrics_integrator_2'
+directory_name = 'vZWFS_integrator_phnoise0_read2_QE08'
 savedir = f'temp_save_dir/{directory_name}/'
 
 if not os.path.exists(savedir):
