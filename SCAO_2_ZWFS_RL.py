@@ -5,18 +5,11 @@ All parameters are Jalo's (for now)
 For next week we do Jalo tests
 
 * automate the normalisation of inputs and outputs
-
-reenable cuda
-
-figure out how all of the parallel training works, maybe do a short example
-
-you need to formalise the loss calculations because for now this is a bit arbitrary
 """
 
 
 from scipy import signal
 import torch
-from po4ao_edw.OOPAO_environment_PWFS import OOPAO_environment_PWFS
 from po4ao_edw.OOPAO_environment_ZWFS import OOPAO_environment_ZWFS
 from torch import optim
 import numpy as np
@@ -31,11 +24,11 @@ from po4ao_PAPYRUS.po4ao_config_PAPYRUS import config
 from po4ao_PAPYRUS.po4ao_models_PAPYRUS_upd import EnsembleDynamicsFast, ConvPolicyFastFast
 from po4ao_PAPYRUS.po4ao_util_PAPYRUS import EfficientExperienceReplay, SharedAdam
 
-env = OOPAO_environment_ZWFS()
-#env = OOPAO_environment_PWFS()
 
-sample_shape = env.DM_zer.nValidAct
-sample_shape_pyr = env.DM_pyr.nValidAct
+
+
+sample_shape = 88 #pass it as variable
+sample_shape_pyr = 357 #pass it as variable
 
 OOPAO_scaling_up   = 1e7
 OOPAO_scaling_down = 1e-7
@@ -43,26 +36,28 @@ OOPAO_scaling_down = 1e-7
 
 filters_per_layer = 32
 n_filt = filters_per_layer
-seeder = 5
 
-iters                = 6 #TODO change how you plot the strehl ratio to include warmup and all of the online updating
-episode_length       = 500
-initial_sigma        = 0.1
+iters                = 40
+episode_length       = 750
+initial_sigma        = 0.3
 min_sigma            = 0
-warmup_episodes      = 6
+warmup_episodes      = 20
 loss_penalty         = 0.1
+
+train_iter_warmup    = 400 #400
+train_iter_parallel  = 40 #40
 
 n_history            = 30 #30
 planning_horizon     = 4
-data_shape           = env.data_shape
-control_delay         = 1
+data_shape           = 10   #pass it as variable
+control_delay        = 1
 
 gain                 = 0.4
 leak                 = 1
 nmodes               = 250
 integrator           = False
 
-replay_size          = 160 #20 used in PAPYRUS code
+replay_size          = 20 #20 used in PAPYRUS code
 warmup_memory        = warmup_episodes
 train_warmup_percent = 0.2
 
@@ -285,14 +280,14 @@ def training_thread(start_q, dynamics_q, dynamics_optimizer_q, replay_q, replay_
             policy = policy_q
 
             print('training dynamics in training thread')
-            dyn_loss, dynamics_loss = train_dynamics(dynamics, dynamics_optimizer, replay, replay_warmup, dyn_iters=40)
+            dyn_loss, dynamics_loss = train_dynamics(dynamics, dynamics_optimizer, replay, replay_warmup, dyn_iters=train_iter_parallel)
             """try:
                 torch.cuda.synchronize(device=device1)
             except RuntimeError:
                 pass"""
 
             print('training policy in training thread')
-            pol_loss, policy_loss = train_policy(policy_optimizer, policy, dynamics, replay, replay_warmup, pol_iters=40)
+            pol_loss, policy_loss = train_policy(policy_optimizer, policy, dynamics, replay, replay_warmup, pol_iters=train_iter_parallel)
             """try:
                 torch.cuda.synchronize(device=device1)
             except RuntimeError:
@@ -304,7 +299,7 @@ def training_thread(start_q, dynamics_q, dynamics_optimizer_q, replay_q, replay_
 
 
 @torch.no_grad()
-def run_episode_policy(past_obs, past_act, obs, replay, policy, sigma, episode_length):
+def run_episode_policy(past_obs, past_act, obs, replay, policy, sigma, episode_length, environment):
     """
     runs an episode on policy
 
@@ -335,20 +330,21 @@ def run_episode_policy(past_obs, past_act, obs, replay, policy, sigma, episode_l
 
         else:
             #shape(batch_size, 1, 10, 10)
-            input_policy = torch.cat([obs.unsqueeze(0).unsqueeze(0), past_obs, past_act], dim=1) * OOPAO_scaling_up
+            input_policy = torch.cat([obs.unsqueeze(0).unsqueeze(0).to(device0), past_obs, past_act], dim=1) * OOPAO_scaling_up
             action = policy(input_policy) * OOPAO_scaling_down
 
 
         #dm[:] = (prev_commands * leak) + (action)
-        next_obs, INFO = env.step(action.squeeze(), pyramid_noise=0)
+        next_obs, INFO = environment.step(action.squeeze(), pyramid_noise=0) #pass it as variable
         INFO_list.append(INFO)
 
         if t % 50 == 0:
             strehl_check = INFO["strehl"]
-            print(f"Strehl ratio episode policy: {strehl_check}")
+            tracker = INFO["tracker"]
+            print(f"Strehl ratio episode policy: {strehl_check}; atm tracker: {tracker}")
 
         # roll telemetry data with new data
-        past_obs = torch.cat([past_obs[:, 1:, :, :], obs.unsqueeze(0).unsqueeze(0)], dim=1)
+        past_obs = torch.cat([past_obs[:, 1:, :, :], obs.unsqueeze(0).unsqueeze(0).to(device0)], dim=1)
         past_act = torch.cat([past_act[:, 1:, :, :], action], dim=1)
 
         reward_sum += torch.sum((obs.flatten() * OOPAO_scaling_up) ** 2)
@@ -363,7 +359,7 @@ def run_episode_policy(past_obs, past_act, obs, replay, policy, sigma, episode_l
 
 
 
-def run_episode_warmup(replay, replay_warmup, sigma, episode_length, filter, filter_pyr, xvalid, yvalid):
+def run_episode_warmup(replay, replay_warmup, sigma, episode_length, filter, filter_pyr, xvalid, yvalid, environment):
     """
     runs an episode on integrator with added noise in control signals. Starts always with a flat mirror
     dynamics model is not trained
@@ -381,7 +377,7 @@ def run_episode_warmup(replay, replay_warmup, sigma, episode_length, filter, fil
     """
 
     reward_sum = 0
-    obs = env.flatten_dm()
+    obs = environment.flatten_dm() #pass it as variable
 
 
 
@@ -394,7 +390,7 @@ def run_episode_warmup(replay, replay_warmup, sigma, episode_length, filter, fil
 
 
         #shape(1, 1, 10, 10).unsqueeze(0).unsqueeze(0)
-        action = gain * obs.unsqueeze(0).unsqueeze(0)
+        action = gain * obs.unsqueeze(0).unsqueeze(0).to(device0)
         noisy  = sample_noise(sigma, filter, xvalid, yvalid) * OOPAO_scaling_down
         noisy_pyr = sample_noise_pyr(sigma, filter_pyr) * OOPAO_scaling_down
         action = action + noisy.unsqueeze(0).unsqueeze(0) #manual injection of noise to the bench
@@ -403,11 +399,12 @@ def run_episode_warmup(replay, replay_warmup, sigma, episode_length, filter, fil
 
         #dm[:] = (prev_commands * leak) + (action)
         #shape(10, 10)
-        next_obs, INFO = env.step(action.squeeze(), pyramid_noise=noisy_pyr)
+        next_obs, INFO = environment.step(action.squeeze(), pyramid_noise=noisy_pyr) #pass it as variable
         strehl_1 = INFO["strehl_1st"]
         strehl_2 = INFO["strehl"]
+        tracker  = INFO["tracker"]
         print(f"warmup strehl 1: {strehl_1}")
-        print(f"warmup strehl 2: {strehl_2}")
+        print(f"warmup strehl 2: {strehl_2}; atm tracker: {tracker}")
 
         past_obs = torch.cat([past_obs[:, 1:, :, :], obs.unsqueeze(0).unsqueeze(0)], dim=1)  # roll telemetry
         past_act = torch.cat([past_act[:, 1:, :, :], action], dim=1)
@@ -431,21 +428,31 @@ def run_episode_warmup(replay, replay_warmup, sigma, episode_length, filter, fil
 def loss_fn(state,action):
     "the loss function, i.e, negative reward, for policy training."
 
-    return state.pow(2).mean() + loss_penalty*action.pow(2).mean()
+    return state.pow(2).mean() + loss_penalty*action.pow(2).mean() # + loss_penalyty2*(actions_modes[:5]).pow(2).mean()
 
 
 def main():
-    directory_name = 'vZWFS_1st_2nd_noise_01_phnoise0_read2_QE08'
+    env = OOPAO_environment_ZWFS()
+    # pass it as variable
 
-    save_buffer = True
-    load_buffer = False
+
+    #retraining on single seed with less noise equivalent to single stage system and seeing what we get
+    #note that for a single stage the warm up almost always converges
+    directory_name = 'vZWFS_1st_2nd_noise_03_phnoise1_read_4_4_QE08_mag2_epis20_iters40_warmupperc02_v2' #trained from scratch with fresh warm up data
+    directory_name_load_buffer = 'vZWFS_1st_2nd_noise_03_phnoise1_read_4_4_QE08_mag2_epis20_iters40_warmupperc05'
+
+
+    #set save_buffer to true when you want to save the warmup data
+    #set load_buffer to true when you want to load some other warmup data (if load_buffer = True, then save_buffer = False)
+    save_buffer = False
+    load_buffer = True
     load_pretrained_model = False
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     savedir = f'temp_save_dir/{directory_name}/'
     savedir_model = f'temp_save_dir/{directory_name}/models' #/{timestamp}' redo the timestep with directory creation later
     savedir_buffer = f'temp_save_dir/{directory_name}/buffer/'
-    loaddir = f'temp_save_dir/{directory_name}/buffer/'  # copy the models and replay buffers you want use here!!
-    loaddir_mod = f'temp_save_dir/{directory_name}/models/'
+    loaddir = f'temp_save_dir/{directory_name_load_buffer}/buffer/'  # copy the models and replay buffers you want use here!!
+    loaddir_mod = f'temp_save_dir/{directory_name_load_buffer}/models/'
 
     if not os.path.exists(savedir):
         os.makedirs(savedir)
@@ -521,7 +528,7 @@ def main():
             obs, _ = env.reset(seed=np.random.randint(0, 256))
             start = time.time()
             #-----------------------------------sample generation-----------------------------------#
-            reward_sum, past_obs, past_act, obs, strehl_warmup = run_episode_warmup(replay, replay_warmup, sigma, episode_length, KL_projection.to(device0), KL_projection_pyr, xvalid0, yvalid0)
+            reward_sum, past_obs, past_act, obs, strehl_warmup = run_episode_warmup(replay, replay_warmup, sigma, episode_length, KL_projection.to(device0), KL_projection_pyr, xvalid0, yvalid0, env)
 
             rewards[i] = reward_sum
 
@@ -558,7 +565,7 @@ def main():
         replay.next_states = torch.load(os.path.join(loaddir, f"next_states.pt"))
         replay.actions = torch.load(os.path.join(loaddir, f"actions.pt"))
 
-        replay.set_len(50 * episode_length - 1)
+        replay.set_len(20 * episode_length - 1)
         print(
             f'--------------------------------------------\n warmup buffer loaded! \n--------------------------------------------')
 
@@ -587,7 +594,7 @@ def main():
 
         # -----------------------------------dynamics train-----------------------------------#
         dyn_loss, dynamics_loss = train_dynamics(dynamics, dynamics_optimizer1, replay_warmup, replay_warmup,
-                                  dyn_iters=400)
+                                  dyn_iters=train_iter_warmup)
         #todo check synchronisation
         """try:
             torch.cuda.synchronize(device=device1)
@@ -596,7 +603,7 @@ def main():
 
         # -----------------------------------policy train-----------------------------------#
         pol_loss, policy_loss = train_policy(policy_optimizer1, policy, dynamics, replay_warmup, replay_warmup,
-                                pol_iters=400)
+                                pol_iters=train_iter_warmup)
         """try:
             torch.cuda.synchronize(device=device1)
         except RuntimeError:
@@ -635,14 +642,14 @@ def main():
     replay_q.put(replay, False)
     replay_warmup_q.put(replay_warmup, False)
 
-
-    if replay.len > episode_length and replay_warmup.len > episode_length:
+    #TODO uncomment this to use multiprocessing
+    """if replay.len > episode_length and replay_warmup.len > episode_length:
         training_process = ctx.Process(target=training_thread,
                                        args=(start_q, dynamics, dynamics_optimizer, replay_q, replay_warmup_q,
                                              policy_optimizer, policy, finished_q, 50, 25,))
         training_process.start()
     else:
-        print("Replay buffers empty --- training not started. Run warm up or load buffers")
+        print("Replay buffers empty --- training not started. Run warm up or load buffers")"""
 
     for p in policy_copy.parameters():
         p.grad = None
@@ -653,22 +660,34 @@ def main():
     INFO_list = 0
     INFO_list_final = []
     episode_length_last_pol = 0
+    policylosslist = []
+    dynamicslosslist = []
     for i in range(iters): #for now set to 1 for faster computation (or set it to 2 for some parallel training?)
 
         start = time.time()
 
-        if i == iters - 1:
-            episode_length_last_pol = episode_length
-            reward_sum, past_obs, past_act, obs, INFO_list = run_episode_policy(past_obs, past_act, obs, replay, policy_copy, sigma,
-                                                                     episode_length_last_pol)
-        else:
-            reward_sum, past_obs, past_act, obs, INFO_list = run_episode_policy(past_obs, past_act, obs, replay, policy_copy, sigma,
-                                                                                episode_length)
+        reward_sum, past_obs, past_act, obs, INFO_list = run_episode_policy(past_obs, past_act, obs, replay, policy_copy, sigma,
+                                                                                episode_length, env)
 
         rewards[i + warmup_episodes] = reward_sum
         INFO_list_final.extend(INFO_list)
 
-        try:
+        # TODO uncomment this to NOT use multiprocessing (sequential training)
+        print('training dynamics not in training thread')
+        dyn_loss, dynamics_loss = train_dynamics(dynamics, dynamics_optimizer1, replay, replay_warmup,
+                                                 dyn_iters=train_iter_parallel)
+
+        print('training policy not in training thread')
+        pol_loss, policy_loss = train_policy(policy_optimizer1, policy, dynamics, replay, replay_warmup,
+                                             pol_iters=train_iter_parallel)
+
+        policy_copy.load_state_dict(policy.state_dict())
+
+        dynamicslosslist.extend(dynamics_loss)
+        policylosslist.extend(policy_loss)
+
+        # TODO uncomment this to use multiprocessing
+        """try:
             training_finished = finished_q.get(False)
         except:
             training_finished = False
@@ -681,12 +700,16 @@ def main():
             replay_q.put(replay, False)
             replay_warmup_q.put(replay_warmup, False)
             start_q.put(True)
-            training = True
+            training = True"""
 
         print(
             f'******************************************** \n Iteration {i} complete ({time.time() - start:.2f}s) \n\t reward:{reward_sum:.3f} \n********************************************')
 
     # ---------------------------------------------------Error decomposition---------------------------------------------------#
+
+    np.save(f"temp_save_dir/{directory_name}/dynamics_loss_online", np.asarray(dynamicslosslist))
+    np.save(f"temp_save_dir/{directory_name}/policy_loss_online", np.asarray(policylosslist))
+
     #TODO check out full implementation of zernike and how it works
     #TODO automate getting OOPAO updates
     #TODO rewrite OOPAO code (using new tutorial)
@@ -711,18 +734,31 @@ def main():
     strehl_array_2nd = np.asarray(INFO_dict['strehl'])
     np.save(f"temp_save_dir/{directory_name}/strehl_array_2nd", strehl_array_2nd)
 
-    tel_psf_array = np.asarray(INFO_dict['TEL_PSF'])
-    np.save(f"temp_save_dir/{directory_name}/tel_psf_array", tel_psf_array)
+    modes_1st_stage = np.asarray(INFO_dict['modes_1st_stage'])
+    np.save(f"temp_save_dir/{directory_name}/modes_1st_stage", modes_1st_stage)
 
-    residual_OPD_array = np.asarray(INFO_dict['residual_OPD']) #for use in spatial PSD/KL modes var and correlation
+    modes_2nd_stage = np.asarray(INFO_dict['modes_2nd_stage'])
+    np.save(f"temp_save_dir/{directory_name}/modes_2nd_stage", modes_2nd_stage)
+
+    modes_atm = np.asarray(INFO_dict['modes_atm'])
+    np.save(f"temp_save_dir/{directory_name}/modes_atm", modes_atm)
+
+    #tel_psf_array = np.asarray(INFO_dict['TEL_PSF'])
+    #np.save(f"temp_save_dir/{directory_name}/tel_psf_array", tel_psf_array)
+
+    #residual_OPD_array = np.asarray(INFO_dict['residual_OPD']) #for use in spatial PSD/KL modes var and correlation
     #you can later do the spatial PSD when you save the required atm parameter
-    np.save(f"temp_save_dir/{directory_name}/residual_OPD_array", residual_OPD_array)
+    #np.save(f"temp_save_dir/{directory_name}/residual_OPD_array", residual_OPD_array)
 
-    atm_OPD_array = np.asarray(INFO_dict['atm_OPD']) #not sure where I would use it
-    np.save(f"temp_save_dir/{directory_name}/atm_OPD_array", atm_OPD_array)
+    #atm_OPD_array = np.asarray(INFO_dict['atm_OPD']) #not sure where I would use it
+    #np.save(f"temp_save_dir/{directory_name}/atm_OPD_array", atm_OPD_array)
 
     total_err_array = np.asarray(INFO_dict['total_error']) #not useful for now
     np.save(f"temp_save_dir/{directory_name}/total_err_array", total_err_array)
+
+
+    DM_zer_OPD_array = np.asarray(INFO_dict['DM_zer_OPD'])
+    np.save(f"temp_save_dir/{directory_name}/DM_zer_OPD_array", DM_zer_OPD_array)
 
 
     #YOU SHOULD ALSO CHECK IF YOU ONLY HAVE AN EPISODE OF DATA IN ALL OF THESE BECAUSE I DON'T REMEMBER
