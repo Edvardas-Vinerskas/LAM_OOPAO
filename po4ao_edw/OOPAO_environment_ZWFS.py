@@ -24,7 +24,7 @@ class OOPAO_environment_ZWFS(gym.Env):
 
         self.N_SUBAPERTURE_pyr = 20
         self.N_SUBAPERTURE_zer = 9
-        self.DIAMETER = 1.52
+        self.DIAMETER = 1.5
         self.RESOLUTION = self.N_SUBAPERTURE_pyr * 8
         self.FREQUENCY = 1500
         self.MODULATION = 3
@@ -42,13 +42,15 @@ class OOPAO_environment_ZWFS(gym.Env):
         self.SRC_OptBand = "I"
         self.CENTRAL_OBSTRUCTION = 0
         self.MECH_COUPLING = 0.35
-        self.KL_no = 250
+        self.KL_coefs_pyr = 250
+        self.KL_coefs_zer = 81
         self.zeroPaddingFactor = 6
         self.seed = 10
 
         self.pwfs_photNoise = True
-        self.pwfs_readNoise = 6
+        self.pwfs_readNoise = 4
         self.pwfs_quanteff = 0.8
+        self.noise_calibration = 'on'
 
 
 
@@ -71,8 +73,8 @@ class OOPAO_environment_ZWFS(gym.Env):
         self.TEL.computePSF(self.zeroPaddingFactor)
 
         # diffraction limited OTF calculation
-        OTF_dl = fftshift(fft2(fftshift(self.TEL.PSF / np.sum(self.TEL.PSF))))
-        self.x_axis, self.OTF_dl_averaged = circular_average((np.abs(OTF_dl)).shape, np.abs(OTF_dl))
+        """OTF_dl = fftshift(fft2(fftshift(self.TEL.PSF / np.sum(self.TEL.PSF))))
+        self.x_axis, self.OTF_dl_averaged = circular_average((np.abs(OTF_dl)).shape, np.abs(OTF_dl))"""
 
         #---------------------------------------------------ATMOSPHERE---------------------------------------------------#
         self.ATM = Atmosphere(telescope       = self.TEL,
@@ -89,10 +91,13 @@ class OOPAO_environment_ZWFS(gym.Env):
 
 
         #---------------------------------------------------DEFORMABLE_MIRROR---------------------------------------------------#
+        self.DM = DeformableMirror(telescope    =self.TEL,
+                                   nSubap       =self.N_SUBAPERTURE_pyr,
+                                   mechCoupling = self.MECH_COUPLING)
 
-        self.DM_pyr = DeformableMirror(telescope = self.TEL,
-                              nSubap             = self.N_SUBAPERTURE_pyr,
-                              mechCoupling       =self.MECH_COUPLING)
+        self.DM_pyr = DeformableMirror(telescope    = self.TEL,
+                                       nSubap       = self.N_SUBAPERTURE_pyr,
+                                       mechCoupling = self.MECH_COUPLING)
 
         self.DM_zer = DeformableMirror(telescope    = self.TEL,
                                        nSubap       = self.N_SUBAPERTURE_zer,
@@ -110,10 +115,12 @@ class OOPAO_environment_ZWFS(gym.Env):
                        lightRatio     = self.LIGHT_RATIO,
                        postProcessing = self.POST_PROCESS)
 
+
         """self.vZWFS = ZWFS2(tel         = self.TEL,
                            zpf         = 30,
                            diameter    = 2.14,
                            phase_shift = [-0.75 * np.pi,0.3 * np.pi])"""
+
 
         self.vZWFS = ZWFS2(tel          = self.TEL,
                            zpf          = 30,
@@ -122,12 +129,21 @@ class OOPAO_environment_ZWFS(gym.Env):
 
 
         #---------------------------------------------------KL_MODAL_BASIS---------------------------------------------------#
+        full_M2C = compute_KL_basis(self.TEL,
+                                    self.ATM,
+                                    self.DM,
+                                    lim=0)  # inversion stability criterion
+
+        # compute KL modal projector truncating the modes by the pupil used
+        KL_basis_dm = (self.DM.modes @ full_M2C) * np.tile(self.TEL.pupil.flatten()[:, None], full_M2C.shape[1])
+        self.projector_kl = np.linalg.pinv(KL_basis_dm)
+
         M2C_KL_pyr   = compute_KL_basis(tel = self.TEL, atm = self.ATM, dm = self.DM_pyr)
-        self.M2C_pyr = M2C_KL_pyr[:, :self.KL_no]
+        self.M2C_pyr = M2C_KL_pyr[:, :self.KL_coefs_pyr]
         modes_pyr    = self.DM_pyr.modes @ self.M2C_pyr
 
         M2C_KL_zer   = compute_KL_basis(tel = self.TEL, atm = self.ATM, dm = self.DM_zer)
-        self.M2C_zer = M2C_KL_zer[:, :self.KL_no]
+        self.M2C_zer = M2C_KL_zer[:, :self.KL_coefs_zer]
         modes_zer    = self.DM_zer.modes @ self.M2C_zer
 
         self.M2C_ = self.M2C_zer
@@ -148,7 +164,7 @@ class OOPAO_environment_ZWFS(gym.Env):
                                                atm           = self.ATM,
                                                nMeasurements = 1,
                                                stroke        = stroke,
-                                               noise          = "on")
+                                               noise         = self.noise_calibration)
 
         #ZWFS calibration
         CALIB_zer = np.zeros((self.vZWFS.signal_cam.shape[0], self.M2C_zer.shape[1]))
@@ -173,15 +189,16 @@ class OOPAO_environment_ZWFS(gym.Env):
         # takes in modes and outputs wfs signal
         self.CALIB_zer_obj = CalibrationVault(CALIB_zer)
 
-        # ---------------------------------------------------FITTING ERROR CALC---------------------------------------------------#
-        self.modes_inv_pyr = np.linalg.pinv(np.squeeze(modes_pyr[self.TEL.pupilLogical, :]))
-        self.modes_inv_zer = np.linalg.pinv(np.squeeze(modes_zer[self.TEL.pupilLogical, :]))
+        """# ---------------------------------------------------FITTING ERROR CALC---------------------------------------------------#
+        self.modes_inv_pyr = np.linalg.pinv(modes_pyr)
+        self.modes_inv_zer = np.linalg.pinv(modes_zer)"""
 
         #---------------------------------------------------INITIALIZATION---------------------------------------------------#
         self.ATM.generateNewPhaseScreen(seed = self.seed)
+        self.atm_update_tracker = 0
         self.SRC.reset()
-        self.DM_pyr.coefs = np.zeros(self.DM_pyr.coefs.shape)
-        self.DM_zer.coefs = np.zeros(self.DM_zer.coefs.shape)
+        self.DM_pyr.coefs = 0
+        self.DM_zer.coefs = 0
         self.DM_zer_copy  = 0
         self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.PWFS
         self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.DM_zer * self.vZWFS
@@ -219,8 +236,10 @@ class OOPAO_environment_ZWFS(gym.Env):
         mask_reshaped = mask_1D.reshape((self.N_SUBAPERTURE_zer + 1, self.N_SUBAPERTURE_zer + 1))
         self.mask = torch.from_numpy(mask_reshaped).bool()
 
-        self.strehl_1st = 0
-
+        self.strehl_1st      = 0
+        self.modes_atm       = 0
+        self.modes_1st_stage = 0
+        self.modes_2nd_stage = 0
 
 
     def flatten_dm(self):
@@ -249,7 +268,9 @@ class OOPAO_environment_ZWFS(gym.Env):
         if seed is None:
             seed = np.random.randint(1e9)
 
+        print(f'RESET IS BEING CALLED WITH SEED {seed}')
         self.ATM.generateNewPhaseScreen(seed=seed)
+        self.atm_update_tracker = 0
         self.ATM.update()
 
 
@@ -287,6 +308,7 @@ class OOPAO_environment_ZWFS(gym.Env):
     @torch.no_grad()
     def step(self, action, pyramid_noise):
         self.ATM.update()
+        self.atm_update_tracker = self.atm_update_tracker + 1
         atm_opd = self.ATM.OPD.copy()
 
 
@@ -325,13 +347,18 @@ class OOPAO_environment_ZWFS(gym.Env):
         #woofer-tweeter
         self.DM_zer.coefs = self.DM_zer_copy - np.matmul(self.N2N1, self.DM_pyr.coefs)
 
+        self.SRC ** self.ATM * self.TEL
+        self.modes_atm = self.projector_kl @ self.SRC.OPD.flatten()
 
         # propagate to wfs and apply new dm commands to the dm
         #only activate the second stage after the first stage closes the loop
         self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.PWFS
+        self.modes_1st_stage = self.projector_kl @ self.SRC.OPD.flatten()
         if (self.CURRENT_STEPS + 1) % 3 == 0:
             self.strehl_1st = np.exp(-np.var(self.TEL.src.phase[np.where(self.TEL.pupil == 1)]))
         self.SRC ** self.ATM * self.TEL * self.DM_pyr * self.DM_zer * self.vZWFS
+        self.modes_2nd_stage = self.projector_kl @ self.SRC.OPD.flatten()
+        DM_zer_OPD = self.DM_zer.OPD * self.TEL.pupil
 
 
         vzwfs_signal_torch_proj = self.reconstructor_zer @ self.vZWFS.signal_cam
@@ -350,8 +377,9 @@ class OOPAO_environment_ZWFS(gym.Env):
         self.TEL.computePSF(self.zeroPaddingFactor)
         INFO = {"strehl": strehl, "strehl_1st": self.strehl_1st,
                 "residual_error": residual_error, "total_error": total_error,
-                "TEL_PSF": self.TEL.PSF, "residual_OPD": self.TEL.OPD,
-                "atm_OPD": atm_opd}
+                "modes_1st_stage": self.modes_1st_stage, "modes_2nd_stage": self.modes_2nd_stage,
+                "modes_atm": self.modes_atm, "tracker": self.atm_update_tracker,
+                "DM_zer_OPD": DM_zer_OPD}
 
 
         return next_state, INFO
