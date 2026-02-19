@@ -75,10 +75,10 @@ from functions import *
 #define all OOPAO variables
 #TODO save all of these variables somewhere
 N_SUBAPERTURE       = 20
-DIAMETER            = 1.52
+DIAMETER            = 1.5
 CENTRAL_OBSTRUCTION = 0 #0.15
 RESOLUTION          = N_SUBAPERTURE * 8
-FREQUENCY           = 1500
+FREQUENCY           = 1000
 SAMPLING_TIME       = 1/FREQUENCY
 FOV                 = 10
 MECH_COUPLING       = 0.35
@@ -90,13 +90,14 @@ L_0                 = 25
 WIND_SPEED          = [10, 20] #[10, 20, 60]
 WIND_DIRECTION      = [0, 100] #[0, 100, 160]
 FRACTIONAL_C_N2     = [0.6, 0.4] #[0.5, 0.3, 0.2]
-ALTITUDE            = [0, 45000] #[0, 45000, 4500, 10000]
+ALTITUDE            = [0, 4500] #[0, 45000, 4500, 10000]
 Z_coefs             = 250 #200 #above 200 does not work great per Benoit
 KL_no               = 250
 
-photNoise           = False
-readNoise           = 0
-quanteff            = 1
+photNoise           = True
+readNoise           = 4
+quanteff            = 0.8
+noise_calibration   = 'on'
 
 
 zeroPaddingFactor = 6
@@ -217,6 +218,8 @@ ZZ.computeZernike(telObject2 = TEL)
 if use_KL:
 
     M2C_KL = compute_KL_basis(tel = TEL, atm = ATM, dm = DM)
+    KL_basis_dm = (DM.modes @ M2C_KL) * np.tile(TEL.pupil.flatten()[:, None], M2C_KL.shape[1])
+    projector_kl = np.linalg.pinv(KL_basis_dm)
     M2C    = M2C_KL[:, :KL_no]
     modes  = DM.modes @ M2C
 
@@ -236,7 +239,7 @@ CALIB = InteractionMatrix(ngs            = SRC,
                           atm            = ATM,
                           nMeasurements  = 5,
                           stroke         = stroke,
-                          noise          = "off")
+                          noise          = noise_calibration)
 
 
 #---------------------------------------------------FITTING ERROR CALC---------------------------------------------------#
@@ -292,7 +295,7 @@ else:
     wfssignal_buffer = []
 
 #variables and performance metric initialisation
-nLoop                        = 1000
+nLoop                        = 3000
 sr                           = np.zeros(nLoop)
 sr_running                   = np.zeros(nLoop)
 total_error                  = np.zeros(nLoop)
@@ -313,6 +316,9 @@ atm_OPD_list                 = [np.zeros(ATM.OPD.shape) for i in range((temp_err
 sim_temp_error_2_frame_delay = []
 sim_fit_error_list           = []
 sim_fit_error_list_2D        = []
+
+modes_atm                    = []
+modes_1st_stage              = []
 
 
 #vibration implementation
@@ -382,8 +388,12 @@ for i in range(nLoop):
     DM.coefs = DM.coefs - CL_gain * np.matmul(reconstructor, delayed_signal)
     dm_coefs_copy = DM.coefs
 
+    SRC ** ATM * TEL
+    modes_atm.append(projector_kl @ SRC.OPD.flatten())
+
     # propagate through AO with the dm commands applied
     SRC ** ATM * TEL * DM * WFS
+    modes_1st_stage.append(projector_kl @ SRC.OPD.flatten())
 
     #fitting error calculation for every frame (written for 2 frame delay)
     mode_coefs = modes_inv @ atm_OPD_list[-3][np.where(TEL.pupil > 0)]
@@ -436,7 +446,7 @@ for i in range(nLoop):
 #TODO what other plots are missing?
 
 save_files = True
-directory_name = 'PWFS_500_integrator_wind_10_100deg_test-v2'
+directory_name = 'PWFS_500_integrator_nonparallel_update_noise_1000Hz'
 savedir = f'temp_save_dir/{directory_name}/'
 
 
@@ -450,15 +460,12 @@ if save_files == True:
     strehl_array_1st = np.asarray(sr)
     np.save(f"temp_save_dir/{directory_name}/strehl_array_1st", strehl_array_1st)
 
-    tel_psf_array = np.asarray(tel_psf_list)
-    np.save(f"temp_save_dir/{directory_name}/tel_psf_array", tel_psf_array)
+    modes_1st_stage = np.asarray(modes_1st_stage)
+    np.save(f"temp_save_dir/{directory_name}/modes_1st_stage", modes_1st_stage)
 
-    residual_OPD_array = np.asarray(residual_OPD_list) #for use in spatial PSD/KL modes var and correlation
-    #you can later do the spatial PSD when you save the required atm parameter
-    np.save(f"temp_save_dir/{directory_name}/residual_OPD_array", residual_OPD_array)
+    modes_atm = np.asarray(modes_atm)
+    np.save(f"temp_save_dir/{directory_name}/modes_atm", modes_atm)
 
-    atm_OPD_array = np.asarray(atm_OPD_temp_list) #not sure where I would use it
-    np.save(f"temp_save_dir/{directory_name}/atm_OPD_array", atm_OPD_array)
 
     total_err_array = np.asarray(total_error) #not useful for now
     np.save(f"temp_save_dir/{directory_name}/total_err_array", total_err_array)

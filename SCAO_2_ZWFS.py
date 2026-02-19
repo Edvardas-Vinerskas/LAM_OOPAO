@@ -1,15 +1,7 @@
 
 """
-
-
-
 * the std limit of the phase rms getting into zernike is about 75 nm for a wvl of 790
-    * so when training the RL zwfs on phase or whatever you can
-        * either input the phase with the appropriate rms
-        * or just do it from the pyramid (you should do this because it is more representative)
 
-
-* going straight from pixel is thus another potential advantage
 * you might need to .copy() arrays if you don't want their values to magically change
 
 * does Jalo use some kind of validation for the dynamics model? seems like not
@@ -22,6 +14,8 @@
 
 * insert type checking into your code
 * and unit tests
+
+* fun fact - the influence functions work
 """
 
 
@@ -29,6 +23,7 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import SymLogNorm
 from matplotlib.patches import Circle
 import numpy as np
+import time
 import os
 from scipy import signal
 from numpy.fft import fftshift, fft, fft2, fftfreq, rfft, rfftfreq #need to shift just because of formatting
@@ -50,13 +45,15 @@ from OOPAO.Detector import Detector
 
 from functions import *
 
+start_time = time.time()
+
 #NOW DOING WITHOUT ZERNIKE FOR COMPARISON
 #---------------------------------------------------GLOBALS---------------------------------------------------#
 #define all OOPAO variables
 
 N_SUBAPERTURE_pyr   = 20
 N_SUBAPERTURE_zer   = 9
-DIAMETER            = 1.52
+DIAMETER            = 1.5
 CENTRAL_OBSTRUCTION = 0 #0.15
 RESOLUTION          = N_SUBAPERTURE_pyr * 8
 FREQUENCY           = 1500 #pyramid is running at 500
@@ -72,26 +69,26 @@ WIND_SPEED          = [10, 20] #[10, 20, 60]
 WIND_DIRECTION      = [0, 100] #[0, 100, 160]
 FRACTIONAL_C_N2     = [0.6, 0.4] #[0.5, 0.3, 0.2]
 ALTITUDE            = [0, 4500] #[0, 4500, 10000]
-Z_coefs             = 250
+KL_coefs_pyr        = 250
+KL_coefs_zer        = 81
 CL_gain_pyr         = 0.4
 CL_gain_zer         = 0.4
 
 pwfs_photNoise      = True
-pwfs_readNoise      = 6#4
+pwfs_readNoise      = 4 #4
 pwfs_quanteff       = 0.8
+noise_calibration   = 'on'
+
+
+"""vzwfs_photNoise      = True
+vzwfs_readNoise      = 400 #4
+vzwfs_quanteff       = 0.8
+vzwfs_calibration   = 'on'"""
 
 
 
 zeroPaddingFactor = 6
 rad2arcsec        = 180 * 60 * 60 / np.pi
-
-
-use_pwfs          = True
-
-
-use_zonal         = False
-use_zernike       = False
-use_KL            = True
 
 
 
@@ -149,6 +146,10 @@ def temp_vib(k, f, t, shape):
 
 
 #---------------------------------------------------DEFORMABLE_MIRROR---------------------------------------------------#
+DM = DeformableMirror(telescope        = TEL,  # Telescope
+                      nSubap           = N_SUBAPERTURE_pyr,
+                      mechCoupling     = MECH_COUPLING)
+
 
 DM_pyr = DeformableMirror(telescope    = TEL,
                           nSubap       = N_SUBAPERTURE_pyr,
@@ -198,6 +199,12 @@ vZWFS = ZWFS2(tel         = TEL,
               diameter    = 1.06,
               phase_shift = [-np.pi/2,np.pi/2])
 
+"""vZWFS = Pyramid(nSubap         = N_SUBAPERTURE_zer,
+                   telescope      = TEL,
+                   modulation     = MODULATION,
+                   lightRatio     = LIGHT_RATIO,
+                   postProcessing = POST_PROCESS)"""
+
 #TODO later recheck the vZWFS sensor according to what Matthieu said
 #zpf use 30 (size of the mask in pixels)
 #diameter of 2.14
@@ -206,51 +213,39 @@ vZWFS = ZWFS2(tel         = TEL,
 #answer the question how is the dynamic range and sensitivity impacted by the
     #diameter
     #phase shift change
-#look at wfs_measure function (are you supposed to use this one in interaction matrix?)
-
-#there is arctan and arcsin reconstructor inside the updated zwfs classes
-#and remember that the problem with these reconstructors that you did need iterative correction
 
 
 #---------------------------------------------------MODAL_BASIS---------------------------------------------------#
-M2C_pyr   = None
-modes_pyr = None
+"""zernike = Zernike(telObject = TEL,
+                       J = 350)
+zernike.computeZernike(telObject2 = TEL)
 
-M2C_zer   = None
-modes_zer = None
-if use_zonal:
-    M2C_zonal_pyr = np.identity(DM_pyr.nValidAct)
-    M2C_pyr       = M2C_zonal_pyr
-    modes_pyr     = DM_pyr.modes
+M2C_pyr = np.linalg.pinv(np.squeeze(DM_pyr.modes[TEL.pupilLogical, :])) @ zernike.modes[:, :KL_coefs_pyr]
+modes_pyr = zernike.modes[:, :KL_coefs_pyr]
 
-    M2C_zonal_zer = np.identity(DM_zer.nValidAct)
-    M2C_zer = M2C_zonal_zer
-    modes_zer = DM_zer.modes
+M2C_zer = np.linalg.pinv(np.squeeze(DM_zer.modes[TEL.pupilLogical, :])) @ zernike.modes[:, :KL_coefs_zer]
+modes_zer = zernike.modes[:, :KL_coefs_zer]
+
+projector_kl = np.linalg.pinv(np.squeeze(zernike.modes))"""
+
+# use of a single modal basis to prevent modal coupling between DM of stage 1 and stage 2
+full_M2C = compute_KL_basis(TEL,
+                            ATM,
+                            DM,
+                            lim=0)  # inversion stability criterion
+
+# compute KL modal projector truncating the modes by the pupil used
+KL_basis_dm = (DM.modes @ full_M2C) * np.tile(TEL.pupil.flatten()[:, None], full_M2C.shape[1])
+projector_kl = np.linalg.pinv(KL_basis_dm)
 
 
-if use_zernike:
+M2C_KL_pyr = compute_KL_basis(tel = TEL, atm = ATM, dm = DM_pyr)
+M2C_pyr    = M2C_KL_pyr[:, :KL_coefs_pyr]
+modes_pyr  = DM_pyr.modes @ M2C_pyr
 
-    zernike = Zernike(telObject = TEL,
-                       J = Z_coefs)
-    zernike.computeZernike(telObject2 = TEL)
-
-    M2C_Z_pyr = np.linalg.pinv(np.squeeze(DM_pyr.modes[TEL.pupilLogical, :])) @ zernike.modes
-    M2C_pyr   = M2C_Z_pyr
-    modes_pyr = zernike.modes
-
-    M2C_Z_zer = np.linalg.pinv(np.squeeze(DM_zer.modes[TEL.pupilLogical, :])) @ zernike.modes
-    M2C_zer = M2C_Z_zer
-    modes_zer = zernike.modes
-
-if use_KL:
-
-    M2C_KL_pyr = compute_KL_basis(tel = TEL, atm = ATM, dm = DM_pyr)
-    M2C_pyr    = M2C_KL_pyr[:, :250]
-    modes_pyr  = DM_pyr.modes @ M2C_pyr
-
-    M2C_KL_zer = compute_KL_basis(tel=TEL, atm=ATM, dm = DM_zer)
-    M2C_zer = M2C_KL_zer[:, :250]
-    modes_zer = DM_zer.modes @ M2C_zer
+M2C_KL_zer = compute_KL_basis(tel=TEL, atm=ATM, dm = DM_zer)
+M2C_zer = M2C_KL_zer[:, :KL_coefs_zer]
+modes_zer = DM_zer.modes @ M2C_zer
 
 #---------------------------------------------------INTERACTION MATRIX---------------------------------------------------#
 PWFS.cam.photonNoise = pwfs_photNoise
@@ -261,14 +256,14 @@ PWFS.cam.QE = pwfs_quanteff
 
 stroke = SRC.wavelength / 16
 CALIB_pyr = InteractionMatrix(ngs        = SRC,
-                          tel            = TEL,
-                          dm             = DM_pyr,
-                          wfs            = PWFS,
-                          M2C            = M2C_pyr,
-                          atm            = ATM,
-                          nMeasurements  = 1,
-                          stroke         = stroke,
-                          noise          = "on")
+                              tel            = TEL,
+                              dm             = DM_pyr,
+                              wfs            = PWFS,
+                              M2C            = M2C_pyr,
+                              atm            = ATM,
+                              nMeasurements  = 1,
+                              stroke         = stroke,
+                              noise          = noise_calibration)
 
 
 #calibration for zernike (there are better methods out there for calibration under real conditions but this will suffice for now)
@@ -296,53 +291,11 @@ for i in range(M2C_zer.shape[1]):
     CALIB_zer[:, i] = (w_plus - w_minus) / (2 * stroke)
 
 
-
-#zernike_wfs phase reconstruction via sin function (the b value that is needed currently escapes me
-"""for i in range(M2C_zer.shape[1]):
-    # the self.zwfs1 is phase shifted -np.pi/2 LEFT HANDED
-    # the self.zwfs2 is phase shifted np.pi/2 RIGHT HANDED
-    I_delta = vZWFS.zwfs2.img_ZWFS - vZWFS.zwfs1.img_ZWFS
-
-    phi = np.arcsin(I_delta / (2 * b_0))"""
-
-
-
 # takes in modes and outputs wfs signal
 #FOR NOW YOU ARE NOT TRUNCATING ANY EIGENVALUES? CHANGE THIS IN THE FUTURE
 CALIB_zer_obj = CalibrationVault(CALIB_zer)
 
-
-#---------------------------------------------------FITTING ERROR CALC---------------------------------------------------#
-
-#for zernike and zonal only (later extract the KL modes from the source code?)
-modes_inv = None
-#the rest of the code is in the for loop
-
-#takes in phase and outputs modes
-if use_zonal:
-    modes_inv = np.linalg.pinv(np.squeeze(modes_pyr[TEL.pupilLogical, :]))
-
-if use_zernike:
-    modes_inv = np.linalg.pinv(np.squeeze(modes_pyr))
-
-if use_KL:
-    modes_inv = np.linalg.pinv(np.squeeze(modes_pyr[TEL.pupilLogical, :]))
-
-
-#the rest of the code is in the for loop
-
-#---------------------------------------------------CAMERA---------------------------------------------------#
-
-CAM = Detector(integrationTime = 100 * TEL.samplingTime,  # integration time of the detector
-                photonNoise=False,  # enable photon noise
-                readoutNoise=0,  # readout of the detector in [e-/pixel]
-                QE=1,  # quantum efficiency
-                psf_sampling=2,  # sampling for the PSF computation 2 = Shannon sampling
-                binning=1)  # Binning factor of the PSF
-
-
 #---------------------------------------------------SIMULATION---------------------------------------------------#
-
 ATM.generateNewPhaseScreen(seed = 10)
 #reset everything just in case
 SRC.reset()
@@ -358,25 +311,21 @@ TEL.print_optical_path()
 pwfs_frame_delay         = 2
 pwfs_delay               = pwfs_frame_delay - 1 #frame delay of 1 is already built-in
 if pwfs_frame_delay >= 2:
-    pwfssignal_buffer = [np.zeros(PWFS.nSignal) for i in range(pwfs_delay)]
-    vzwfssignal_buffer= [np.zeros(vZWFS.signal_cam.shape[0]) for i in range(pwfs_delay)]
+    pwfssignal_buffer  = [np.zeros(PWFS.nSignal) for i in range(pwfs_delay)]
+    vzwfssignal_buffer = [np.zeros(vZWFS.signal_cam.shape[0]) for i in range(pwfs_delay)]
 else:
-    pwfssignal_buffer = []
-    vzwfssignal_buffer =[]
+    pwfssignal_buffer  = []
+    vzwfssignal_buffer = []
 
 #variables and performance metric initialisation
-nLoop                        = 2000
+nLoop                        = 12000
 sr                           = np.zeros(nLoop)
 sr_1st                       = []
 sr_running                   = np.zeros(nLoop)
 total_error                  = np.zeros(nLoop)
 residual_error               = np.zeros(nLoop)
 
-#variables for PSD calculation
-residual_OPD_list            = []
-residual_OPD_list_pwfs       = []
 #vibration implementation
-atm_OPD_temp_list = []
 final_residual_OPD           = 0
 final_atmosphere_OPD         = 0
 final_dm_OPD                 = 0
@@ -390,7 +339,9 @@ atm_OPD_list                 = [np.zeros(ATM.OPD.shape) for i in range((temp_err
 sim_temp_error_2_frame_delay = []
 sim_fit_error_list           = []
 sim_fit_error_list_2D        = []
-
+modes_atm                    = []
+modes_1st_stage              = []
+modes_2nd_stage              = []
 
 
 tel_psf_list = []
@@ -398,14 +349,18 @@ tel_psf_list = []
 reconstructor_pyr = M2C_pyr @ CALIB_pyr.M #takes in slopes and outputs modes, then takes in modes and outputs controle shape(357, 664)
 reconstructor_zer = M2C_zer @ CALIB_zer_obj.M #takes in wfs signal and outputs control
 ATM.generateNewPhaseScreen(seed = 10)
-"""ZZ = Zernike(telObject = TEL,
-                       J = 5)
-ZZ.computeZernike(telObject2 = TEL)
-tip     = ZZ.modesFullRes[:,:,0]
-def sine(f, t):
-    result = np.sin(2 * np.pi * (f * t))
-    return result
 """
+N_phi = np.sum(SRC.fluxMap)
+plt.figure()
+plt.imshow(SRC.fluxMap)
+covariance_zer_readout = 4 * reconstructor_zer @ np.eye(664) @ reconstructor_zer.T
+covariance_zer_photon = 1.751 * reconstructor_zer @ np.eye(664) @ reconstructor_zer.T
+plt.figure()
+plt.imshow(covariance_zer_readout)
+plt.figure()
+plt.imshow(covariance_zer_photon)
+plt.show()
+ATM.generateNewPhaseScreen(seed = 10)"""
 
 PWFS_signal_avg = 0
 PWFS_signal_avg_norm = 0
@@ -416,22 +371,12 @@ PWFS.cam.readoutNoise = pwfs_readNoise
 #PWFS.cam.darkCurrent = 100 #for some reason the integration time is not automatically retrieved from the telescope object
 PWFS.cam.QE = pwfs_quanteff
 
-#TODO you need to turn on ZWFS noise in the ZWFS object
-#
-"""vZWFS.zwfs1.cam.photonNoise = True
-vZWFS.zwfs1.cam.readoutNoise = 2000000
-vZWFS.zwfs1.cam.QE = 0.8
-
-vZWFS.zwfs2.cam.photonNoise = True
-vZWFS.zwfs2.cam.readoutNoise = 2000000
-vZWFS.zwfs2.cam.QE = 0.8"""
 sr_first_ = 0
 for i in range(nLoop):
     #tip_vibr = 1e-7 * sine(40, i * SAMPLING_TIME) * tip
     #update phase screen
     ATM.update()
     atm_opd = ATM.OPD.copy()
-    atm_OPD_temp_list.append(atm_opd)
 
     total_error[i] = np.std(ATM.OPD[np.where(TEL.pupil > 0)]) * 1e9
 
@@ -470,37 +415,34 @@ for i in range(nLoop):
     DM_zer.coefs = DM_zer_copy - np.matmul(N2N1, DM_pyr.coefs)
 
 
+    SRC ** ATM * TEL
+    modes_atm.append(projector_kl @ SRC.OPD.flatten())
+
     #propagate through AO with the dm commands applied
     SRC ** ATM * TEL * DM_pyr * PWFS
+    modes_1st_stage.append(projector_kl @ SRC.OPD.flatten())
     if (i + 1) % 3 == 0:
-        residual_OPD_list_pwfs.append(TEL.OPD)
         sr_first_ = np.exp(-np.var(TEL.src.phase[np.where(TEL.pupil == 1)]))
         sr_1st.append(sr_first_)
-    SRC ** ATM * TEL * DM_pyr *  DM_zer * vZWFS
+    SRC ** ATM * TEL * DM_pyr * DM_zer * vZWFS
 
 
     #performance metrics
     sr[i] = np.exp(-np.var(TEL.src.phase[np.where(TEL.pupil == 1)]))
+    modes_2nd_stage.append(projector_kl @ SRC.OPD.flatten())
     residual_error[i] = np.std(TEL.OPD[np.where(TEL.pupil > 0)]) * 1e9
     print("Loop" + str(i) + "/" + str(nLoop) + " " + "AO residual: " + str(residual_error[i]) + "nm" + "total err: " + str(total_error[i]) + "nm")
     print(f"strehl 1st {sr_first_}")
     print(f"strehl 2nd {sr[i]}")
 
-
-    residual_OPD_list.append(TEL.OPD)
-
-    #when plotting high strehl PSF, just
-    TEL.computePSF(zeroPaddingFactor)
-    tel_psf_list.append(TEL.PSF)
-
-
+end_time = time.time()
 
 #TODO clean up later
 #TODO for some plots you need to check the sr > 0.5 condition
 #TODO change the 2000 timeery condition
 #TODO what other plots are missing?
 save_files = True
-directory_name = 'vZWFS_integrator_phnoise0_read2_QE08'
+directory_name = 'vZWFS_integrator_phnoise1_read_4_4_QE08_mag2_12k'
 savedir = f'temp_save_dir/{directory_name}/'
 
 if not os.path.exists(savedir):
@@ -516,21 +458,25 @@ if save_files == True:
     strehl_array_1st = np.insert(strehl_array_1st, 0, [0, 0])
     np.save(f"temp_save_dir/{directory_name}/strehl_array_1st", strehl_array_1st)
 
+
     strehl_array_2nd = np.asarray(sr)
     np.save(f"temp_save_dir/{directory_name}/strehl_array_2nd", strehl_array_2nd)
 
-    tel_psf_array = np.asarray(tel_psf_list)
-    np.save(f"temp_save_dir/{directory_name}/tel_psf_array", tel_psf_array)
 
-    residual_OPD_array = np.asarray(residual_OPD_list) #for use in spatial PSD/KL modes var and correlation
-    #you can later do the spatial PSD when you save the required atm parameter
-    np.save(f"temp_save_dir/{directory_name}/residual_OPD_array", residual_OPD_array)
+    modes_1st_stage = np.asarray(modes_1st_stage)
+    np.save(f"temp_save_dir/{directory_name}/modes_1st_stage", modes_1st_stage)
 
-    atm_OPD_array = np.asarray(atm_OPD_temp_list) #not sure where I would use it
-    np.save(f"temp_save_dir/{directory_name}/atm_OPD_array", atm_OPD_array)
+    modes_2nd_stage = np.asarray(modes_2nd_stage)
+    np.save(f"temp_save_dir/{directory_name}/modes_2nd_stage", modes_2nd_stage)
+
+
+    modes_atm = np.asarray(modes_atm)
+    np.save(f"temp_save_dir/{directory_name}/modes_atm", modes_atm)
+
 
     total_err_array = np.asarray(total_error) #not useful for now
     np.save(f"temp_save_dir/{directory_name}/total_err_array", total_err_array)
+
 
     #YOU SHOULD ALSO CHECK IF YOU ONLY HAVE AN EPISODE OF DATA IN ALL OF THESE BECAUSE I DON'T REMEMBER
     time_plot = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
@@ -540,6 +486,7 @@ if save_files == True:
 
 
     print('data saved')
+print(f'time to run {end_time - start_time} s')
 err
 
 
@@ -755,44 +702,40 @@ plt.legend()
 
 
 #---------------------------------------------------Zernike/KL decomposition---------------------------------------------------#
-label_str = 0
-if use_zernike:
-    label_str = "Zernike"
-elif use_KL:
-    label_str = "KL"
+label_str = "KL"
 
 ATM_OPD_generated_array = np.array(ATM_OPD_generated_list)
 
 coefficient_matrix_atmosphere_list = []
 coefficient_matrix_res_list        = []
 
-if use_zernike or use_KL:
-    for i in range(ATM_OPD_generated_array.shape[0]):
-        atmosphere_phase = 2 * np.pi * ATM_OPD_generated_list[i] / SRC.wavelength
-        coefficient_matrix_atmosphere = modes_inv @ atmosphere_phase[np.where(TEL.pupil > 0)]
-        coefficient_matrix_atmosphere_list.append(coefficient_matrix_atmosphere)
 
-    for i in range(len(residual_OPD_list)):
-        final_residual_phase = 2 * np.pi * residual_OPD_list[i] / SRC.wavelength
-        coefficient_matrix_res = modes_inv @ final_residual_phase[np.where(TEL.pupil > 0)]
-        coefficient_matrix_res_list.append(coefficient_matrix_res)
+for i in range(ATM_OPD_generated_array.shape[0]):
+    atmosphere_phase = 2 * np.pi * ATM_OPD_generated_list[i] / SRC.wavelength
+    coefficient_matrix_atmosphere = projector_kl @ atmosphere_phase[np.where(TEL.pupil > 0)]
+    coefficient_matrix_atmosphere_list.append(coefficient_matrix_atmosphere)
 
-    zernike_names = []
-    for i in range(len(coefficient_matrix_res_list[0])):
-        zernike_names.append(f"{i+1}")
+for i in range(len(residual_OPD_list)):
+    final_residual_phase = 2 * np.pi * residual_OPD_list[i] / SRC.wavelength
+    coefficient_matrix_res = projector_kl @ final_residual_phase[np.where(TEL.pupil > 0)]
+    coefficient_matrix_res_list.append(coefficient_matrix_res)
 
-
-    coefficient_matrix_atmosphere_var = np.var(np.array(coefficient_matrix_atmosphere_list), axis = 0)
-    coefficient_matrix_res_var        = np.var(np.array(coefficient_matrix_res_list), axis = 0)
+zernike_names = []
+for i in range(len(coefficient_matrix_res_list[0])):
+    zernike_names.append(f"{i+1}")
 
 
-    plt.figure()
-    plt.bar(zernike_names, coefficient_matrix_res_var, color = "red", label = f"{label_str} coeffs for residual phase")
-    plt.title(f"{label_str} coefficients for corrected vs atmospher phase")
-    plt.bar(zernike_names, coefficient_matrix_atmosphere_var, color = "black", alpha = 0.4, label = f"{label_str} coeffs for atmospheric phase")
-    plt.yscale("log")
-    plt.tight_layout()
-    plt.legend()
+coefficient_matrix_atmosphere_var = np.var(np.array(coefficient_matrix_atmosphere_list), axis = 0)
+coefficient_matrix_res_var        = np.var(np.array(coefficient_matrix_res_list), axis = 0)
+
+
+plt.figure()
+plt.bar(zernike_names, coefficient_matrix_res_var, color = "red", label = f"{label_str} coeffs for residual phase")
+plt.title(f"{label_str} coefficients for corrected vs atmospher phase")
+plt.bar(zernike_names, coefficient_matrix_atmosphere_var, color = "black", alpha = 0.4, label = f"{label_str} coeffs for atmospheric phase")
+plt.yscale("log")
+plt.tight_layout()
+plt.legend()
 
 
 

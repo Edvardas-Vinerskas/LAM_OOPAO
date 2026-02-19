@@ -32,10 +32,10 @@ from functions import *
 #define all OOPAO variables
 
 N_SUBAPERTURE       = 20
-DIAMETER            = 1.52
+DIAMETER            = 1.5
 CENTRAL_OBSTRUCTION = 0 #0.15
 RESOLUTION          = N_SUBAPERTURE * 8
-FREQUENCY           = 1500
+FREQUENCY           = 500
 SAMPLING_TIME       = 1/FREQUENCY
 FOV                 = 10
 MECH_COUPLING       = 0.35
@@ -208,22 +208,6 @@ if use_KL:
 
 
 #the rest of the code is in the for loop
-
-#---------------------------------------------------CAMERA---------------------------------------------------#
-
-CAM = Detector(integrationTime = 100 * TEL.samplingTime,  # integration time of the detector
-                photonNoise=False,  # enable photon noise
-                readoutNoise=0,  # readout of the detector in [e-/pixel]
-                QE=1,  # quantum efficiency
-                psf_sampling=2,  # sampling for the PSF computation 2 = Shannon sampling
-                binning=1)  # Binning factor of the PSF
-
-
-
-
-
-
-
 #---------------------------------------------------SIMULATION---------------------------------------------------#
 #for now we are only using SRC
 
@@ -235,7 +219,7 @@ SRC ** ATM * TEL * DM * WFS
 TEL.print_optical_path()
 
 #variables and performance metric initialisation
-nLoop                        = 2000
+nLoop                        = 3000
 sr                           = np.zeros(nLoop)
 sr_running                   = np.zeros(nLoop)
 total_error                  = np.zeros(nLoop)
@@ -246,6 +230,8 @@ residual_OPD_list            = []
 final_residual_OPD           = 0
 final_atmosphere_OPD         = 0
 final_dm_OPD                 = 0
+modes_atm = []
+modes_1st_stage = []
 
 tel_psf_list = []
 atm_OPD_temp_list = []
@@ -257,7 +243,6 @@ for i in range(nLoop):
     #update phase screen
     ATM.update()
     atm_opd = ATM.OPD
-    atm_OPD_temp_list.append(atm_opd)
 
     total_error[i] = np.std(ATM.OPD[np.where(TEL.pupil > 0)]) * 1e9
 
@@ -267,7 +252,11 @@ for i in range(nLoop):
     dm_coefs_copy = DM.coefs
 
     #propagate through AO with the dm commands applied
+    SRC ** ATM * TEL
+    modes_atm.append(modes_inv @ SRC.OPD.flatten()[np.where(TEL.pupil == 1)])
+
     SRC ** ATM * TEL * DM * WFS
+    modes_1st_stage.append(modes_inv @ SRC.OPD.flatten()[np.where(TEL.pupil == 1)])
 
 
     #performance metrics
@@ -277,17 +266,12 @@ for i in range(nLoop):
     print(f"strehl {sr[i]}")
 
 
-    #if sr[i] > 0.5:
-    residual_OPD_list.append(TEL.OPD)
 
-
-    TEL.computePSF(zeroPaddingFactor)
-    tel_psf_list.append(TEL.PSF)
 
 
 #TODO clean up later
 save_files = True
-directory_name = 'PWFS_metrics_1500_ideal'
+directory_name = 'PWFS_metrics_500_ideal'
 if save_files == True:
     residual_error_array = np.asarray(residual_error)
     np.save(f"temp_save_dir/{directory_name}/residual_error", residual_error_array)
@@ -295,15 +279,11 @@ if save_files == True:
     strehl_array_1st = np.asarray(sr)
     np.save(f"temp_save_dir/{directory_name}/strehl_array_1st", strehl_array_1st)
 
-    tel_psf_array = np.asarray(tel_psf_list)
-    np.save(f"temp_save_dir/{directory_name}/tel_psf_array", tel_psf_array)
+    modes_1st_stage = np.asarray(modes_1st_stage)
+    np.save(f"temp_save_dir/{directory_name}/modes_1st_stage", modes_1st_stage)
 
-    residual_OPD_array = np.asarray(residual_OPD_list) #for use in spatial PSD/KL modes var and correlation
-    #you can later do the spatial PSD when you save the required atm parameter
-    np.save(f"temp_save_dir/{directory_name}/residual_OPD_array", residual_OPD_array)
-
-    atm_OPD_array = np.asarray(atm_OPD_temp_list) #not sure where I would use it
-    np.save(f"temp_save_dir/{directory_name}/atm_OPD_array", atm_OPD_array)
+    modes_atm = np.asarray(modes_atm)
+    np.save(f"temp_save_dir/{directory_name}/modes_atm", modes_atm)
 
     total_err_array = np.asarray(total_error) #not useful for now
     np.save(f"temp_save_dir/{directory_name}/total_err_array", total_err_array)
