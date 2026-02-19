@@ -438,9 +438,9 @@ def main():
 
     #retraining on single seed with less noise equivalent to single stage system and seeing what we get
     #note that for a single stage the warm up almost always converges
-    directory_name = 'vZWFS_1st_2nd_noise_03_phnoise1_read_4_4_QE08_mag2_epis20_iters40_warmupperc02_v2' #trained from scratch with fresh warm up data
+    directory_name = 'test' #trained from scratch with fresh warm up data
     directory_name_load_buffer = 'vZWFS_1st_2nd_noise_03_phnoise1_read_4_4_QE08_mag2_epis20_iters40_warmupperc05'
-
+    #more change
 
     #set save_buffer to true when you want to save the warmup data
     #set load_buffer to true when you want to load some other warmup data (if load_buffer = True, then save_buffer = False)

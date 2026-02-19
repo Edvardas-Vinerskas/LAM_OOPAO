@@ -8,6 +8,8 @@
 
 from scipy import signal
 import numpy as np
+import matplotlib
+matplotlib.use('Qt5Agg')
 import matplotlib.pyplot as plt
 
 from OOPAO.calibration.compute_KL_modal_basis import compute_KL_basis
