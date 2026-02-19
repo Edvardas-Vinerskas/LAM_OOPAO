@@ -4,7 +4,10 @@ Created on Mon Sep  2 11:42:34 2024
 
 @author: mmotte
 """
-
+#TODO there is a bug with self.signal somewhere
+# not a bug but the reference signal is removed from signal
+# so for the img_ZWFS the reference signal is not removed
+# but for signal it is removed
 import inspect
 import multiprocessing
 import sys
@@ -161,18 +164,18 @@ class ZWFS2: #zpf 30, diameter 2.14, phase_shift [-0.75 * np.pi,0.3 * np.pi]
             src_list = [src]
         elif src.tag == 'asterism':
             src_list = src.src
-        signal_2D_list = []
-        signal_list = []
+        signal_2D_cam_list = []
+        signal_cam_list = []
 
 
         for src in src_list:
             src.optical_path.append([self.tag, self])
             self.src = src
             self.wfs_measure(phase_in=self.src.phase)
-            signal_2D_list.append(self.signal_2D_cam)
-            signal_list.append(self.signal_cam)
+            signal_2D_cam_list.append(self.signal_2D_cam)
+            signal_cam_list.append(self.signal_cam)
 
-        self.signal_2D = np.squeeze(np.array(signal_2D_list))
-        self.signal = np.squeeze(np.array(signal_list))
+        self.signal_2D_cam = np.squeeze(np.array(signal_2D_cam_list))
+        self.signal_cam = np.squeeze(np.array(signal_cam_list))
 
         return
