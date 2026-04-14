@@ -163,7 +163,7 @@ class OZITele:
         self.vzwfs = ZWFS2(ZWFS1=zwfs1, ZWFS2=zwfs2)
         self.zwfs1 = self.vzwfs.zwfs1
         self.zwfs2 = self.vzwfs.zwfs2
-        self.atm = Atmosphere(telescope= self.tel1, r0 = 0.05, L0 = 25, windSpeed=[5], fractionalR0=[1], windDirection=[0], altitude=[0])
+        
 
         param = np.load('dm_second_stage_misreg_dict.npy', allow_pickle=True).item()
         m = MisRegistration(param)

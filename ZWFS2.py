@@ -19,7 +19,7 @@ from OOPAO.Detector import Detector
 
 import numpy as np
 import matplotlib.pyplot as plt
-from OOPAO.ZWFS1 import ZWFS
+from OOPAO.ZWFS import ZWFS
 class ZWFS2:
     def __init__(self, tel = None, diameter:float = None, phase_shift = [-np.pi/2,np.pi/2], flux_ratio:float = 1/2, transmittance:complex = 1, zpf = 4, phase_shift_unit = 'radian', propagation_method = 'MFT', ZWFS1 = None, ZWFS2=None):
 
