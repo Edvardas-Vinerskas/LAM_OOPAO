@@ -7,14 +7,6 @@ Created on Thu Jan 15 13:38:53 2026
 
 import numpy as np
 
-from OOPAO.Source import Source  # Light source model
-from OOPAO.Telescope import Telescope  # Telescope model
-from OOPAO.Atmosphere import Atmosphere  # Telescope model
-
-from OOPAO.ZWFS import ZWFS  # Zernike Wavefront Sensor
-from OOPAO.ZWFS2 import ZWFS2  # Zernike Wavefront Sensor
-from OOPAO.DeformableMirror import DeformableMirror  # Zernike Wavefront Sensor
-from OOPAO.MisRegistration import MisRegistration
 
 from Pupil_selection import reference_intensities
 from skimage.transform import resize
@@ -23,11 +15,18 @@ import tqdm
 
 from scipy.signal import welch
 from scipy.interpolate import interp1d
-
+from joblib import Parallel, delayed
 logging.basicConfig(level=logging.INFO)  # Set up logging
 logger = logging.getLogger(__name__)  # Create logger
 import tkinter as tk
 from tkinter import filedialog
+import os
+import sys
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+from parallel_utils import _reconstruct_phase_worker, _import_oopao_symbols
+
 class OZITele:
     """
     Analyze OZIRIIS telemetry data, reconstruct wavefront phase, and compute
@@ -110,24 +109,48 @@ class OZITele:
         if self.is_onsky:
             
             self.positions_calib = [np.array([ 35,  20, 125, 110]), np.array([127,  19, 216, 109])]
-            self.initial_positions, self.initial_pupilles, self.initial_submasks, self.global_masks = reference_intensities(self.off_mask)
+            self.initial_positions, self.initial_pupils, self.initial_submasks, self.global_masks = reference_intensities(self.off_mask)
             minr, minc, maxr, maxc = self.positions_calib[0]
             self.initial_submasks[0] = self.global_masks[0][minr:maxr, minc:maxc]
             minr, minc, maxr, maxc = self.positions_calib[1]
             self.initial_submasks[1] = self.global_masks[1][minr:maxr, minc:maxc]
-            self.initial_pupilles[0] = np.zeros_like(self.initial_submasks[0]).astype(np.float32)
-            self.initial_pupilles[1] = np.zeros_like(self.initial_submasks[1]).astype(np.float32)
-            self.initial_pupilles[0][self.initial_submasks[0]] = self.off_mask[self.global_masks[0]]
-            self.initial_pupilles[1][self.initial_submasks[1]] = self.off_mask[self.global_masks[1]]
+            self.initial_pupils[0] = np.zeros_like(self.initial_submasks[0]).astype(np.float32)
+            self.initial_pupils[1] = np.zeros_like(self.initial_submasks[1]).astype(np.float32)
+            self.initial_pupils[0][self.initial_submasks[0]] = self.off_mask[self.global_masks[0]]
+            self.initial_pupils[1][self.initial_submasks[1]] = self.off_mask[self.global_masks[1]]
             self.submasks = [None,None]
-            self.pupilles = [None,None]
-            pupil2 = self._rescale_matrix(self.initial_pupilles[1], self.initial_pupilles[0].shape[0], self.initial_pupilles[0].shape[1])
+            self.pupils = [None,None]
+            pupil2 = self._rescale_matrix(self.initial_pupils[1], self.initial_pupils[0].shape[0], self.initial_pupils[0].shape[1])
             
             
-            self.pupilles[1],_ = self._pad_to_square(pupil2)
-            self.pupilles[0],_ = self._pad_to_square(self.initial_pupilles[0])
-            self.submasks[1],_ = self._pad_to_square(self.initial_pupilles[0])
+            self.pupils[1],_ = self._pad_to_square(pupil2)
+            self.pupils[0],_ = self._pad_to_square(self.initial_pupils[0])
+            self.submasks[1],_ = self._pad_to_square(self.initial_pupils[0])
             self.submasks[0] = self.submasks[1]
+           
+        else:
+            self.positions_calib = [np.array([ 35,  20, 125, 110]), np.array([127,  19, 216, 109])]
+            self.initial_positions, self.initial_pupils, self.initial_submasks, self.global_masks = reference_intensities(self.off_mask)
+            
+            self.submasks = [None,None]
+            self.pupils = [None,None]
+            pupil2 = self._rescale_matrix(self.initial_pupils[1], self.initial_pupils[0].shape[0], self.initial_pupils[0].shape[1])
+            
+            
+            self.pupils[1],_ = self._pad_to_square(pupil2)
+            self.pupils[0],_ = self._pad_to_square(self.initial_pupils[0])
+            self.submasks[1],_ = self._pad_to_square(self.initial_pupils[0])
+            self.submasks[0] = self.submasks[1]
+            
+        self._initialise_OOPAO_objects()
+        
+        self.compute_projectors()
+        self.extract_Zimages()
+        self.has_recontructed_phase = False
+        self.has_projected_phase = False
+    def _initialise_OOPAO_objects(self):
+        Source, Telescope, ZWFS, ZWFS2, DeformableMirror, MisRegistration = _import_oopao_symbols()
+        if self.is_onsky:
             self.src1 = Source(optBand='H', magnitude=-2.5)
             self.src1.wavelength = 1.6e-6
             self.src1.wavelength = 1.6e-6
@@ -135,32 +158,21 @@ class OZITele:
             self.src2 = Source(optBand='H', magnitude=-2.5)
             self.src2.wavelength = 1.6e-6
             self.src2.bandwidth = 0.2e-6
-        else:
-            self.positions_calib = [np.array([ 35,  20, 125, 110]), np.array([127,  19, 216, 109])]
-            self.initial_positions, self.initial_pupilles, self.initial_submasks, self.global_masks = reference_intensities(self.off_mask)
-            
-            self.submasks = [None,None]
-            self.pupilles = [None,None]
-            pupil2 = self._rescale_matrix(self.initial_pupilles[1], self.initial_pupilles[0].shape[0], self.initial_pupilles[0].shape[1])
-            
-            
-            self.pupilles[1],_ = self._pad_to_square(pupil2)
-            self.pupilles[0],_ = self._pad_to_square(self.initial_pupilles[0])
-            self.submasks[1],_ = self._pad_to_square(self.initial_pupilles[0])
-            self.submasks[0] = self.submasks[1]
+        else: 
             self.src1 = Source(optBand='IR1310', magnitude=-2.5)
             self.src2 = Source(optBand='IR1310', magnitude=-2.5)
         self.tel1 = Telescope(self.submasks[0].shape[0],1.52, pupil = self.submasks[0]) 
-        self.tel1.pupilReflectivity = np.sqrt(self.pupilles[0])
+        self.tel1.pupilReflectivity = np.sqrt(self.pupils[0])
+        self.tel1.pupilReflectivity[~np.isfinite(self.tel1.pupilReflectivity)]=0
         self.src1*self.tel1
         self.tel2 = Telescope(self.submasks[1].shape[0],1.52, pupil = self.submasks[1]) 
-        self.tel2.pupilReflectivity = np.sqrt(self.pupilles[1])
+        self.tel2.pupilReflectivity = np.sqrt(self.pupils[1])
+        self.tel2.pupilReflectivity[~np.isfinite(self.tel2.pupilReflectivity)]=0
         self.src2*self.tel2
 
 
-        zwfs1 = ZWFS(self.tel1, diameter = 2.14, phase_shift=0.33, zpf = 30, phase_shift_unit='pi' )
-        zwfs2 = ZWFS(self.tel2, diameter = 2.14, phase_shift=-0.74, zpf = 30, phase_shift_unit='pi' )
-        self.vzwfs = ZWFS2(ZWFS1=zwfs1, ZWFS2=zwfs2)
+        
+        self.vzwfs = self._build_vzwfs_class()
         self.zwfs1 = self.vzwfs.zwfs1
         self.zwfs2 = self.vzwfs.zwfs2
         
@@ -183,16 +195,27 @@ class OZITele:
                                 misReg = m,
                                 sign=-1e-5)
 
-        self.IF = 2*np.load('IF_dm2.npy').reshape(97,-1).T*1e-9
+        self.IF = np.load('IF_dm2.npy').reshape(97,-1).T*1e-6
+        self.M2phase = self.IF@self.M2C
+        self.std_phase = self.M2phase.std(axis = 0)
+        self.IF_std = self.IF.std(axis = 0)
         amplitude_mean = np.ptp(self.IF,axis =0)
 
         self.dm1.modes*=amplitude_mean/np.ptp(self.dm1.modes)
         self.dm2.modes*=amplitude_mean/np.ptp(self.dm2.modes)
-        
-        self.compute_projectors()
-        self.extract_Zimages()
-        self.has_recontructed_phase = False
-        self.has_projected_phase = False
+    def _build_vzwfs_class(self):
+        Source, Telescope, ZWFS, ZWFS2, DeformableMirror, MisRegistration = _import_oopao_symbols()
+        zwfs1 = ZWFS(self.tel1, diameter = 2.14, phase_shift=0.33, zpf = 30, phase_shift_unit='pi' )
+        zwfs2 = ZWFS(self.tel2, diameter = 2.14, phase_shift=-0.74, zpf = 30, phase_shift_unit='pi' )
+        return ZWFS2(ZWFS1=zwfs1, ZWFS2=zwfs2)
+    def _export_reconstruction_setup(self):
+        return {
+            "is_onsky": self.is_onsky,
+            "submask0": self.submasks[0],
+            "submask1": self.submasks[1],
+            "pupil0": self.pupils[0],
+            "pupil1": self.pupils[1],
+        }
     def _rescale_matrix(self,A, j,k, anti_aliasing = True):
         """
         Resample a 2D, 3D, or 4D array to a target spatial shape.
@@ -233,13 +256,13 @@ class OZITele:
         modes= self.tel1.OPD.copy()
         modes = modes.reshape((self.tel1.resolution**2, modes.shape[-1]))/self.tel1.OPD[self.tel1.pupil, :].std(axis=0)  # Flatten for projection
         cov_modes = modes.T @ modes  # Compute mode covariance
-        self.proj_M2C = np.diag(1 / np.diag(cov_modes)) @ modes.T*1e9  # Pseudo-inverse projection matrix
+        self.proj_M2C = np.diag(1 / np.diag(cov_modes)) @ modes.T  # Pseudo-inverse projection matrix
         self.dm1.coefs = np.identity(self.dm1.modes.shape[-1])
         self.tel1*self.dm1
         modes= self.tel1.OPD.copy()
         modes = modes.reshape((self.tel1.resolution**2, modes.shape[-1]))/self.tel1.OPD[self.tel1.pupil, :].std(axis=0)  # Flatten for projection
         cov_modes = modes.T @ modes  # Compute mode covariance
-        self.proj_IF = np.diag(1 / np.diag(cov_modes)) @ modes.T*1e9
+        self.proj_IF = np.diag(1 / np.diag(cov_modes)) @ modes.T
     
     def extract_Zimages(self):
         """
@@ -256,12 +279,12 @@ class OZITele:
         self.img_ZWFS2 = []
         logger.info('Extracting the signal of the ZWFSs')
         for i in tqdm.tqdm(range(images_z2.shape[0])):
-            self.img_ZWFS2.append(self._rescale_matrix(images_z2[i], self.pupilles[0].shape[0], self.pupilles[0].shape[1]))
+            self.img_ZWFS2.append(self._rescale_matrix(images_z2[i], self.pupils[0].shape[0], self.pupils[0].shape[1]))
         self.img_ZWFS2 = np.array(self.img_ZWFS2)
         self.img_ZWFS2, _ =  self._pad_to_square(self.img_ZWFS2)
         self.img_ZWFS1,_ =  self._pad_to_square(images_z1)
         
-    def reconstruct_phase(self, im1,im2, method = 'atan', damping = 0.5, iteration = 10):
+    def reconstruct_phase(self, im1,im2, method = 'atan', damping = 0.5, iteration = 10, parallel = False):
         """
         Reconstruct a single phase map from a pair of ZWFS images.
 
@@ -282,11 +305,17 @@ class OZITele:
         ndarray
             Reconstructed phase map.
         """
+       
         self.vzwfs.zwfs1.img_ZWFS = im1
         self.vzwfs.zwfs2.img_ZWFS = im2
-        return self.vzwfs.reconstructor(iteration = iteration, damping_iteration = damping, reconstructor=method)
+        return self.vzwfs.reconstructor(
+            iteration=iteration,
+            damping_iteration=damping,
+            reconstructor=method
+        )
+        
     
-    def reconstruct_all_phase(self, method = 'atan', iteration = 10, damping = 0.5):
+    def reconstruct_all_phase(self, method = 'atan', iteration = 10, damping = 0.5, parallel = True, parall_njob = 4):
         """
         Reconstruct phase maps for the full telemetry sequence.
 
@@ -299,14 +328,42 @@ class OZITele:
         damping : float, optional
             Damping factor applied during each frame reconstruction.
         """
-        self.phase = np.zeros((self.img_ZWFS1.shape[0], self.tel1.pupil.shape[0], self.tel1.pupil.shape[1]))
-        logger.info(f'Computing phase for each frame using {method} reconstruction')
-        for i in tqdm.tqdm(range(self.img_ZWFS1.shape[0])):
-            self.phase[i] = self.reconstruct_phase(self.img_ZWFS1[i], self.img_ZWFS2[i], method, damping, iteration)
-        self.OPDs = self.phase/(2*np.pi)*self.src1.wavelength*1e9
+        if parallel:
+            setup = self._export_reconstruction_setup()
+            n_frames = self.img_ZWFS1.shape[0]
+    
+            gen = Parallel(
+                n_jobs=parall_njob,
+                prefer="processes",
+                return_as="generator"
+            )(
+                delayed(_reconstruct_phase_worker)(
+                    self.img_ZWFS1[i],
+                    self.img_ZWFS2[i],
+                    setup,
+                    method,
+                    damping,
+                    iteration
+                )
+                for i in range(n_frames)
+            )
+    
+            self.phase = np.asarray(
+                list(tqdm.tqdm(gen, total=n_frames, desc=f"Phase reconstruction ({method})")),
+                dtype=np.float32
+            )
+ 
+        else:
+            self.phase = np.zeros((self.img_ZWFS1.shape[0], self.tel1.pupil.shape[0], self.tel1.pupil.shape[1]))
+            logger.info(f'Computing phase for each frame using {method} reconstruction')
+            for i in tqdm.tqdm(range(self.img_ZWFS1.shape[0])):
+                self.phase[i] = self.reconstruct_phase(self.img_ZWFS1[i], self.img_ZWFS2[i], method, damping, iteration)
+        self._phase2OPD()
         self.has_recontructed_phase = True
-        
+    def _phase2OPD(self, phase = None):
+        self.OPDs= self.phase/(2*np.pi)*self.src1.wavelength
     def project_OPDs(self):
+        
         """
         Project reconstructed OPD maps onto influence functions and modes.
 
