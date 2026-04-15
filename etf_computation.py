@@ -30,13 +30,9 @@ from plot_functions import plot_psd_aa
 cl_tele = OZITele(tele_path=None, is_onsky=True)
 ol_tele = OZITele(tele_path=None, is_onsky=True)
 
-cl_tele.reconstruct_all_phase(parallel=True, parall_njob=4)
-ol_tele.reconstruct_all_phase(parallel=True, parall_njob=4)
+cl_tele.reconstruct_all_phase(parallel=True, parall_njob=4, iteration = 15, damping=0.3)
+ol_tele.reconstruct_all_phase(parallel=True, parall_njob=4, iteration = 15, damping=0.3)
 
-#%%
-#%%
-cl_tele.reconstruct_all_phase(iteration = 15, damping=0.3)
-ol_tele.reconstruct_all_phase(iteration = 15, damping=0.3)
 #%%
 cl_tele.project_OPDs()
 ol_tele.project_OPDs()
@@ -50,13 +46,14 @@ freq_atan_ol, modal_psd_atan_ol = ol_tele.psd_modal
 freq_cl, modal_psd_cl = cl_tele.psd_cmd_modal
 freq_ol, modal_psd_ol = ol_tele.psd_cmd_modal
 #%%
+nmodes = 40
 fig_atg, ax_atg = plot_psd_aa( 
     freq_atan_cl,
-    modal_psd_atan_cl[:,2:40],
+    modal_psd_atan_cl[:,:nmodes]*1e18,
     f2=freq_atan_ol,
-    psd2=modal_psd_atan_ol[:,2:40],
-    label1="open loop",
-    label2="closed loop",
+    psd2=modal_psd_atan_ol[:,:nmodes]*1e18,
+    label1="closed loop",
+    label2="open loop",
     method=np.nansum,
     f_unit="Hz",
     psd_unit=r"nm$^2$/Hz",
@@ -66,19 +63,19 @@ fig_atg, ax_atg = plot_psd_aa(
     show_legend=True,
     one_column=True,
     dpi=300,
-    save=False,
-    savepath="mean_psd_aa.pdf",
+    save=True,
+    savepath="etf/fig/etf_atan_{nmodes}_{cl_tele.tele_path[-42:-23]}.pdf",
     saveformat=None,
     journal_style=True,   # True: A&A final style ; False: working style with light grid
 )
 #%%
 fig_atg, ax_atg = plot_psd_aa( 
     freq_cl,
-    modal_psd_cl[:,2:40],
+    modal_psd_cl[:,:nmodes]*1e18,
     f2=freq_ol,
-    psd2=modal_psd_ol[:,2:40],
-    label1="open loop",
-    label2="closed loop",
+    psd2=modal_psd_ol[:,:nmodes]*1e18,
+    label1="closed loop",
+    label2="open loop",
     method=np.nansum,
     f_unit="Hz",
     psd_unit=r"nm$^2$/Hz",
@@ -88,14 +85,9 @@ fig_atg, ax_atg = plot_psd_aa(
     show_legend=True,
     one_column=True,
     dpi=300,
-    save=False,
-    savepath="mean_psd_aa.pdf",
+    save=True,
+    savepath=f"etf/fig/etf_cmd_{nmodes}_{cl_tele.tele_path[-42:-23]}.png",
     saveformat=None,
     journal_style=True,   # True: A&A final style ; False: working style with light grid
 )
 #%%
-pj = cl_tele.reconstruct_phase(cl_tele.img_ZWFS1[0], cl_tele.img_ZWFS2[0], damping=0.3)
-
-#%%
-plt.imshow(cl_tele.vzwfs.zwfs2.sin_phase)
-

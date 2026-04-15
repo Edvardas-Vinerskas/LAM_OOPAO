@@ -197,7 +197,7 @@ class OZITele:
 
         self.IF = np.load('IF_dm2.npy').reshape(97,-1).T*1e-6
         self.M2phase = self.IF@self.M2C
-        self.std_phase = self.M2phase.std(axis = 0)
+        self.modes_std = self.M2phase.std(axis = 0)
         self.IF_std = self.IF.std(axis = 0)
         amplitude_mean = np.ptp(self.IF,axis =0)
 
@@ -527,7 +527,7 @@ class OZITele:
         if npsg is None:
             npsg = self.time.size
         
-        self.psd_cmd_IFs = self._psd(self.time, self.rec_cmd, nperseg=npsg)
+        self.psd_cmd_IFs = self._psd(self.time, self.rec_cmd*self.IF_std[None,:], nperseg=npsg)
     def PSD_cmd_modal(self, npsg = None):
         """
         Compute PSDs of the reconstructed command vectors in modal space.
@@ -540,7 +540,7 @@ class OZITele:
         if npsg is None:
             npsg = self.time.size
         logger.info('Computing modal PSD from cmd')
-        self.psd_cmd_modal = self._psd(self.time, self.rec_cmd_modal, nperseg=npsg)
+        self.psd_cmd_modal = self._psd(self.time, self.rec_cmd_modal*self.modes_std[None,:], nperseg=npsg)
     def _uniform_resample(self, t, x, fs=None):
         """
         Interpolate irregularly sampled time series onto a uniform time grid.
