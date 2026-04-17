@@ -64,8 +64,8 @@ fig_atg, ax_atg = plot_psd_aa(
     one_column=True,
     dpi=300,
     save=True,
-    savepath="etf/fig/etf_atan_{nmodes}_{cl_tele.tele_path[-42:-23]}.pdf",
-    saveformat=None,
+    savepath="etf/fig/etf_atan_{nmodes}_{cl_tele.tele_path[-42:-23]}",
+    saveformat='all',
     journal_style=True,   # True: A&A final style ; False: working style with light grid
 )
 #%%
@@ -87,7 +87,7 @@ fig_atg, ax_atg = plot_psd_aa(
     dpi=300,
     save=True,
     savepath=f"etf/fig/etf_cmd_{nmodes}_{cl_tele.tele_path[-42:-23]}.png",
-    saveformat=None,
+    saveformat='all',
     journal_style=True,   # True: A&A final style ; False: working style with light grid
 )
 #%%

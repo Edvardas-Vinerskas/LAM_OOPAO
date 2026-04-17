@@ -53,12 +53,12 @@ def _import_oopao_symbols():
         ZWFS2 = importlib.import_module("OOPAO.ZWFS2").ZWFS2
         DeformableMirror = importlib.import_module("OOPAO.DeformableMirror").DeformableMirror
         MisRegistration = importlib.import_module("OOPAO.MisRegistration").MisRegistration
-
-    return Source, Telescope, ZWFS, ZWFS2, DeformableMirror, MisRegistration
+        Detector = importlib.import_module("OOPAO.Detector").Detector
+    return Source, Telescope, ZWFS, ZWFS2, DeformableMirror, MisRegistration, Detector
 
 
 def _build_vzwfs_from_setup(setup):
-    Source, Telescope, ZWFS, ZWFS2, _, _ = _import_oopao_symbols()
+    Source, Telescope, ZWFS, ZWFS2, _, _, _ = _import_oopao_symbols()
 
     
     if setup["is_onsky"]:
@@ -69,9 +69,11 @@ def _build_vzwfs_from_setup(setup):
         src2 = Source(optBand='H', magnitude=-2.5)
         src2.wavelength = 1.6e-6
         src2.bandwidth = 0.2e-6
+        diam = 2
     else:
         src1 = Source(optBand='IR1310', magnitude=-2.5)
         src2 = Source(optBand='IR1310', magnitude=-2.5)
+        diam = 2.14
 
     tel1 = Telescope(setup["submask0"].shape[0], 1.52, pupil=setup["submask0"])
     tel1.pupilReflectivity = np.sqrt(setup["pupil0"])
@@ -83,9 +85,9 @@ def _build_vzwfs_from_setup(setup):
     tel2.pupilReflectivity = np.sqrt(setup["pupil1"])
     tel2.pupilReflectivity[~np.isfinite(tel2.pupilReflectivity)]=0
     src2 * tel2
-
-    zwfs1 = ZWFS(tel1, diameter=2.14, phase_shift=0.33, zpf=30, phase_shift_unit='pi')
-    zwfs2 = ZWFS(tel2, diameter=2.14, phase_shift=-0.74, zpf=30, phase_shift_unit='pi')
+    
+    zwfs1 = ZWFS(tel1, diameter=diam, phase_shift=0.33, zpf=30, phase_shift_unit='pi')
+    zwfs2 = ZWFS(tel2, diameter=diam, phase_shift=-0.74, zpf=30, phase_shift_unit='pi')
 
     return ZWFS2(ZWFS1=zwfs1, ZWFS2=zwfs2)
 
