@@ -29,7 +29,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
-from parallel_utils import _reconstruct_phase_worker, _import_oopao_symbols
+from parallel_utils import _reconstruct_phase_worker, _import_oopao_symbols, _simulate_psf_chunk_worker
+from OOPAO.Zernike import Zernike
+
 
 class OZITele:
     """
@@ -37,7 +39,7 @@ class OZITele:
     modal or influence-function PSDs from telemetry cubes.
     """
 
-    def __init__(self,tele_path:str = None, is_onsky:bool=True, CNN = False):
+    def __init__(self,tele_path:str = None, is_onsky:bool=True, CNN = False, narrow_band = False, temporal_crop = None):
         """
         Initialize the telemetry analysis object from a saved telemetry file.
 
@@ -59,6 +61,7 @@ class OZITele:
         ValueError
             If no file is selected when ``tele_path`` is not provided.
         """
+        self.temporal_crop = slice(None) if temporal_crop is None else slice(temporal_crop[0], temporal_crop[1])
         if tele_path is None:
             tele_path = self._choose_file()
 
@@ -66,14 +69,15 @@ class OZITele:
                 print("Selected file:", tele_path)
             else:
                 raise ValueError('No files selected')
+        self.is_nb = narrow_band
         self.tele_path = tele_path
         data = np.load(self.tele_path, allow_pickle=True)
         self.off_mask = data.item()['validPixels'].astype(np.float32)
-        self.img_raw = data.item()['CRED2Cube'].astype(np.float32)
+        self.img_raw = data.item()['CRED2Cube'].astype(np.float32)[self.temporal_crop]
         self.dark = data.item()['credDark'].astype(np.float32)
-        self.dmshape = data.item()['dmCmdCube'].astype(np.float32)
-        self.reconstructed_cube = data.item()['slavedreconsCube'].astype(np.float32)
-        self.full_reconstructed_cube = data.item()['FullreconsCube'].astype(np.float32)
+        self.dmshape = data.item()['dmCmdCube'].astype(np.float32)[self.temporal_crop]
+        self.reconstructed_cube = data.item()['slavedreconsCube'].astype(np.float32)[self.temporal_crop]
+        self.full_reconstructed_cube = data.item()['FullreconsCube'].astype(np.float32)[self.temporal_crop]
         self.M2C = data.item()['m2c']
         self.C2M =np.linalg.pinv(self.M2C)
         self.psf_sampling = 3
@@ -106,7 +110,7 @@ class OZITele:
         self.M2C = data.item()['m2c']
         self.img[:,:1,:] = 0
         self.img /=self.img.sum(axis = (1,2))[:,None,None]
-        self.ts = data.item()['timeStampcredCube']  # list[datetime]
+        self.ts = data.item()['timeStampcredCube'][self.temporal_crop]  # list[datetime]
         self.t0 = self.ts[0]
         self.time = np.array([(t - self.t0).total_seconds() for t in self.ts], dtype=float)
         self.is_onsky = is_onsky
@@ -154,17 +158,21 @@ class OZITele:
         self.has_projected_phase = False
     def _initialise_OOPAO_objects(self):
         Source, Telescope, ZWFS, ZWFS2, DeformableMirror, MisRegistration, Detector = _import_oopao_symbols()
-        if self.is_onsky:
+        if self.is_onsky and (~self.is_nb):
             self.src1 = Source(optBand='H', magnitude=-2.5)
             self.src1.wavelength = 1.6e-6
-            self.src1.wavelength = 1.6e-6
+ 
             self.src1.bandwidth = 0.2e-6
             self.src2 = Source(optBand='H', magnitude=-2.5)
             self.src2.wavelength = 1.6e-6
             self.src2.bandwidth = 0.2e-6
         else: 
-            self.src1 = Source(optBand='IR1310', magnitude=-2.5)
-            self.src2 = Source(optBand='IR1310', magnitude=-2.5)
+            self.src1 = Source(optBand='H', magnitude=-2.5)
+            self.src1.wavelength = 1.550e-6
+            self.src1.bandwidth = 0
+            self.src2 = Source(optBand='H', magnitude=-2.5)
+            self.src2.wavelength = 1.550e-6
+            self.src2.bandwidth = 0e-6
         self.tel1 = Telescope(self.submasks[0].shape[0],1.52, pupil = self.submasks[0]) 
         self.tel1.pupilReflectivity = np.sqrt(self.pupils[0])
         self.tel1.pupilReflectivity[~np.isfinite(self.tel1.pupilReflectivity)]=0
@@ -206,6 +214,7 @@ class OZITele:
 
         self.dm1.modes*=amplitude_mean/np.ptp(self.dm1.modes)
         self.dm2.modes*=amplitude_mean/np.ptp(self.dm2.modes)
+        self.src_imaging = Source(optBand='IR1310', magnitude=-2.5)
     def _build_vzwfs_class(self):
         Source, Telescope, ZWFS, ZWFS2, DeformableMirror, MisRegistration,Detector = _import_oopao_symbols()
         if self.is_onsky:
@@ -218,6 +227,7 @@ class OZITele:
     def _export_reconstruction_setup(self):
         return {
             "is_onsky": self.is_onsky,
+            "is_nb": self.is_nb,
             "submask0": self.submasks[0],
             "submask1": self.submasks[1],
             "pupil0": self.pupils[0],
@@ -252,24 +262,28 @@ class OZITele:
         elif A.ndim == 2:
             m, n = A.shape
             return resize(A, (j, k), order=5, anti_aliasing=anti_aliasing)
+    def _compute_proj_dm(self, modal_basis, tel, dm):
+        dm = modal_basis
+        tel*dm
+        modes= tel.OPD.copy()
+        modes = modes.reshape((tel.resolution**2, modes.shape[-1]))/tel.OPD[tel.pupil, :].std(axis=0)  # Flatten for projection
+        cov_modes = modes.T @ modes  # Compute mode covariance
+        return np.diag(1 / np.diag(cov_modes)) @ modes.T  # Pseudo-inverse projection matrix
+    def _compute_proj_OPDs(self, modes, tel):
+        
+
+        modes = modes.reshape((tel.resolution**2, modes.shape[-1]))/modes[tel.pupil, :].std(axis=0)  # Flatten for projection
+        cov_modes = modes.T @ modes  # Compute mode covariance
+        return np.diag(1 / np.diag(cov_modes)) @ modes.T  # Pseudo-inverse projection matrix
     def compute_projectors(self):
         """
         Compute projection matrices onto modal commands and influence functions.
 
         
         """
-        self.dm1.coefs = self.M2C
-        self.tel1*self.dm1
-        modes= self.tel1.OPD.copy()
-        modes = modes.reshape((self.tel1.resolution**2, modes.shape[-1]))/self.tel1.OPD[self.tel1.pupil, :].std(axis=0)  # Flatten for projection
-        cov_modes = modes.T @ modes  # Compute mode covariance
-        self.proj_M2C = np.diag(1 / np.diag(cov_modes)) @ modes.T  # Pseudo-inverse projection matrix
-        self.dm1.coefs = np.identity(self.dm1.modes.shape[-1])
-        self.tel1*self.dm1
-        modes= self.tel1.OPD.copy()
-        modes = modes.reshape((self.tel1.resolution**2, modes.shape[-1]))/self.tel1.OPD[self.tel1.pupil, :].std(axis=0)  # Flatten for projection
-        cov_modes = modes.T @ modes  # Compute mode covariance
-        self.proj_IF = np.diag(1 / np.diag(cov_modes)) @ modes.T
+        
+        self.proj_M2C = self._compute_proj_dm(self.M2C, self.tel1, self.dm1)# np.diag(1 / np.diag(cov_modes)) @ modes.T  # Pseudo-inverse projection matrix
+        self.proj_IF = self._compute_proj_dm(np.identity(self.dm1.modes.shape[-1]), self.tel1, self.dm1)
     
     def extract_Zimages(self):
         """
@@ -369,6 +383,12 @@ class OZITele:
         self.has_recontructed_phase = True
     def _phase2OPD(self, phase = None):
         self.OPDs= (self.phase/(2*np.pi)*self.src1.wavelength).astype(np.float32)
+    def compute_Zernike_basis(self, nmodes = 30):
+        Zer_basis = Zernike(self.tel1, J= nmodes)
+        Zer_basis.computeZernike(self.tel1)
+        self.Zer_modes = Zer_basis.modesFullRes.copy()
+        self.proj_Zer = self._compute_proj_OPDs(self.Zer_modes, self.tel1)
+
     def project_OPDs(self):
         
         """
@@ -548,29 +568,75 @@ class OZITele:
             npsg = self.time.size
         logger.info('Computing modal PSD from cmd')
         self.psd_cmd_modal = self._psd(self.time, self.rec_cmd_modal*self.modes_std[None,:], nperseg=npsg)
-    def simulate_PSF(self, ncpa = None):
+    def _export_psf_setup(self, img_wvl = False):
+        return {
+            "is_onsky": self.is_onsky,
+            "imaging_wvl":img_wvl,
+            "is_nb": self.is_nb,
+            "submask0": self.submasks[0],
+            "pupil0": self.pupils[0],
+            "psf_sampling": self.psf_sampling,
+        }
+
+    def _compute_ncpa_opd(self, ncpa=None):
+        self.tel1.OPD = self.tel1.OPD * 0
+    
+        if ncpa is not None:
+            self.dm1.coefs = self.M2C @ ncpa
+        else:
+            self.dm1.coefs = self.dm1.coefs * 0
+    
+        self.tel1 * self.dm1
+        return self.tel1.OPD.copy().astype(np.float32)
+    def simulate_PSF(self, imaging_wvl = True, ncpa=None, parallel=True, parall_njob=4, chunk_size=100):
         if ncpa is not None:
             if ncpa.size != self.M2C.shape[-1]:
                 raise ValueError('ncpa must be an array of the size of the number of modes in the M2C')
-        if self.has_recontructed_phase:
-            self.simulated_psf = []
-            for i in tqdm.tqdm(range(self.phase.shape[0])):
-                self.tel1.OPD = self.tel1.OPD*0
-                if ncpa is not None:
-                    self.dm1.coefs = self.M2C@ncpa
-                    self.tel1*self.dm1
-                    
-                else:
-                    self.dm1.coefs = self.dm1.coefs*0
-                    self.tel1*self.dm1
-                self.OPD_ncpa = self.tel1.OPD.copy()
-                self.tel1.OPD = self.OPDs[i]+self.OPD_ncpa
-                self.tel1*self.cam
-                self.simulated_psf.append(self.cam.frame.copy().astype(np.float32))
-            self.simulated_psf = np.array(self.simulated_psf).astype(np.float32)
-        else:
+    
+        if not self.has_recontructed_phase:
             raise RuntimeError('Must compute phase before projection')
+    
+        opd_ncpa = self._compute_ncpa_opd(ncpa)
         
+        if parallel:
+            setup = self._export_psf_setup(imaging_wvl)
+            n_frames = self.OPDs.shape[0]
+    
+            chunks = [
+                self.OPDs[i:i + chunk_size]
+                for i in range(0, n_frames, chunk_size)
+            ]
+    
+            gen = Parallel(
+                n_jobs=parall_njob,
+                prefer="processes",
+                return_as="generator"
+            )(
+                delayed(_simulate_psf_chunk_worker)(
+                    chunk,
+                    setup,
+                    opd_ncpa
+                )
+                for chunk in chunks
+            )
+    
+            psf_chunks = list(
+                tqdm.tqdm(gen, total=len(chunks), desc="PSF simulation")
+            )
+            self.simulated_psf = np.concatenate(psf_chunks, axis=0).astype(np.float32)
+    
+        else:
+            if imaging_wvl:
+                self.src_imaging*self.tel1
+            else:
+                self.src1*self.tel1
+            self.simulated_psf = []
+            for i in tqdm.tqdm(range(self.OPDs.shape[0]), desc="PSF simulation"):
+                self.tel1.OPD = self.OPDs[i] + opd_ncpa
+                self.tel1 * self.cam
+                self.simulated_psf.append(self.cam.frame.copy().astype(np.float32))
+    
+            self.simulated_psf = np.asarray(self.simulated_psf, dtype=np.float32)
             
     def _uniform_resample(self, t, x, fs=None):
         """
@@ -612,6 +678,20 @@ class OZITele:
         f = interp1d(t, x, axis=0, kind="linear", bounds_error=False, fill_value="extrapolate")
         xu = f(tu)
         return tu, xu, fs
+    def compute_SR(self, wavelength = None, ncpa = None):
+        opd_ncpa = self._compute_ncpa_opd(ncpa)
+        if wavelength is None:
+            wavelength = self.src1.wavelength
+        phase_var = (self.phase[:,self.tel1.pupil ==1]+opd_ncpa[self.tel1.pupil ==1]*2*np.pi/self.src1.wavelength).var(axis=1)*(self.src1.wavelength/wavelength)**2
+        
+
+        SR = np.exp(-phase_var)#.mean())
+
+        SR_mean = np.exp(-phase_var.mean())
+        
+        print(f"At {wavelength*1e9:.0f} nm, the average SR is about {SR_mean*100:.1f}%" )
+        return SR, SR_mean
+        
     def _psd(self, t, a,fs=None, nperseg=4096, noverlap=None, detrend="constant", window="hann"):
         """
         Estimate power spectral densities using Welch's method.

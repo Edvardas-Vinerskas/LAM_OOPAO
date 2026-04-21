@@ -61,7 +61,7 @@ def _build_vzwfs_from_setup(setup):
     Source, Telescope, ZWFS, ZWFS2, _, _, _ = _import_oopao_symbols()
 
     
-    if setup["is_onsky"]:
+    if setup["is_onsky"] and (~setup["is_nb"]):
         src1 = Source(optBand='H', magnitude=-2.5)
         src1.wavelength = 1.6e-6
         src1.bandwidth = 0.2e-6
@@ -73,7 +73,10 @@ def _build_vzwfs_from_setup(setup):
     else:
         src1 = Source(optBand='IR1310', magnitude=-2.5)
         src2 = Source(optBand='IR1310', magnitude=-2.5)
-        diam = 2.14
+        src1.wavelength = 1.550e-6
+        src1.bandwidth = 0e-6
+        src2.wavelength = 1.550e-6
+        src2.bandwidth = 0e-6
 
     tel1 = Telescope(setup["submask0"].shape[0], 1.52, pupil=setup["submask0"])
     tel1.pupilReflectivity = np.sqrt(setup["pupil0"])
@@ -102,3 +105,38 @@ def _reconstruct_phase_worker(im1, im2, setup, method='atan', damping=0.5, itera
             reconstructor=method
         )
     return phase
+
+def _build_psf_objects_from_setup(setup):
+    Source, Telescope, _, _, _, _, Detector = _import_oopao_symbols()
+    if setup["imaging_wvl"]: 
+        src1 = Source(optBand='IR1310', magnitude=-2.5)
+    else:
+        if setup["is_onsky"] and (~setup["is_nb"]):
+            src1 = Source(optBand='H', magnitude=-2.5)
+            src1.wavelength = 1.6e-6
+            src1.bandwidth = 0.2e-6
+        else:
+            src1 = Source(optBand='IR1310', magnitude=-2.5)
+            src1.wavelength = 1.550e-6
+            src1.bandwidth = 0e-6
+
+    tel1 = Telescope(setup["submask0"].shape[0], 1.52, pupil=setup["submask0"])
+    tel1.pupilReflectivity = np.sqrt(setup["pupil0"])
+    tel1.pupilReflectivity[~np.isfinite(tel1.pupilReflectivity)] = 0
+    src1 * tel1
+
+    cam = Detector(psf_sampling=setup["psf_sampling"])
+    return tel1, cam
+
+
+def _simulate_psf_chunk_worker(opd_chunk, setup, opd_ncpa):
+    with _suppress_output():
+        tel1, cam = _build_psf_objects_from_setup(setup)
+
+        out = []
+        for opd in opd_chunk:
+            tel1.OPD = opd + opd_ncpa
+            tel1 * cam
+            out.append(cam.frame.copy().astype(np.float32))
+
+    return np.asarray(out, dtype=np.float32)

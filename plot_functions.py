@@ -11,13 +11,11 @@ import matplotlib.pyplot as plt
 import pickle
 from matplotlib.colors import LogNorm
 from pathlib import Path
-
+from matplotlib import colors
+from matplotlib.ticker import MaxNLocator
 
 def _block_average_1d(x, N):
-    """
-    Moyenne par blocs successifs de taille N.
-    Si len(x) n'est pas multiple de N, la fin est tronquée.
-    """
+    
     x = np.asarray(x).ravel()
 
     if N is None or N <= 1:
@@ -32,10 +30,7 @@ def _block_average_1d(x, N):
 
 
 def _smooth_time_series_block(time, y, N):
-    """
-    Lisse une série temporelle en moyennant le temps et la valeur
-    sur des blocs successifs de taille N.
-    """
+
     time = np.asarray(time).ravel()
     y = np.asarray(y).ravel()
 
@@ -365,22 +360,7 @@ def plot_sr_aa(
     show_legend=True,
     smooth_N=None,              # <--- nouvelle option
 ):
-    """
-    Plot de deux sous-figures :
-      (a) SR à lambda_wfs_nm (vu par le vZWFS)
-      (b) SR projeté à la longueur d’onde d’imagerie
-
-    smooth_N : int or None
-        Si >1, moyenne les courbes par blocs de N points.
-    """
-
-    # --- Conversion en tableaux numpy ---
-    time_cl = np.asarray(time_cl).ravel()
-    time_ol = np.asarray(time_ol).ravel()
-    SR_cl = np.asarray(SR_cl).ravel()
-    SR_ol = np.asarray(SR_ol).ravel()
-    SR_cl_cam = np.asarray(SR_cl_cam).ravel()
-    SR_ol_cam = np.asarray(SR_ol_cam).ravel()
+   
 
     # --- Lissage éventuel ---
     time_cl_s, SR_cl_s = _smooth_time_series_block(time_cl, SR_cl, smooth_N)
@@ -569,7 +549,7 @@ def plot_sr_aa(
 
 
 
-
+#%%
 def plot_psf_aa(
     psf,
     wvl,
@@ -590,55 +570,7 @@ def plot_psf_aa(
     savepath="psf.pdf",
     saveformat=None,
 ):
-    """
-    Trace une PSF normalisée en échelle logarithmique dans un format adapté
-    à une publication Astronomy & Astrophysics (A&A).
-
-    Parameters
-    ----------
-    tab : 2D ndarray
-        Tableau à afficher.
-    psf : 2D ndarray
-        Tableau de référence pour la normalisation (max(psf)).
-    wvl : float
-        Longueur d'onde [m].
-    telescope_diameter : float
-        Diamètre du télescope [m].
-    sampling : float
-        Facteur d'échantillonnage.
-    nx : int
-        Nombre de pixels sur un axe.
-    rad2arcsec : float
-        Facteur de conversion radians -> arcsec.
-    vmin, vmax : float, optional
-        Bornes de la normalisation logarithmique.
-    cmap : str, optional
-        Colormap utilisée.
-    xlabel, ylabel : str, optional
-        Labels des axes.
-    cbar_label : str, optional
-        Label de la barre de couleur.
-    title : str or None, optional
-        Titre de la figure.
-    figsize : tuple, optional
-        Taille de la figure en pouces.
-    dpi : int, optional
-        Résolution pour les formats raster.
-    origin : {"lower", "upper"}, optional
-        Paramètre d'origine pour imshow.
-    save : bool, optional
-        Si True, sauvegarde la figure.
-    savepath : str or Path, optional
-        Chemin de sauvegarde. Peut inclure ou non une extension.
-    saveformat : str or None, optional
-        Format de sauvegarde : "png", "pdf", "fig" ou "all".
-        Si None, le format est déduit de l'extension de savepath.
-        Si savepath n'a pas d'extension, "pdf" est utilisé par défaut.
-
-    Returns
-    -------
-    fig, ax : matplotlib Figure and Axes
-    """
+    
 
     # Style adapté à A&A
     plt.rcParams.update({
@@ -696,6 +628,511 @@ def plot_psf_aa(
     fig.tight_layout()
 
     # Sauvegarde optionnelle
+    if save:
+        path = Path(savepath)
+
+        if saveformat is None:
+            if path.suffix:
+                saveformat = path.suffix.lower().lstrip(".")
+            else:
+                saveformat = "pdf"
+                path = path.with_suffix(".pdf")
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _save_one(fmt):
+            fmt = fmt.lower().lstrip(".")
+
+            if fmt == "fig":
+                fig_path = path.with_suffix(".fig")
+                with open(fig_path, "wb") as f:
+                    pickle.dump(fig, f)
+
+            elif fmt in {"pdf", "eps", "svg"}:
+                out = path.with_suffix(f".{fmt}")
+                fig.savefig(
+                    out,
+                    format=fmt,
+                    bbox_inches="tight",
+                    pad_inches=0.02,
+                    transparent=False,
+                )
+
+            elif fmt in {"png", "tif", "tiff", "jpg", "jpeg"}:
+                out = path.with_suffix(f".{fmt}")
+                fig.savefig(
+                    out,
+                    format=fmt,
+                    dpi=max(dpi, 300),
+                    bbox_inches="tight",
+                    pad_inches=0.02,
+                    transparent=False,
+                )
+
+            else:
+                raise ValueError(
+                    f"Unsupported save format '{fmt}'. "
+                    "Use pdf, eps, png, tiff, jpg, jpeg, svg, fig, or all."
+                )
+
+        if saveformat.lower() == "all":
+            for fmt in ("png", "pdf", "fig"):
+                _save_one(fmt)
+        else:
+            _save_one(saveformat)
+
+    return fig, ax
+
+#%%
+
+
+
+
+def plot_frame_count_aa(
+    frame_count,
+    time=None,
+    x_unit="Iteration",
+    one_column=True,
+    dpi=300,
+    save=False,
+    savepath="frame_count_lost_frames.pdf",
+    saveformat=None,
+    journal_style=True,
+    show_cumulative=True,
+    lost_ymin=None,
+    lost_ymax=None,
+):
+   
+
+    frame_count = np.asarray(frame_count).ravel()
+
+    if frame_count.size < 2:
+        raise ValueError("frame_count must contain at least 2 elements.")
+
+    if time is None:
+        x = np.arange(frame_count.size)
+        x_label = x_unit
+    else:
+        x = np.asarray(time).ravel()
+        if x.size != frame_count.size:
+            raise ValueError("time and frame_count must have the same length.")
+        x_label = x_unit
+
+    frame_from_zero = frame_count - frame_count[0]
+    frame_diff = np.diff(frame_count)
+    lost_frames = np.clip(frame_diff - 1, 0, None)
+    x_lost = x[1:]
+
+    if show_cumulative:
+        lost_cum = np.cumsum(lost_frames)
+
+    label_fs = 9
+    tick_fs = 8
+    legend_fs = 8
+
+    width_in = 88 / 25.4 if one_column else 180 / 25.4
+    height_in = width_in * 1
+
+    fig, axes = plt.subplots(
+        2, 1,
+        sharex=True,
+        figsize=(width_in, height_in),
+        dpi=dpi,
+        constrained_layout=True
+    )
+
+    ax1, ax2 = axes
+
+    col_main = "black"
+    col_alt = "#355C9A"
+
+    ax1.plot(
+        x, frame_from_zero,
+        color=col_main,
+        lw=1.4,
+        ls="-",
+        zorder=3,
+        solid_capstyle="round",
+    )
+
+    ax1.set_ylabel("Count", fontsize=label_fs)
+    ax1.text(
+        0.02, 0.95,
+        r"(a)",
+        transform=ax1.transAxes,
+        ha="left", va="top",
+        fontsize=label_fs
+    )
+
+    
+
+    # (b) lost frames
+    line_lost, = ax2.plot(
+        x_lost, lost_frames,
+        color=col_alt,
+        lw=1.1,
+        ls="-",
+        drawstyle="steps-mid",
+        zorder=3,
+    )
+    ax2.set_ylabel("Lost frames", fontsize=label_fs)
+    ax2.set_xlabel(x_label, fontsize=label_fs)
+    ax2.text(
+        0.02, 0.95,
+        r"(b)",
+        transform=ax2.transAxes,
+        ha="left", va="top",
+        fontsize=label_fs
+    )
+    ax2_right = None
+    if show_cumulative:
+        ax2_right = ax2.twinx()
+    
+        lost_cum = np.cumsum(lost_frames)
+    
+        line_cum, = ax2_right.plot(
+            x_lost, lost_cum,
+            color=col_main,
+            lw=1.0,
+            ls=(0, (7, 3)),
+            zorder=2,
+        )
+    
+        ax2_right.set_ylabel("Cumulative lost", fontsize=label_fs, labelpad=8)
+    
+        ax2_right.tick_params(
+            which="major",
+            direction="in",
+            length=4.5,
+            width=1.0,
+            labelsize=tick_fs,
+            pad=3,
+            top=True,
+            right=True,
+        )
+        ax2_right.tick_params(
+            which="minor",
+            direction="in",
+            length=2.5,
+            width=0.8,
+            top=True,
+            right=True,
+        )
+    
+        for spine in ax2_right.spines.values():
+            spine.set_linewidth(1.0)
+
+        ax2.legend(
+            [line_lost, line_cum],
+            ["Lost/step", "Cumulative"],
+            frameon=False,
+            fontsize=legend_fs,
+            loc="upper left",
+            handlelength=2.8,
+            borderaxespad=0.3,
+        )
+
+    for ax in axes:
+        for spine in ax.spines.values():
+            spine.set_linewidth(1.0)
+
+        ax.tick_params(
+            which="major",
+            direction="in",
+            length=5,
+            width=1.0,
+            labelsize=tick_fs,
+            pad=4,
+            top=True,
+            right=True,
+        )
+        ax.tick_params(
+            which="minor",
+            direction="in",
+            length=3,
+            width=0.8,
+            top=True,
+            right=True,
+        )
+        
+        if journal_style:
+            ax.grid(False)
+        else:
+            ax.grid(True, which="major", color="0.88", lw=0.6)
+            ax.grid(True, which="minor", color="0.93", lw=0.4)
+
+    ax1.yaxis.set_label_coords(-0.14, 0.5)
+    ax2.yaxis.set_label_coords(-0.14, 0.5)
+    
+    if ax2_right is not None:
+        ax2_right.yaxis.set_label_coords(1.10, 0.5)  
+    ax1.set_xlim(x[0], x[-1])
+    fig.subplots_adjust(
+        left=0.20,
+        right=0.98,
+        bottom=0.16,
+        top=0.97,
+        hspace=0.20
+    )
+    if save:
+        path = Path(savepath)
+
+        if saveformat is None:
+            if path.suffix:
+                saveformat = path.suffix.lower().lstrip(".")
+            else:
+                saveformat = "pdf"
+                path = path.with_suffix(".pdf")
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _save_one(fmt):
+            fmt = fmt.lower().lstrip(".")
+
+            if fmt == "fig":
+                fig_path = path.with_suffix(".fig")
+                with open(fig_path, "wb") as f:
+                    pickle.dump(fig, f)
+
+            elif fmt in {"pdf", "eps", "svg"}:
+                out = path.with_suffix(f".{fmt}")
+                fig.savefig(
+                    out,
+                    format=fmt,
+                    bbox_inches="tight",
+                    pad_inches=0.02,
+                    transparent=False,
+                )
+
+            elif fmt in {"png", "tif", "tiff", "jpg", "jpeg"}:
+                out = path.with_suffix(f".{fmt}")
+                fig.savefig(
+                    out,
+                    format=fmt,
+                    dpi=max(dpi, 300),
+                    bbox_inches="tight",
+                    pad_inches=0.02,
+                    transparent=False,
+                )
+
+            else:
+                raise ValueError(
+                    f"Unsupported save format '{fmt}'. "
+                    "Use pdf, eps, png, tiff, jpg, jpeg, svg, fig, or all."
+                )
+
+        if saveformat.lower() == "all":
+            for fmt in ("png", "pdf", "fig"):
+                _save_one(fmt)
+        else:
+            _save_one(saveformat)
+
+    return fig, axes
+
+#%%
+def plot_phase_map_aa(
+    phase,
+    telescope_diameter=None,   # [m] ; if None -> pixel coordinates
+    cmap="seismic",
+    nan_color="0.85",
+    vmin=None,
+    vmax=None,
+    symmetric=True,
+    xlabel=None,
+    ylabel=None,
+    cbar_label=r"Phase [rad]",
+    title=None,
+    one_column=True,
+    dpi=300,
+    origin="lower",
+    interpolation="none",
+    journal_style=True,
+    save=False,
+    savepath="phase_map_aa.pdf",
+    saveformat=None,
+):
+    """
+    Plot a 2D phase map in a style suitable for A&A publication.
+
+    Parameters
+    ----------
+    phase : 2D ndarray
+        Phase map to display. Can contain NaNs.
+    telescope_diameter : float or None, optional
+        Telescope diameter in meters. If provided, axes are expressed in meters
+        assuming the full array spans the full pupil diameter. If None, axes are
+        shown in pixels.
+    cmap : str, optional
+        Colormap. Default is 'seismic'.
+    nan_color : color spec, optional
+        Color used for NaN pixels.
+    vmin, vmax : float, optional
+        Color scale limits. If None, automatically inferred.
+    symmetric : bool, optional
+        If True, enforce a symmetric color scale around 0.
+    xlabel, ylabel : str or None
+        Axis labels. If None, automatic labels are used.
+    cbar_label : str
+        Colorbar label.
+    title : str, optional
+        Figure title.
+    one_column : bool
+        If True, use ~8.8 cm width; else ~18 cm.
+    dpi : int
+        Figure dpi.
+    origin : {'lower', 'upper'}
+        Image origin.
+    interpolation : str
+        Interpolation passed to imshow.
+    journal_style : bool
+        If True, no grid, restrained styling for final paper figure.
+    save : bool
+        If True, save figure.
+    savepath : str
+        Output file path.
+    saveformat : str, optional
+        'pdf', 'png', 'svg', 'eps', 'fig', or 'all'.
+
+    Returns
+    -------
+    fig, ax
+    """
+
+    phase = np.asarray(phase)
+
+    if phase.ndim != 2:
+        raise ValueError("phase must be a 2D array.")
+
+    ny, nx = phase.shape
+
+    # -------- Style A&A --------
+    label_fs = 9
+    tick_fs = 8
+    title_fs = 9
+
+    width_in = 88 / 25.4 if one_column else 180 / 25.4
+    height_in = width_in * 0.92
+
+    fig, ax = plt.subplots(
+        figsize=(width_in, height_in),
+        dpi=dpi,
+        constrained_layout=True
+    )
+
+    # -------- NaN-safe array --------
+    phase_ma = np.ma.masked_invalid(phase)
+
+    if phase_ma.count() == 0:
+        raise ValueError("phase contains only NaN values.")
+
+    # -------- Color scale --------
+    finite_vals = phase[np.isfinite(phase)]
+
+    if vmin is None or vmax is None:
+        if symmetric:
+            vmax_auto = np.nanmax(np.abs(finite_vals))
+            vmin_auto = -vmax_auto
+        else:
+            vmin_auto = np.nanmin(finite_vals)
+            vmax_auto = np.nanmax(finite_vals)
+
+        if vmin is None:
+            vmin = vmin_auto
+        if vmax is None:
+            vmax = vmax_auto
+
+    if symmetric:
+        vmax_abs = max(abs(vmin), abs(vmax))
+        vmin, vmax = -vmax_abs, vmax_abs
+        norm = colors.TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
+    else:
+        norm = colors.Normalize(vmin=vmin, vmax=vmax)
+
+    cmap_obj = plt.get_cmap(cmap).copy()
+    cmap_obj.set_bad(color=nan_color)
+
+    # -------- Extent / labels --------
+    if telescope_diameter is None:
+        extent = [-0.5, nx - 0.5, -0.5, ny - 0.5]
+        if xlabel is None:
+            xlabel = r"$x$ [pix]"
+        if ylabel is None:
+            ylabel = r"$y$ [pix]"
+    else:
+        D = float(telescope_diameter)
+        if D <= 0:
+            raise ValueError("telescope_diameter must be > 0.")
+
+        dx = D / nx
+        dy = D / ny
+
+        extent = [
+            -D / 2 + dx / 2,
+            +D / 2 - dx / 2,
+            -D / 2 + dy / 2,
+            +D / 2 - dy / 2,
+        ]
+
+        if xlabel is None:
+            xlabel = r"$x$ [m]"
+        if ylabel is None:
+            ylabel = r"$y$ [m]"
+
+    # -------- Image --------
+    im = ax.imshow(
+        phase_ma,
+        cmap=cmap_obj,
+        norm=norm,
+        origin=origin,
+        extent=extent,
+        interpolation=interpolation,
+        aspect="equal",
+    )
+
+    # -------- Colorbar --------
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label(cbar_label, fontsize=label_fs)
+    cbar.ax.tick_params(labelsize=tick_fs, direction="in", length=4, width=0.8)
+    cbar.locator = MaxNLocator(nbins=5)
+    cbar.update_ticks()
+
+    # -------- Labels --------
+    ax.set_xlabel(xlabel, fontsize=label_fs)
+    ax.set_ylabel(ylabel, fontsize=label_fs)
+
+    if title is not None:
+        ax.set_title(title, fontsize=title_fs)
+
+    # -------- Frame / ticks --------
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.0)
+
+    ax.tick_params(
+        which="major",
+        direction="in",
+        length=5,
+        width=1.0,
+        labelsize=tick_fs,
+        pad=4,
+        top=True,
+        right=True,
+    )
+    ax.tick_params(
+        which="minor",
+        direction="in",
+        length=3,
+        width=0.8,
+        top=True,
+        right=True,
+    )
+
+    if journal_style:
+        ax.grid(False)
+    else:
+        ax.grid(True, which="major", color="0.88", lw=0.6)
+        ax.grid(True, which="minor", color="0.93", lw=0.4)
+
+    # -------- Save --------
     if save:
         path = Path(savepath)
 
