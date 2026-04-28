@@ -70,13 +70,21 @@ def _build_vzwfs_from_setup(setup):
         src2.wavelength = 1.6e-6
         src2.bandwidth = 0.2e-6
         diam = 2
-    else:
+    elif setup["is_onsky"] and (setup["is_nb"]):
         src1 = Source(optBand='IR1310', magnitude=-2.5)
         src2 = Source(optBand='IR1310', magnitude=-2.5)
         src1.wavelength = 1.550e-6
         src1.bandwidth = 0e-6
         src2.wavelength = 1.550e-6
         src2.bandwidth = 0e-6
+        diam = 2
+    else:
+        src1 = Source(optBand='IR1310', magnitude=-2.5)
+        src2 = Source(optBand='IR1310', magnitude=-2.5)
+        src1.wavelength = 1.550e-6
+        src1.bandwidth = 0e-6
+        src2.wavelength = 1.550e-6
+        diam = 2.14
 
     tel1 = Telescope(setup["submask0"].shape[0], 1.52, pupil=setup["submask0"])
     tel1.pupilReflectivity = np.sqrt(setup["pupil0"])
@@ -94,16 +102,25 @@ def _build_vzwfs_from_setup(setup):
 
     return ZWFS2(ZWFS1=zwfs1, ZWFS2=zwfs2)
 
-def _reconstruct_phase_worker(im1, im2, setup, method='atan', damping=0.5, iteration=10):
+def _reconstruct_phase_worker(im1, im2, setup, method='atan', damping=0.5, iteration=10, modes_filtering = False, modal_basis = None, nmodes = None):
     with _suppress_output():
         vzwfs = _build_vzwfs_from_setup(setup)
         vzwfs.zwfs1.img_ZWFS = im1
         vzwfs.zwfs2.img_ZWFS = im2
-        phase = vzwfs.reconstructor(
-            iteration=iteration,
-            damping_iteration=damping,
-            reconstructor=method
-        )
+        if modes_filtering:
+            phase = vzwfs.reconstructor(
+                iteration=iteration,
+                damping_iteration=damping,
+                reconstructor=method,
+                filter_modes = modes_filtering,
+                modal_basis = modal_basis[...,:nmodes]
+            )
+        else:
+            phase = vzwfs.reconstructor(
+                iteration=iteration,
+                damping_iteration=damping,
+                reconstructor=method
+            )
     return phase
 
 def _build_psf_objects_from_setup(setup):
@@ -128,8 +145,102 @@ def _build_psf_objects_from_setup(setup):
     cam = Detector(psf_sampling=setup["psf_sampling"])
     return tel1, cam
 
+def _simulate_psf_chunk_worker(opd_chunk, pupil, sampling, nsize, opd_ncpa):
+    with _suppress_output():
+        out = []
+        for opd in opd_chunk:
+            out.append(MFT_psf(opd+opd_ncpa, pupil, sampling, nsize))
 
-def _simulate_psf_chunk_worker(opd_chunk, setup, opd_ncpa):
+    return np.asarray(out, dtype=np.float32)
+
+def MFT_psf(
+    phi,
+    pupil,
+    sampling=3,
+    nimg=100,
+    normalize=False,
+):
+    """
+    Simule une PSF par Matrix Fourier Transform avec :
+    - un sampling focal arbitraire (même non entier),
+    - un nombre de pixels imposé en sortie.
+
+    Parameters
+    ----------
+    phi : 2D ndarray
+        Carte de phase en radians.
+    pupil : 2D ndarray
+        Fonction pupille.
+    sampling : float
+        Sampling focal en pixels par lambda/D.
+    nimg : int or tuple of int
+        Taille de l'image PSF de sortie.
+        - si int : image carrée nimg x nimg
+        - si tuple : (ny_img, nx_img)
+    normalize : bool
+        Si True, normalise la PSF par son maximum.
+
+    Returns
+    -------
+    psf : 2D ndarray
+        PSF simulée.
+    x_foc : 1D ndarray
+        Coordonnées focales en lambda/D sur l'axe x.
+    y_foc : 1D ndarray
+        Coordonnées focales en lambda/D sur l'axe y.
+    """
+
+    phi = np.asarray(phi)
+    pupil = np.asarray(pupil)
+
+    if phi.shape != pupil.shape:
+        raise ValueError("phi et pupil doivent avoir la même taille.")
+
+    if np.isscalar(nimg):
+        ny_img = int(nimg)
+        nx_img = int(nimg)
+    else:
+        ny_img, nx_img = nimg
+
+    ny, nx = phi.shape
+
+    # Champ complexe dans la pupille
+    field = pupil * np.exp(1j * phi)
+
+    # Nombre de pixels sur le diamètre de la pupille
+    yy, xx = np.where(pupil > 0)
+    if len(xx) == 0 or len(yy) == 0:
+        raise ValueError("La pupille semble vide.")
+
+    Dpix = max(xx.max() - xx.min() + 1, yy.max() - yy.min() + 1)
+
+    # Coordonnées pupille normalisées en unités de D
+    # (0 au centre géométrique)
+    x_pup = (np.arange(nx) - (nx - 1) / 2) / Dpix
+    y_pup = (np.arange(ny) - (ny - 1) / 2) / Dpix
+
+    # Coordonnées focales en lambda/D
+    # Sampling = nb de pixels par lambda/D
+    x_foc = (np.arange(nx_img) - (nx_img - 1) / 2) / sampling
+    y_foc = (np.arange(ny_img) - (ny_img - 1) / 2) / sampling
+
+    # Matrices de Fourier
+    Mx = np.exp(-2j * np.pi * np.outer(x_foc, x_pup))
+    My = np.exp(-2j * np.pi * np.outer(y_foc, y_pup))
+
+    # Transformée de Fourier 2D par produit matriciel
+    focal = My @ field @ Mx.T
+
+    # PSF
+    psf = np.abs(focal) ** 2
+
+    if normalize:
+        max_psf = np.nanmax(psf)
+        if max_psf > 0:
+            psf = psf / max_psf
+
+    return psf
+def _simulate_psf_chunk_worker_depreciated(opd_chunk, setup, opd_ncpa):
     with _suppress_output():
         tel1, cam = _build_psf_objects_from_setup(setup)
 

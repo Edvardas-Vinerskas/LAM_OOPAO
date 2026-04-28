@@ -1187,3 +1187,293 @@ def plot_phase_map_aa(
             _save_one(saveformat)
 
     return fig, ax
+
+#%%
+def plot_etf_fit_aa(
+    f_etf,
+    etf,
+    f_fit=None,
+    etf_fit=None,
+    label_data="Measured ETF",
+    label_fit="Discrete fit",
+    xlabel="Frequency [Hz]",
+    ylabel="ETF",
+    title=None,
+    one_column=True,
+    dpi=300,
+    journal_style=True,
+    show_legend=True,
+    xscale="log",
+    yscale="log",
+    xmin=None,
+    xmax=None,
+    ymin=None,
+    ymax=None,
+    fit_params=None,
+    annotate_params=False,
+    save=False,
+    savepath="etf_fit_aa.pdf",
+    saveformat=None,
+):
+    """
+    Plot an ETF and its fit in a style suitable for A&A publication.
+
+    Parameters
+    ----------
+    f_etf : array_like
+        Frequency vector for the measured ETF.
+    etf : array_like
+        Measured ETF values.
+    f_fit : array_like or None
+        Frequency vector for the fitted ETF.
+    etf_fit : array_like or None
+        Fitted ETF values.
+    label_data : str
+        Label for measured ETF.
+    label_fit : str
+        Label for fit.
+    xlabel, ylabel : str
+        Axis labels.
+    title : str or None
+        Optional title.
+    one_column : bool
+        If True, figure width is 88 mm, else 180 mm.
+    dpi : int
+        Figure dpi.
+    journal_style : bool
+        If True, no background grid.
+    show_legend : bool
+        Whether to show the legend.
+    xscale, yscale : {"log", "linear"}
+        Axis scales.
+    xmin, xmax, ymin, ymax : float or None
+        Axis limits.
+    fit_params : dict or None
+        Optional dictionary of fit parameters to annotate.
+    annotate_params : bool
+        If True, print fit parameters inside the figure.
+    save : bool
+        If True, save the figure.
+    savepath : str
+        Output file path.
+    saveformat : str or None
+        'pdf', 'png', 'svg', 'eps', 'fig', or 'all'.
+    """
+
+    # -------- Input sanitation --------
+    f_etf = np.asarray(f_etf).ravel()
+    etf = np.asarray(etf).ravel()
+
+    if f_etf.size != etf.size:
+        raise ValueError("f_etf and etf must have the same length.")
+
+    valid = np.isfinite(f_etf) & np.isfinite(etf)
+    if xscale == "log":
+        valid &= (f_etf > 0)
+    if yscale == "log":
+        valid &= (etf > 0)
+
+    f_etf = f_etf[valid]
+    etf = etf[valid]
+
+    if f_etf.size < 2:
+        raise ValueError("Not enough valid ETF points to plot.")
+
+    has_fit = (f_fit is not None) and (etf_fit is not None)
+    if has_fit:
+        f_fit = np.asarray(f_fit).ravel()
+        etf_fit = np.asarray(etf_fit).ravel()
+
+        if f_fit.size != etf_fit.size:
+            raise ValueError("f_fit and etf_fit must have the same length.")
+
+        valid_fit = np.isfinite(f_fit) & np.isfinite(etf_fit)
+        if xscale == "log":
+            valid_fit &= (f_fit > 0)
+        if yscale == "log":
+            valid_fit &= (etf_fit > 0)
+
+        f_fit = f_fit[valid_fit]
+        etf_fit = etf_fit[valid_fit]
+
+        if f_fit.size < 2:
+            raise ValueError("Not enough valid fit points to plot.")
+
+    # -------- Style A&A --------
+    label_fs = 9
+    tick_fs = 8
+    legend_fs = 8
+    title_fs = 9
+
+    width_in = 88 / 25.4 if one_column else 180 / 25.4
+    height_in = width_in * 0.72
+
+    fig, ax = plt.subplots(
+        figsize=(width_in, height_in),
+        dpi=dpi,
+        constrained_layout=True
+    )
+
+    # -------- Curves --------
+    col_data = "black"
+    col_fit = "#355C9A"
+
+    ax.plot(
+        f_etf, etf,
+        color=col_data,
+        lw=1.2,
+        ls="none",
+        marker="o",
+        ms=2.8,
+        mew=0.0,
+        label=label_data,
+        zorder=2,
+    )
+
+    if has_fit:
+        ax.plot(
+            f_fit, etf_fit,
+            color=col_fit,
+            lw=1.5,
+            ls="-",
+            label=label_fit,
+            zorder=5,
+        )
+
+    # -------- Reference line ETF=1 --------
+    if xscale == "log":
+        xref = np.logspace(np.log10(np.min(f_etf)), np.log10(np.max(f_etf)), 200)
+    else:
+        xref = np.linspace(np.min(f_etf), np.max(f_etf), 200)
+
+    ax.plot(
+        xref,
+        np.ones_like(xref),
+        color="0.5",
+        lw=0.9,
+        ls="--",
+        zorder=1,
+    )
+
+    # -------- Scales / limits --------
+    ax.set_xscale(xscale)
+    ax.set_yscale(yscale)
+
+    if xmin is not None or xmax is not None:
+        ax.set_xlim(left=xmin, right=xmax)
+    if ymin is not None or ymax is not None:
+        ax.set_ylim(bottom=ymin, top=ymax)
+
+    # -------- Labels --------
+    ax.set_xlabel(xlabel, fontsize=label_fs)
+    ax.set_ylabel(ylabel, fontsize=label_fs)
+
+    if title is not None:
+        ax.set_title(title, fontsize=title_fs)
+
+    # -------- Annotation --------
+    if annotate_params and fit_params is not None:
+        txt = "\n".join([rf"{k} = {v}" for k, v in fit_params.items()])
+        ax.text(
+            0.04, 0.96, txt,
+            transform=ax.transAxes,
+            ha="left", va="top",
+            fontsize=8,
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="0.8")
+        )
+
+    # -------- Ticks / frame --------
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.0)
+
+    ax.tick_params(
+        which="major",
+        direction="in",
+        length=5,
+        width=1.0,
+        labelsize=tick_fs,
+        pad=4,
+        top=True,
+        right=True,
+    )
+    ax.tick_params(
+        which="minor",
+        direction="in",
+        length=3,
+        width=0.8,
+        top=True,
+        right=True,
+    )
+
+    # -------- Grid --------
+    if journal_style:
+        ax.grid(False)
+    else:
+        ax.grid(True, which="major", color="0.88", lw=0.6)
+        ax.grid(True, which="minor", color="0.93", lw=0.4)
+
+    # -------- Legend --------
+    if show_legend and has_fit:
+        ax.legend(
+            frameon=False,
+            fontsize=legend_fs,
+            loc="best",
+            handlelength=2.8,
+            borderaxespad=0.3,
+        )
+
+    # -------- Save --------
+    if save:
+        path = Path(savepath)
+
+        if saveformat is None:
+            if path.suffix:
+                saveformat = path.suffix.lower().lstrip(".")
+            else:
+                saveformat = "pdf"
+                path = path.with_suffix(".pdf")
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _save_one(fmt):
+            fmt = fmt.lower().lstrip(".")
+
+            if fmt == "fig":
+                fig_path = path.with_suffix(".fig")
+                with open(fig_path, "wb") as f:
+                    pickle.dump(fig, f)
+
+            elif fmt in {"pdf", "eps", "svg"}:
+                out = path.with_suffix(f".{fmt}")
+                fig.savefig(
+                    out,
+                    format=fmt,
+                    bbox_inches="tight",
+                    pad_inches=0.02,
+                    transparent=False,
+                )
+
+            elif fmt in {"png", "tif", "tiff", "jpg", "jpeg"}:
+                out = path.with_suffix(f".{fmt}")
+                fig.savefig(
+                    out,
+                    format=fmt,
+                    dpi=max(dpi, 300),
+                    bbox_inches="tight",
+                    pad_inches=0.02,
+                    transparent=False,
+                )
+
+            else:
+                raise ValueError(
+                    f"Unsupported save format '{fmt}'. "
+                    "Use pdf, eps, png, tiff, jpg, jpeg, svg, fig, or all."
+                )
+
+        if saveformat.lower() == "all":
+            for fmt in ("png", "pdf", "fig"):
+                _save_one(fmt)
+        else:
+            _save_one(saveformat)
+
+    return fig, ax
