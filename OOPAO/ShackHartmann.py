@@ -21,7 +21,7 @@ except ImportError or ModuleNotFoundError:
 
 
 class ShackHartmann:
-    def __init__(self, nSubap: float,
+    def __init__(self, nSubap: int,
                  telescope,
                  lightRatio: float,
                  threshold_cog: float = 0.01,
@@ -299,6 +299,8 @@ class ShackHartmann:
             self.initialize_flux(src=src, sh_data=self.sh_data['src_'+str(i_src)])
             # set the valid lenslets accordingly
             self.set_valid_subaperture(src=src, sh_data=self.sh_data['src_'+str(i_src)])
+            # Set the pupil masks for each SH (needed for the geometric SH implementation with EM field transform)
+            self.sh_data['src_' + str(i_src)].pupil_mask = src.fluxMap == np.max(src.fluxMap)
             # initialize the weithing map for the CoG computation
             self.sh_data['src_'+str(i_src)].weighting_map = 1
             # store the number of signal
@@ -324,8 +326,8 @@ class ShackHartmann:
         for i in range(self.nSubap):
             tmp_flux_v_split = np.vsplit(tmp_flux_h_split[i], self.nSubap)
             sh_data.cube_flux[i * self.nSubap:(i + 1) * self.nSubap,
-                                  self.center_init - self.n_pix_subap_init // 2:self.center_init + self.n_pix_subap_init // 2,
-                                  self.center_init - self.n_pix_subap_init // 2:self.center_init + self.n_pix_subap_init // 2] = np.asarray(tmp_flux_v_split)
+                              self.center_init - self.n_pix_subap_init // 2:self.center_init + self.n_pix_subap_init // 2,
+                              self.center_init - self.n_pix_subap_init // 2:self.center_init + self.n_pix_subap_init // 2] = np.asarray(tmp_flux_v_split)
         # required to compute the valid subapertures
         sh_data.photon_per_subaperture = np.apply_over_axes(np.sum, sh_data.cube_flux, [1, 2])
         sh_data.current_nPhoton = src.nPhoton
@@ -581,7 +583,7 @@ class ShackHartmann:
         else:
             # Geometric SH with single WF
             if np.ndim(src.phase) == 2:
-                self.signal_2D = self.lenslet_propagation_geometric(src.phase)*sh_data.valid_signal_2D/self.slopes_units
+                self.signal_2D = self.lenslet_propagation_geometric(src.phase, sh_data.pupil_mask)*sh_data.valid_signal_2D/self.slopes_units
                 self.signal = self.signal_2D[sh_data.valid_signal_2D]
             # Geometric SH with multiple WFS
             else:
@@ -589,7 +591,7 @@ class ShackHartmann:
 
                 def compute_geometric_signals():
                     Q = Parallel(n_jobs=1, prefer='processes')(
-                        delayed(self.lenslet_propagation_geometric)(i) for i in self.phase_buffer)
+                        delayed(self.lenslet_propagation_geometric)(arr=i, pupil_mask=sh_data.pupil_mask) for i in self.phase_buffer)
                     return Q
                 maps = compute_geometric_signals()
                 self.signal_2D = np.asarray(maps)/self.slopes_units
@@ -626,8 +628,10 @@ class ShackHartmann:
 
         """
         if src.tag == 'asterism':
-            for i_src, src in enumerate(src.src):
-                self.set_weighted_centroiding_map(is_lgs=is_lgs, is_gaussian=is_gaussian, fwhm_factor=fwhm_factor, src=src, sh_data=self.sh_data['src_'+str(i_src)])
+            for i_src, src_ast in enumerate(src.src):
+                self.set_weighted_centroiding_map(is_lgs=is_lgs, is_gaussian=is_gaussian, fwhm_factor=fwhm_factor, src=src_ast, sh_data=self.sh_data['src_'+str(i_src)])
+                print('Re-calibrating the reference signal with the nex weighting map')
+            self.initialize_wfs()
         else:
             if sh_data is None:
                 sh_data = self.sh_data['src_0']
@@ -651,14 +655,18 @@ class ShackHartmann:
             warning('A new weighting map is now considered.')
             sh_data.weighting_map = weighting_map
             self.weighting_map = weighting_map
+            if self.src.tag == 'source':
+                print('Re-calibrating the reference signal with the nex weighting map')
+                self.initialize_wfs()
         return
 
-    def set_slopes_units(self, src=None, tomographic_reconstructor=None):
+    def set_slopes_units(self, src=None, tomographic_reconstructor=None, dm=None):
         if src is None:
             src = self.src
         print('Calibrating the slopes units')
         [self.Tip, self.Tilt] = np.meshgrid(np.linspace(-np.pi, np.pi, self.telescope.resolution, endpoint=False),
                                             np.linspace(-np.pi, np.pi, self.telescope.resolution, endpoint=False))
+
         readoutNoise = np.copy(self.cam.readoutNoise)
         photonNoise = np.copy(self.cam.photonNoise)
         self.cam.photonNoise = 0
@@ -669,17 +677,6 @@ class ShackHartmann:
             src**self.telescope*TT_in*self.em_field_transform
             self.relay(src)
             self.slopes_units = np.mean(self.signal)
-            
-            # if self.is_geometric is False:
-            #     self.slopes_units = np.mean(self.signal)
-            # else:
-                
-            #     if self.src.tag == 'source':
-            #         # case single source
-            #         self.slopes_units = np.mean(self.signal) #_2D[self.lighted_subap*src.sh_data.valid_signal_2D])
-            #     else:
-            #         # case asterism
-            #         self.slopes_units = np.mean(self.signal) #_2D[:, self.lighted_subap*src.sh_data.valid_signal_2D])
         else:
             if src.type != 'asterism':
                 raise OopaoError('Only asterisms objects can be used to calibrate the SH WFS with a tomographic reconsctrutor')
@@ -689,7 +686,8 @@ class ShackHartmann:
                 src**self.telescope*TT_in*self.em_field_transform
                 self.relay(src)
                 wfs_signal = np.hstack(self.signal)
-                TT_out = OPD_map((tomographic_reconstructor@wfs_signal).reshape([self.telescope.resolution, self.telescope.resolution])*self.telescope.pupil)
+                rec_commands = tomographic_reconstructor@wfs_signal
+                TT_out = OPD_map((dm.modes@rec_commands).reshape([self.telescope.resolution, self.telescope.resolution])*self.telescope.pupil)
                 self.slopes_units *= np.std(TT_out.OPD) / np.std(TT_in.OPD)
         self.cam.photonNoise = photonNoise
         self.cam.readoutNoise = readoutNoise
@@ -779,19 +777,19 @@ class ShackHartmann:
         joblib_fill_raw_data()
         return
 
-    def gradient_2D(self, arr):
-        arr[~self.telescope.pupil] = np.nan
-        res_x = (np.gradient(arr, axis=0, edge_order=1)/self.telescope.pixelSize) * self.telescope.pupil
+    def gradient_2D(self, arr, pupil_mask):
+        arr[~pupil_mask] = np.nan
+        res_x = (np.gradient(arr, axis=0, edge_order=1)/self.telescope.pixelSize) * pupil_mask
         res_x = np.nan_to_num(res_x)
-        res_y = (np.gradient(arr, axis=1, edge_order=1)/self.telescope.pixelSize) * self.telescope.pupil
+        res_y = (np.gradient(arr, axis=1, edge_order=1)/self.telescope.pixelSize) * pupil_mask
         res_y = np.nan_to_num(res_y)
         return res_x, res_y
 
-    def lenslet_propagation_geometric(self, arr):
-        [SLx, SLy] = self.gradient_2D(arr)
+    def lenslet_propagation_geometric(self, arr, pupil_mask):
+        [SLx, SLy] = self.gradient_2D(arr, pupil_mask)
         sy = bin_ndarray(ndarray=SLx, new_shape=(self.nSubap, self.nSubap), operation="mean", ignore_zeros=True)
         sx = bin_ndarray(ndarray=SLy, new_shape=(self.nSubap, self.nSubap), operation="mean", ignore_zeros=True)
-        self.lighted_subap = np.concatenate((sx.astype(bool), sy.astype(bool)))
+        # self.lighted_subap = np.concatenate((sx.astype(bool), sy.astype(bool)))
         return np.concatenate((sx, sy))
 
     def convolve_direct(self, A_in, B_in):
@@ -916,22 +914,22 @@ class ShackHartmann:
 
         return np.asarray(shift_x_buffer), np.asarray(shift_y_buffer), np.asarray(spot_kernel_elongation_fft), np.asarray(spot_kernel_elongation)
 
-    def get_valid_actuators(self):
-        n_elements = 2 * self.nSubap + 1  # Linear number of lenslet+actuator
-        valid_lenslet_actuator = np.zeros((n_elements, n_elements), dtype=int)
-        index = np.arange(1, n_elements, 2)  # Lenslet index
-        # valid_lenslet_actuator[np.ix_(index, index)] = src.valid_subapertures
-        valid_lenslet_actuator[np.ix_(index, index)] = src.valid_subapertures
-        for x_lenslet in index:
-            for y_lenslet in index:
-                if valid_lenslet_actuator[x_lenslet, y_lenslet] == 1:
-                    x_actuator_indices = [x_lenslet - 1, x_lenslet - 1, x_lenslet + 1, x_lenslet + 1]
-                    y_actuator_indices = [y_lenslet - 1, y_lenslet + 1, y_lenslet + 1, y_lenslet - 1]
-                    for x_act, y_act in zip(x_actuator_indices, y_actuator_indices):
-                        valid_lenslet_actuator[x_act, y_act] = 1
-        index = np.arange(0, n_elements, 2)
-        val = valid_lenslet_actuator[np.ix_(index, index)].astype(bool)
-        return val
+    # def get_valid_actuators(self):
+    #     n_elements = 2 * self.nSubap + 1  # Linear number of lenslet+actuator
+    #     valid_lenslet_actuator = np.zeros((n_elements, n_elements), dtype=int)
+    #     index = np.arange(1, n_elements, 2)  # Lenslet index
+    #     # valid_lenslet_actuator[np.ix_(index, index)] = src.valid_subapertures
+    #     valid_lenslet_actuator[np.ix_(index, index)] = src.valid_subapertures
+    #     for x_lenslet in index:
+    #         for y_lenslet in index:
+    #             if valid_lenslet_actuator[x_lenslet, y_lenslet] == 1:
+    #                 x_actuator_indices = [x_lenslet - 1, x_lenslet - 1, x_lenslet + 1, x_lenslet + 1]
+    #                 y_actuator_indices = [y_lenslet - 1, y_lenslet + 1, y_lenslet + 1, y_lenslet - 1]
+    #                 for x_act, y_act in zip(x_actuator_indices, y_actuator_indices):
+    #                     valid_lenslet_actuator[x_act, y_act] = 1
+    #     index = np.arange(0, n_elements, 2)
+    #     val = valid_lenslet_actuator[np.ix_(index, index)].astype(bool)
+    #     return val
 
     @property
     def is_geometric(self):
