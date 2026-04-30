@@ -489,7 +489,6 @@ if save_files == True:
 print(f'time to run {end_time - start_time} s')
 err
 
-
 #---------------------------------------------------Error decomposition---------------------------------------------------#
 time_plot = np.arange(0, nLoop * SAMPLING_TIME, SAMPLING_TIME)
 plt.figure()

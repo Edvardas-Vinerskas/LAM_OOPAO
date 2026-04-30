@@ -27,7 +27,7 @@ from po4ao_PAPYRUS.po4ao_util_PAPYRUS import EfficientExperienceReplay, SharedAd
 
 
 
-sample_shape = 88 #pass it as variable
+sample_shape = 101 #pass it as variable
 sample_shape_pyr = 357 #pass it as variable
 
 OOPAO_scaling_up   = 1e7
@@ -37,19 +37,19 @@ OOPAO_scaling_down = 1e-7
 filters_per_layer = 32
 n_filt = filters_per_layer
 
-iters                = 40
+iters                = 20
 episode_length       = 750
 initial_sigma        = 0.3
 min_sigma            = 0
 warmup_episodes      = 20
 loss_penalty         = 0.1
 
-train_iter_warmup    = 400 #400
+train_iter_warmup    = 600 #400
 train_iter_parallel  = 40 #40
 
 n_history            = 30 #30
 planning_horizon     = 4
-data_shape           = 10   #pass it as variable
+data_shape           = 11   #pass it as variable
 control_delay        = 1
 
 gain                 = 0.4
@@ -61,7 +61,7 @@ replay_size          = 20 #20 used in PAPYRUS code
 warmup_memory        = warmup_episodes
 train_warmup_percent = 0.2
 
-batch_size           = 16 #originally 32
+batch_size           = 128 #originally 32
 
 device = "cpu"#torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -134,14 +134,14 @@ def train_dynamics(dynamics: EnsembleDynamicsFast, optimizer: SharedAdam, replay
 
 
             history = torch.cat([states_unfolded[:, :-1].squeeze(2), actions_unfolded[:, :-1].squeeze(2)], dim=1) #shape (batch_size, 2 * (n_history - 1), 10, 10)
-            input_dynamics = torch.cat([history, state, action], dim=1) * OOPAO_scaling_up
+            input_dynamics = torch.cat([history, state, action], dim=1)
 
 
             pred = bs_model(input_dynamics)                                                 #shape (batch_size, 1, 10, 10)
 
 
             assert pred.shape == next_states.shape
-            pred_loss = ((next_states * OOPAO_scaling_up - pred)).pow(2).mean()
+            pred_loss = ((next_states * OOPAO_scaling_up - pred * OOPAO_scaling_up)).pow(2).mean()
 
 
             loss += pred_loss
@@ -221,17 +221,17 @@ def train_policy(optimizer: SharedAdam, policy: ConvPolicyFastFast, dynamics: En
 
         #reward over the horizon timeframe
         for t in range(0, planning_horizon):
-            history = torch.cat([past_obs, past_act], dim=1)
+            history = torch.cat([past_obs, past_act], dim=1) #shape (batch_size, 2 * (n_history - 1), 10, 10)
 
-            input_policy = torch.cat([state, history], dim=1) * OOPAO_scaling_up
+            input_policy = torch.cat([state, history], dim=1)
             action = policy(input_policy)                   # shape (batch_size, 1, 10, 10)
 
 
-            action = action * OOPAO_scaling_down
-            input_dynamics = torch.cat([history, state, action], dim=1) * OOPAO_scaling_up
+            action = action
+            input_dynamics = torch.cat([history, state, action], dim=1)
             next_state = dynamics(input_dynamics)           # shape (batch_size, 5, 10, 10)
 
-            next_state = next_state * OOPAO_scaling_down
+            next_state = next_state
             #sum up of rewards over the horizon time frame
             #losses += loss_fn(next_state[:, 0] * OOPAO_scaling_up, action * OOPAO_scaling_up)
             losses += loss_fn(torch.mean(next_state, dim=1) * OOPAO_scaling_up, action * OOPAO_scaling_up)
@@ -263,7 +263,7 @@ def training_thread(start_q, dynamics_q, dynamics_optimizer_q, replay_q, replay_
 
 
     :param start_q:                   boolean for starting the training procedure. True when there is new data available
-    :param dynamics_optimizer_q:      queue for the dynamics optimizer
+    :param dynamics_optimizer_q:      queue for start_q, dynamics_q, dynamics_optimizer_q, replay_q, replay_warmup_q dynamics optimizer
     :param replay_q:                  queue for the data set to be trained on
 
     """
@@ -330,8 +330,8 @@ def run_episode_policy(past_obs, past_act, obs, replay, policy, sigma, episode_l
 
         else:
             #shape(batch_size, 1, 10, 10)
-            input_policy = torch.cat([obs.unsqueeze(0).unsqueeze(0).to(device0), past_obs, past_act], dim=1) * OOPAO_scaling_up
-            action = policy(input_policy) * OOPAO_scaling_down
+            input_policy = torch.cat([obs.unsqueeze(0).unsqueeze(0).to(device0), past_obs, past_act], dim=1)
+            action = policy(input_policy)
 
 
         #dm[:] = (prev_commands * leak) + (action)
@@ -393,8 +393,8 @@ def run_episode_warmup(replay, replay_warmup, sigma, episode_length, filter, fil
         action = gain * obs.unsqueeze(0).unsqueeze(0).to(device0)
         noisy  = sample_noise(sigma, filter, xvalid, yvalid) * OOPAO_scaling_down
         noisy_pyr = sample_noise_pyr(sigma, filter_pyr) * OOPAO_scaling_down
-        action = action + noisy.unsqueeze(0).unsqueeze(0) #manual injection of noise to the bench
-        #action = noisy.unsqueeze(0).unsqueeze(0)
+        action = action + noisy.unsqueeze(0).unsqueeze(0) #manual injection of noise
+        
 
 
         #dm[:] = (prev_commands * leak) + (action)
@@ -438,14 +438,14 @@ def main():
 
     #retraining on single seed with less noise equivalent to single stage system and seeing what we get
     #note that for a single stage the warm up almost always converges
-    directory_name = 'test' #trained from scratch with fresh warm up data
-    directory_name_load_buffer = 'vZWFS_1st_2nd_noise_03_phnoise1_read_4_4_QE08_mag2_epis20_iters40_warmupperc05'
-    #more change
+    directory_name = 'vZWFS_1st_2nd_noise_03_phnoise1_read_4_4_QE08_mag2_epis20_iters20_DMzer_10' #trained from scratch with fresh warm up data
+    directory_name_load_buffer = 'vZWFS_1st_2nd_noise_03_phnoise1_read_4_4_QE08_mag2_epis20_iters40_batchsize128'#weight_decay=1e-6
+
 
     #set save_buffer to true when you want to save the warmup data
     #set load_buffer to true when you want to load some other warmup data (if load_buffer = True, then save_buffer = False)
-    save_buffer = False
-    load_buffer = True
+    save_buffer = True
+    load_buffer = False
     load_pretrained_model = False
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     savedir = f'temp_save_dir/{directory_name}/'
@@ -508,8 +508,8 @@ def main():
     dynamics_optimizer = SharedAdam(dynamics.parameters())
     policy_optimizer = SharedAdam((policy.parameters()))
 
-    dynamics_optimizer1 = optim.Adam(dynamics.parameters())
-    policy_optimizer1 = optim.Adam(policy.parameters())
+    dynamics_optimizer1 = optim.Adam(dynamics.parameters())#, weight_decay=1e-6)
+    policy_optimizer1 = optim.Adam(policy.parameters())#, weight_decay=1e-6)
 
     sigma = initial_sigma
     rewards = torch.zeros(iters + warmup_episodes)
@@ -624,11 +624,14 @@ def main():
         plt.plot(dynamics_loss)
         plt.grid(True)
         plt.yscale('log')
+        #plt.xscale('log')
         plt.subplot(122)
         plt.title("policy_loss warmup")
         plt.grid(True)
         plt.plot(policy_loss)
         plt.yscale('log')
+        #plt.xscale('log')
+        #plt.show()
 
 
 

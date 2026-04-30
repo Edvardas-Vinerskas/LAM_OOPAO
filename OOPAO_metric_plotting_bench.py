@@ -7,33 +7,13 @@
 """
 
 from scipy import signal
+import torch
 import numpy as np
 import matplotlib
 matplotlib.use('Qt5Agg')
 import matplotlib.pyplot as plt
-
-from OOPAO.calibration.compute_KL_modal_basis import compute_KL_basis
-from OOPAO.DeformableMirror import DeformableMirror
-
-from po4ao_edw.OOPAO_environment_PWFS import OOPAO_environment_PWFS
-from po4ao_edw.OOPAO_environment_ZWFS import OOPAO_environment_ZWFS
-
-
-env = OOPAO_environment_ZWFS()
-#env = OOPAO_environment_PWFS()
-
-"""DM = DeformableMirror(telescope    = env.TEL,
-                      nSubap       = env.N_SUBAPERTURE_pyr,
-                      mechCoupling = env.MECH_COUPLING)
-
-full_M2C = compute_KL_basis(env.TEL,
-                            env.ATM,
-                            DM,
-                            lim=0)
-
-
-KL_basis_dm = (DM.modes @ full_M2C) * np.tile(env.TEL.pupil.flatten()[:, None], full_M2C.shape[1])
-projector_kl = np.linalg.pinv(KL_basis_dm)"""
+import matplotlib.animation as animation
+import matplotlib.colors as colors
 
 
 #TODO don't forget to also change your atmosphere parameters when loading files (atm_OPD_array)
@@ -41,63 +21,127 @@ projector_kl = np.linalg.pinv(KL_basis_dm)"""
 RL                   = True
 integrator           = True
 ideal                = False
+only_2nd             = False
 stage_2              = True
-stage_1_plus_stage_2 = False
+stage_1_plus_stage_2 = True
 atm_RL               = True
 atm_int              = False
 atm_ideal            = False
 plot_timeseries      = True
 plot_tPSD            = True
+use_1st_KL           = True
 freq_lim             = 900
 
+#bench_loss_2/test_warmup50_1st250_2nd500_scaling1e2_noise_losspenalty01_reduceaction10_iters100_v1
 #vZWFS_1st_2nd_noise_03_phnoise1_read_4_4_QE08_mag2_epis20_iters80_weight_decay=1e-6
-directory_name_RL  = 'vZWFS_1st_2nd_noise_03_phnoise1_read_4_4_QE08_mag2_epis20_onlinetrain_40_iters40' #vZWFS_1st_2nd_noise_03_phnoise1_read_4_4_QE08_mag2_epis20_eplen1500_noonline
-directory_name_int = 'vZWFS_integrator_phnoise1_read_4_4_QE08_mag2_12k' #vZWFS_integrator_phnoise1_read_4_4_QE08_mag2_12k
+#test_warmup50_2nd500_scaling1e2_noise_losspenalty01_reduceaction10_iters100_v10
+#TODO change the atmosphere used in plotting
+#TODO look into the policy output innit
+CL_gain_pyr = 0.4
+folder_name = "bench_loss_5_0324"
+frequency = 300
+directory_name_RL  = 'test' #test_warmup50_1st250_2nd500_scaling1e2_noise_losspenalty01_reduceaction10_iters100_v1
+directory_name_int = 'integrator_1st_150_2nd300_gain04_20260316_atm2_3' #vZWFS_integrator_phnoise1_read_4_4_QE08_mag2_12k
 directory_name_ideal = 'vZWFS_metrics_ideal'#vZWFS_metrics_ideal
 label_RL = "RL"
 label_int = "integrator"
 label_ideal = "ideal"
-KL_frame_thresh_RL = 500
-KL_frame_end_RL    = 6500 #18750
-KL_frame_thresh_int = 500
-KL_frame_end_int    = 6500 #18750
-KL_frame_thresh_ideal = 500
+KL_frame_thresh_RL = 1000
+KL_frame_end_RL    = -1 #18750
+KL_frame_thresh_int = 1000
+KL_frame_end_int    = -1 #18750
+KL_frame_thresh_ideal = 1000
 KL_frame_end_ideal    = -1
 #modes for PSDs
 mode_1 = 1
 mode_2 = 10
 mode_3 = 20
-mode_4 = 40
-mode_5 = 80
+mode_4 = 30
+mode_5 = 40
 
+
+"""testie = np.load('bench_loss_5_0324/test_warmup50_1st200_2nd400_scaling1e2_noise2ndstageonly_losspenalty01_iters300_v21/2026-03-30T20_07_22_telemetry_2nd_data.npy', allow_pickle = True)
+#print(testie.item()['s2m'])
+print(testie.item().keys())
+print(testie.item()['slavedreconsCube'].shape)
+
+
+
+
+errr"""
+
+valid_mask_1st_stage = np.load(f'{folder_name}/valid_mask_1st_stage.npy')
+dm_x_1st_stage, dm_y_1st_stage = np.where(valid_mask_1st_stage)
+dm_coords_1st_stage = (dm_x_1st_stage, dm_y_1st_stage)
+
+
+valid_mask_2nd_stage = np.load(f'{folder_name}/valid_mask_2nd_stage.npy')
+dm_x_2nd_stage, dm_y_2nd_stage = np.where(valid_mask_2nd_stage)
+dm_coords_2nd_stage = (dm_x_2nd_stage, dm_y_2nd_stage)
+
+
+
+#influence functions (control to phase)
+dm_1st_inf = np.reshape(np.load(f'{folder_name}/Papyrus_influence_functions_in_nanometers.npy'), (80 * 80, 241))
+dm_2nd_inf = np.load(f'{folder_name}/OZIRIIS_Zonal_80x80.npy')
+dm_2nd_inf = np.moveaxis(dm_2nd_inf, 0, -1)
+
+
+#TODO investigate this
+print(dm_1st_inf[dm_1st_inf < 0].shape)
+print(np.min(dm_2nd_inf))
+
+
+#1st stage modes modes to control
+M2C_1st = np.load(f"{folder_name}/M2C_1st.npy")
+#2nd stage modes modes to control
+M2C_2nd = np.load(f"{folder_name}/M2C_2nd.npy")
+
+
+C2M_1st = np.linalg.pinv(M2C_1st)
+C2M_2nd = np.linalg.pinv(M2C_2nd)
+
+
+M2P_1st = dm_1st_inf @ M2C_1st
+M2P_2nd = dm_2nd_inf @ M2C_2nd
+projector_kl = np.linalg.pinv(M2P_1st) @ M2P_2nd
 
 
 
 #RL
 if RL:
-    residual_error_RL = np.load(f"temp_save_dir/{directory_name_RL}/residual_error.npy")
-    strehl_array_1st_RL = np.load(f"temp_save_dir/{directory_name_RL}/strehl_array_1st.npy")
+    #residual_error_RL = np.load(f"{folder_name}/{directory_name_RL}/residual_error.npy") TODO I think you can extract this using influence functions
 
     if stage_2:
-        strehl_array_2nd_RL = np.load(f"temp_save_dir/{directory_name_RL}/strehl_array_2nd.npy")
-        modes_2nd_stage_RL = np.load(f"temp_save_dir/{directory_name_RL}/modes_2nd_stage.npy")
+        #strehl_array_2nd_RL = np.load(f"{folder_name}/{directory_name_RL}/strehl_array_2nd.npy") #psf fitting here
+        next_states_2nd = torch.load(f"{folder_name}/{directory_name_RL}/next_states_2nd.pt").cpu().numpy()[:5000]
+        modes_2nd_stage_RL = next_states_2nd[:, dm_x_2nd_stage, dm_y_2nd_stage] @ C2M_2nd.T
+        if use_1st_KL:
+            modes_2nd_stage_RL = modes_2nd_stage_RL @ projector_kl.T
 
 
-    modes_1st_stage_RL = np.load(f"temp_save_dir/{directory_name_RL}/modes_1st_stage.npy")
-    modes_atm_RL = np.load(f"temp_save_dir/{directory_name_RL}/modes_atm.npy")
 
 
-    total_err_array_RL = np.load(f"temp_save_dir/{directory_name_RL}/total_err_array.npy") #not useful for now
+    if only_2nd:
+        modes_1st_stage_RL = modes_2nd_stage_RL
+    else:
+        next_states_1st = np.load(f"{folder_name}/{directory_name_RL}/next_states_1st.npy").squeeze()[:5000] #this is already flattened, no need to apply a mask
+        modes_1st_stage_RL = next_states_1st @ C2M_1st.T
 
-    dynamics_loss = np.load(f"temp_save_dir/{directory_name_RL}/dynamics_loss.npy") #not useful for now
-    policy_loss = np.load(f"temp_save_dir/{directory_name_RL}/policy_loss.npy") #not useful for now
 
-    dynamics_loss_online = np.load(f"temp_save_dir/{directory_name_RL}/dynamics_loss_online.npy")  # not useful for now
-    policy_loss_online = np.load(f"temp_save_dir/{directory_name_RL}/policy_loss_online.npy")  # not useful for now
+    dm_atm = np.load(f"{folder_name}/{directory_name_RL}/dm_atm.npy").squeeze()[:5000]
+    modes_atm_RL = dm_atm @ C2M_1st.T
+    modes_atm_RL = modes_atm_RL
+
+    
+
+    dynamics_loss = np.load(f"{folder_name}/{directory_name_RL}/dynamics_loss_warmup.npy") 
+    policy_loss = np.load(f"{folder_name}/{directory_name_RL}/policy_loss_warmup.npy") 
+
 
     #YOU SHOULD ALSO CHECK IF YOU ONLY HAVE AN EPISODE OF DATA IN ALL OF THESE BECAUSE I DON4T REMEMBER
-    frequency_RL = np.load(f"temp_save_dir/{directory_name_RL}/frequency.npy")
-    time_plot_RL = np.load(f"temp_save_dir/{directory_name_RL}/time_array.npy")
+    frequency_RL = frequency
+    time_plot_RL = np.arange(0, 20 * 250 / frequency, 1/frequency) #time_plot = np.arange(0, iters * episode_length / frequency, 1/frequency)
 
 
 
@@ -106,46 +150,33 @@ if RL:
 
 #integrator
 if integrator:
-    residual_error_int = np.load(f"temp_save_dir/{directory_name_int}/residual_error.npy")
-    strehl_array_1st_int = np.load(f"temp_save_dir/{directory_name_int}/strehl_array_1st.npy")
+    #residual_error_int = np.load(f"{folder_name}/{directory_name_int}/residual_error.npy")
 
 
     if stage_2:
-        strehl_array_2nd_int = np.load(f"temp_save_dir/{directory_name_int}/strehl_array_2nd.npy")
-        modes_2nd_stage_int = np.load(f"temp_save_dir/{directory_name_int}/modes_2nd_stage.npy")
+        #strehl_array_2nd_int = np.load(f"{folder_name}/{directory_name_int}/strehl_array_2nd.npy")
+        next_states_2nd = np.load(f"{folder_name}/{directory_name_int}/next_states_2nd.npy").squeeze()[:5000]
+        modes_2nd_stage_int = next_states_2nd @ C2M_2nd.T
+        if use_1st_KL:
+            modes_2nd_stage_int = modes_2nd_stage_int @ projector_kl.T
 
 
-    modes_1st_stage_int = np.load(f"temp_save_dir/{directory_name_int}/modes_1st_stage.npy")
-    modes_atm_int = np.load(f"temp_save_dir/{directory_name_int}/modes_atm.npy")
+    if only_2nd:
+        modes_1st_stage_int = modes_2nd_stage_int
+    else:
+        next_states_1st = np.load(f"{folder_name}/{directory_name_int}/next_states_1st.npy").squeeze()[:5000] #this is already flattened, no need to apply a mask
+        modes_1st_stage_int = next_states_1st @ C2M_1st.T
+
+    dm_atm = np.load(f"{folder_name}/{directory_name_int}/dm_atm.npy").squeeze()[:5000]
+    modes_atm_int = dm_atm @ C2M_1st.T
+    modes_atm_int = modes_atm_int
 
 
-    total_err_array_int = np.load(f"temp_save_dir/{directory_name_int}/total_err_array.npy") #not useful for now
 
-    #YOU SHOULD ALSO CHECK IF YOU ONLY HAVE AN EPISODE OF DATA IN ALL OF THESE BECAUSE I DON4T REMEMBER
-    frequency_int = np.load(f"temp_save_dir/{directory_name_int}/frequency.npy")
-    time_plot_int = np.load(f"temp_save_dir/{directory_name_int}/time_array.npy")
+    frequency_int = frequency
+    time_plot_int = np.arange(0, 20 * 250 / frequency, 1/frequency)
 
 
-
-#ideal
-if ideal:
-    residual_error_ideal = np.load(f"temp_save_dir/{directory_name_ideal}/residual_error.npy")
-    strehl_array_1st_ideal = np.load(f"temp_save_dir/{directory_name_ideal}/strehl_array_1st.npy")
-
-    if stage_2:
-        strehl_array_2nd_ideal = np.load(f"temp_save_dir/{directory_name_ideal}/strehl_array_2nd.npy")
-        modes_2nd_stage_ideal = np.load(f"temp_save_dir/{directory_name_ideal}/modes_2nd_stage.npy")
-
-
-    modes_1st_stage_ideal = np.load(f"temp_save_dir/{directory_name_ideal}/modes_1st_stage.npy")
-    modes_atm_ideal = np.load(f"temp_save_dir/{directory_name_ideal}/modes_atm.npy")
-
-
-    total_err_array_ideal = np.load(f"temp_save_dir/{directory_name_ideal}/total_err_array.npy") #not useful for now
-
-    #YOU SHOULD ALSO CHECK IF YOU ONLY HAVE AN EPISODE OF DATA IN ALL OF THESE BECAUSE I DON4T REMEMBER
-    frequency_ideal = np.load(f"temp_save_dir/{directory_name_ideal}/frequency.npy")
-    time_plot_ideal = np.load(f"temp_save_dir/{directory_name_ideal}/time_array.npy")
 
 if atm_RL:
     modes_atm = modes_atm_RL
@@ -157,10 +188,7 @@ if atm_int:
     time_plot_atm = time_plot_int
     f_samp_atm = frequency_int
 
-if atm_ideal:
-    modes_atm = modes_atm_ideal
-    time_plot_atm = time_plot_ideal
-    f_samp_atm = frequency_ideal
+
 
 # ---------------------------------------------------Loss---------------------------------------------------#
 if RL:
@@ -170,33 +198,19 @@ if RL:
     plt.plot(dynamics_loss)
     plt.grid(True, alpha=0.5)
     plt.minorticks_on()
+    plt.xscale('log')
     plt.yscale('log')
     plt.subplot(122)
     plt.title("policy_loss warmup")
     plt.grid(True, alpha=0.5)
     plt.minorticks_on()
     plt.plot(policy_loss)
+    plt.xscale('log')
     plt.yscale('log')
-
-    plt.figure()
-    plt.subplot(121)
-    plt.plot(dynamics_loss_online)
-    plt.title("dynamics_loss online")
-    plt.plot(dynamics_loss_online)
-    plt.grid(True, alpha=0.5)
-    plt.minorticks_on()
-    plt.yscale('log')
-    plt.subplot(122)
-    plt.title("policy_loss online")
-    plt.plot(policy_loss_online)
-    plt.grid(True, alpha=0.5)
-    plt.minorticks_on()
-    plt.yscale('log')
-
 
 
 # ---------------------------------------------------Strehl---------------------------------------------------#
-if RL:
+"""if RL:
     if stage_2:
         sr_mean_RL = np.mean(strehl_array_2nd_RL)
     else:
@@ -278,7 +292,7 @@ plt.grid(True, alpha=0.5)
 plt.minorticks_on()
 plt.legend()
 
-
+"""
 # ---------------------------------------------------Zernike/KL decomposition---------------------------------------------------#
 #RL
 if RL:
@@ -320,44 +334,39 @@ if ideal:
 coefs_var_atm = np.var(np.asarray(modes_atm[KL_frame_thresh_int:, :]), axis = 0)
 
 
-plt.figure(figsize=(8, 6), dpi=300)
-plt.plot(coefs_var_atm, color="black",label=f"KL coefficients for atmospheric phase")
+plt.figure()
+plt.plot(coefs_var_atm, color="black",label=f"KL coeffs for atmospheric phase")
 if RL:
     if stage_2:
         if stage_1_plus_stage_2:
-            plt.plot(coefs_var_1st_stage_masked_RL, '--', color="indianred", label=f"KL coefficients 1st stage {label_RL} ")
-        plt.plot(coefs_var_2nd_stage_masked_RL, color="red", label=f"KL coefficients {label_RL}")
+            plt.plot(coefs_var_1st_stage_masked_RL, '--', color="indianred", label=f"KL coeffs 1st stage {label_RL} ")
+        plt.plot(coefs_var_2nd_stage_masked_RL, color="red", label=f"KL coeffs 2nd stage {label_RL}")
     else:
-        plt.plot(coefs_var_1st_stage_masked_RL, color="indianred", label=f"KL coefficients {label_RL}")
+        plt.plot(coefs_var_1st_stage_masked_RL, color="indianred", label=f"KL coeffs {label_RL}")
 
 if integrator:
     if stage_2:
         if stage_1_plus_stage_2:
-            plt.plot(coefs_var_1st_stage_masked_int, '--', color="cornflowerblue", label=f"KL coefficients 1st stage {label_int}")
-        plt.plot(coefs_var_2nd_stage_masked_int, color="blue", label=f"KL coefficients {label_int}")
+            plt.plot(coefs_var_1st_stage_masked_int, '--', color="cornflowerblue", label=f"KL coeffs 1st stage {label_int}")
+        plt.plot(coefs_var_2nd_stage_masked_int, color="blue", label=f"KL coeffs 2nd stage {label_int}")
     else:
-        plt.plot(coefs_var_1st_stage_masked_int, color="cornflowerblue", label=f"KL coefficients {label_int}")
+        plt.plot(coefs_var_1st_stage_masked_int, color="cornflowerblue", label=f"KL coeffs {label_int}")
 
 if ideal:
     if stage_2:
         if stage_1_plus_stage_2:
-            plt.plot(coefs_var_1st_stage_masked_ideal, '--', color="seagreen", label=f"KL coefficients 1st stage {label_ideal}")
-        plt.plot(coefs_var_2nd_stage_masked_ideal, color="green", label=f"KL coefficients 2nd stage {label_ideal}")
+            plt.plot(coefs_var_1st_stage_masked_ideal, '--', color="seagreen", label=f"KL coeffs 1st stage {label_ideal}")
+        plt.plot(coefs_var_2nd_stage_masked_ideal, color="green", label=f"KL coeffs 2nd stage {label_ideal}")
     else:
-        plt.plot(coefs_var_1st_stage_masked_ideal, color="seagreen", label=f"KL coefficients {label_ideal}")
+        plt.plot(coefs_var_1st_stage_masked_ideal, color="seagreen", label=f"KL coeffs {label_ideal}")
 
-plt.title(f"KL coefficients for corrected vs atmosphere phase", fontsize = 18)
+plt.title(f"KL coefficients for corrected vs atmosphere phase")
 plt.yscale("log")
 plt.xscale("log")
-plt.ylabel("KL coefficient variance", fontsize = 14)
-plt.xlabel("KL coefficients", fontsize = 14)
-plt.xticks(fontsize=12)
-plt.yticks(fontsize=12)
-#plt.tight_layout()
+plt.tight_layout()
 plt.grid(True, which='both', alpha=0.5)
 plt.minorticks_on()
 plt.legend()
-plt.savefig("KL_decomp_high_res.png", dpi=300)
 
 
 
@@ -537,23 +546,23 @@ if plot_timeseries:
     if RL:
         if stage_2:
             if stage_1_plus_stage_2:
-                plt.plot(time_plot_RL, residual_mode_1_curve_1st_RL_full, label=f"mode_{mode_1}_1st_stage_{label_RL}")
-            plt.plot(time_plot_RL, residual_mode_1_curve_2nd_RL_full, label=f"mode_{mode_1}_2nd_stage_{label_RL}")
-        else: plt.plot(time_plot_RL, residual_mode_1_curve_1st_RL_full, label=f"mode_{mode_1}_1st_stage_{label_RL}")
+                plt.plot(time_plot_RL, residual_mode_1_curve_1st_RL_full, color="indianred", label=f"mode_{mode_1}_1st_stage_{label_RL}")
+            plt.plot(time_plot_RL, residual_mode_1_curve_2nd_RL_full, color="red", label=f"mode_{mode_1}_2nd_stage_{label_RL}")
+        else: plt.plot(time_plot_RL, residual_mode_1_curve_1st_RL_full, color="indianred", label=f"mode_{mode_1}_1st_stage_{label_RL}")
     if integrator:
         if stage_2:
             if stage_1_plus_stage_2:
-                plt.plot(time_plot_int, residual_mode_1_curve_1st_int_full, label=f"mode_{mode_1}_1st_stage_{label_int}")
-            plt.plot(time_plot_int, residual_mode_1_curve_2nd_int_full, label=f"mode_{mode_1}_2nd_stage_{label_int}")
-        else: plt.plot(time_plot_int, residual_mode_1_curve_1st_int_full, label=f"mode_{mode_1}_1st_stage_{label_int}")
+                plt.plot(time_plot_int, residual_mode_1_curve_1st_int_full, color="cornflowerblue", label=f"mode_{mode_1}_1st_stage_{label_int}")
+            plt.plot(time_plot_int, residual_mode_1_curve_2nd_int_full, color="blue", label=f"mode_{mode_1}_2nd_stage_{label_int}")
+        else: plt.plot(time_plot_int, residual_mode_1_curve_1st_int_full, color="cornflowerblue", label=f"mode_{mode_1}_1st_stage_{label_int}")
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(time_plot_ideal, residual_mode_1_curve_1st_ideal_full, label=f"mode_{mode_1}_1st_stage_{label_ideal}")
             plt.plot(time_plot_ideal, residual_mode_1_curve_2nd_ideal_full, label=f"mode_{mode_1}_2nd_stage_{label_ideal}")
         else: plt.plot(time_plot_ideal, residual_mode_1_curve_1st_ideal_full, label=f"mode_{mode_1}_1st_stage_{label_ideal}")
-    plt.plot(time_plot_atm, atm_mode_1_curve, color="black", label=f"atm_mode_{mode_1}_curve")
-    plt.title(f"residual/atm timeseries mode_{mode_1}, gain {env.CL_gain_pyr}")
+    #plt.plot(time_plot_atm, atm_mode_1_curve, color="black", label=f"atm_mode_{mode_1}_curve")
+    plt.title(f"residual/atm timeseries mode_{mode_1}, gain {CL_gain_pyr}")
     plt.xlabel("time (s)")
     plt.grid(True, alpha=0.5)
     plt.minorticks_on()
@@ -565,23 +574,23 @@ if plot_timeseries:
     if RL:
         if stage_2:
             if stage_1_plus_stage_2:
-                plt.plot(time_plot_RL, residual_mode_2_curve_1st_RL_full, label=f"mode_{mode_2}_1st_stage_{label_RL}")
-            plt.plot(time_plot_RL, residual_mode_2_curve_2nd_RL_full, label=f"mode_{mode_2}_2nd_stage_{label_RL}")
-        else: plt.plot(time_plot_RL, residual_mode_2_curve_1st_RL_full, label=f"mode_{mode_2}_1st_stage_{label_RL}")
+                plt.plot(time_plot_RL, residual_mode_2_curve_1st_RL_full, color="indianred", label=f"mode_{mode_2}_1st_stage_{label_RL}")
+            plt.plot(time_plot_RL, residual_mode_2_curve_2nd_RL_full, color="red", label=f"mode_{mode_2}_2nd_stage_{label_RL}")
+        else: plt.plot(time_plot_RL, residual_mode_2_curve_1st_RL_full, color="indianred", label=f"mode_{mode_2}_1st_stage_{label_RL}")
     if integrator:
         if stage_2:
             if stage_1_plus_stage_2:
-                plt.plot(time_plot_int, residual_mode_2_curve_1st_int_full, label=f"mode_{mode_2}_1st_stage_{label_int}")
-            plt.plot(time_plot_int, residual_mode_2_curve_2nd_int_full, label=f"mode_{mode_2}_2nd_stage_{label_int}")
-        else: plt.plot(time_plot_int, residual_mode_2_curve_1st_int_full, label=f"mode_{mode_2}_1st_stage_{label_int}")
+                plt.plot(time_plot_int, residual_mode_2_curve_1st_int_full, color="cornflowerblue", label=f"mode_{mode_2}_1st_stage_{label_int}")
+            plt.plot(time_plot_int, residual_mode_2_curve_2nd_int_full, color="blue", label=f"mode_{mode_2}_2nd_stage_{label_int}")
+        else: plt.plot(time_plot_int, residual_mode_2_curve_1st_int_full, color="cornflowerblue", label=f"mode_{mode_2}_1st_stage_{label_int}")
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(time_plot_ideal, residual_mode_2_curve_1st_ideal_full, label=f"mode_{mode_2}_1st_stage_{label_ideal}")
             plt.plot(time_plot_ideal, residual_mode_2_curve_2nd_ideal_full, label=f"mode_{mode_2}_2nd_stage_{label_ideal}")
         else: plt.plot(time_plot_ideal, residual_mode_2_curve_1st_ideal_full, label=f"mode_{mode_2}_1st_stage_{label_ideal}")
-    plt.plot(time_plot_atm, atm_mode_2_curve, color="black", label=f"atm_mode_{mode_2}_curve")
-    plt.title(f"residual/atm timeseries mode_{mode_2}, gain {env.CL_gain_pyr}")
+    #plt.plot(time_plot_atm, atm_mode_2_curve, color="black", label=f"atm_mode_{mode_2}_curve")
+    plt.title(f"residual/atm timeseries mode_{mode_2}, gain {CL_gain_pyr}")
     plt.xlabel("time (s)")
     plt.grid(True, alpha=0.5)
     plt.minorticks_on()
@@ -593,23 +602,23 @@ if plot_timeseries:
     if RL:
         if stage_2:
             if stage_1_plus_stage_2:
-                plt.plot(time_plot_RL, residual_mode_3_curve_1st_RL_full, label=f"mode_{mode_3}_1st_stage_{label_RL}")
-            plt.plot(time_plot_RL, residual_mode_3_curve_2nd_RL_full, label=f"mode_{mode_3}_2nd_stage_{label_RL}")
-        else: plt.plot(time_plot_RL, residual_mode_3_curve_1st_RL_full, label=f"mode_{mode_3}_1st_stage_{label_RL}")
+                plt.plot(time_plot_RL, residual_mode_3_curve_1st_RL_full, color="indianred", label=f"mode_{mode_3}_1st_stage_{label_RL}")
+            plt.plot(time_plot_RL, residual_mode_3_curve_2nd_RL_full, color="red", label=f"mode_{mode_3}_2nd_stage_{label_RL}")
+        else: plt.plot(time_plot_RL, residual_mode_3_curve_1st_RL_full, color="indianred", label=f"mode_{mode_3}_1st_stage_{label_RL}")
     if integrator:
         if stage_2:
             if stage_1_plus_stage_2:
-                plt.plot(time_plot_int, residual_mode_3_curve_1st_int_full, label=f"mode_{mode_3}_1st_stage_{label_int}")
-            plt.plot(time_plot_int, residual_mode_3_curve_2nd_int_full, label=f"mode_{mode_3}_2nd_stage_{label_int}")
-        else: plt.plot(time_plot_int, residual_mode_3_curve_1st_int_full, label=f"mode_{mode_3}_1st_stage_{label_int}")
+                plt.plot(time_plot_int, residual_mode_3_curve_1st_int_full, color="cornflowerblue", label=f"mode_{mode_3}_1st_stage_{label_int}")
+            plt.plot(time_plot_int, residual_mode_3_curve_2nd_int_full, color="blue", label=f"mode_{mode_3}_2nd_stage_{label_int}")
+        else: plt.plot(time_plot_int, residual_mode_3_curve_1st_int_full, color="cornflowerblue", label=f"mode_{mode_3}_1st_stage_{label_int}")
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(time_plot_ideal, residual_mode_3_curve_1st_ideal_full, label=f"mode_{mode_3}_1st_stage__{label_ideal}")
             plt.plot(time_plot_ideal, residual_mode_3_curve_2nd_ideal_full, label=f"mode_{mode_3}_2nd_stage_{label_ideal}")
         else: plt.plot(time_plot_ideal, residual_mode_3_curve_1st_ideal_full, label=f"mode_{mode_3}_1st_stage_{label_ideal}")
-    plt.plot(time_plot_atm, atm_mode_3_curve, color="black", label=f"atm_mode_{mode_3}_curve")
-    plt.title(f"residual/atm timeseries mode_{mode_3}, gain {env.CL_gain_pyr}")
+    #plt.plot(time_plot_atm, atm_mode_3_curve, color="black", label=f"atm_mode_{mode_3}_curve")
+    plt.title(f"residual/atm timeseries mode_{mode_3}, gain {CL_gain_pyr}")
     plt.xlabel("time (s)")
     plt.grid(True, alpha=0.5)
     plt.minorticks_on()
@@ -621,23 +630,23 @@ if plot_timeseries:
     if RL:
         if stage_2:
             if stage_1_plus_stage_2:
-                plt.plot(time_plot_RL, residual_mode_4_curve_1st_RL_full, label=f"mode_{mode_4}_1st_stage_{label_RL}")
-            plt.plot(time_plot_RL, residual_mode_4_curve_2nd_RL_full, label=f"mode__{mode_4}_2nd_stage_{label_RL}")
-        else: plt.plot(time_plot_RL, residual_mode_4_curve_1st_RL_full, label=f"mode_{mode_4}_1st_stage_{label_RL}")
+                plt.plot(time_plot_RL, residual_mode_4_curve_1st_RL_full, color="indianred", label=f"mode_{mode_4}_1st_stage_{label_RL}")
+            plt.plot(time_plot_RL, residual_mode_4_curve_2nd_RL_full, color="red", label=f"mode__{mode_4}_2nd_stage_{label_RL}")
+        else: plt.plot(time_plot_RL, residual_mode_4_curve_1st_RL_full, color="indianred", label=f"mode_{mode_4}_1st_stage_{label_RL}")
     if integrator:
         if stage_2:
             if stage_1_plus_stage_2:
-                plt.plot(time_plot_int, residual_mode_4_curve_1st_int_full, label=f"mode_{mode_4}_1st_stage_{label_int}")
-            plt.plot(time_plot_int, residual_mode_4_curve_2nd_int_full, label=f"mode_{mode_4}_2nd_stage_{label_int}")
-        else: plt.plot(time_plot_int, residual_mode_4_curve_1st_int_full, label=f"mode_{mode_4}_1st_stage_{label_int}")
+                plt.plot(time_plot_int, residual_mode_4_curve_1st_int_full, color="cornflowerblue", label=f"mode_{mode_4}_1st_stage_{label_int}")
+            plt.plot(time_plot_int, residual_mode_4_curve_2nd_int_full, color="blue", label=f"mode_{mode_4}_2nd_stage_{label_int}")
+        else: plt.plot(time_plot_int, residual_mode_4_curve_1st_int_full, color="cornflowerblue", label=f"mode_{mode_4}_1st_stage_{label_int}")
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(time_plot_ideal, residual_mode_4_curve_1st_ideal_full, label=f"mode_{mode_4}_1st_stage_{label_ideal}")
             plt.plot(time_plot_ideal, residual_mode_4_curve_2nd_ideal_full, label=f"mode_{mode_4}_2nd_stage_{label_ideal}")
         else: plt.plot(time_plot_ideal, residual_mode_4_curve_1st_ideal_full, label=f"mode_{mode_4}_1st_stage_{label_ideal}")
-    plt.plot(time_plot_atm, atm_mode_4_curve, color="black", label=f"atm_mode_{mode_4}_curve")
-    plt.title(f"residual/atm timeseries mode_{mode_4}, gain {env.CL_gain_pyr}")
+    #plt.plot(time_plot_atm, atm_mode_4_curve, color="black", label=f"atm_mode_{mode_4}_curve")
+    plt.title(f"residual/atm timeseries mode_{mode_4}, gain {CL_gain_pyr}")
     plt.xlabel("time (s)")
     plt.grid(True, alpha=0.5)
     plt.minorticks_on()
@@ -649,23 +658,23 @@ if plot_timeseries:
     if RL:
         if stage_2:
             if stage_1_plus_stage_2:
-                plt.plot(time_plot_RL, residual_mode_5_curve_1st_RL_full, label=f"mode_{mode_5}_1st_stage_{label_RL}")
-            plt.plot(time_plot_RL, residual_mode_5_curve_2nd_RL_full, label=f"mode_{mode_5}_2nd_stage_{label_RL}")
-        else: plt.plot(time_plot_RL, residual_mode_5_curve_1st_RL_full, label=f"mode_{mode_5}_1st_stage_{label_RL}")
+                plt.plot(time_plot_RL, residual_mode_5_curve_1st_RL_full, color="indianred", label=f"mode_{mode_5}_1st_stage_{label_RL}")
+            plt.plot(time_plot_RL, residual_mode_5_curve_2nd_RL_full, color="red", label=f"mode_{mode_5}_2nd_stage_{label_RL}")
+        else: plt.plot(time_plot_RL, residual_mode_5_curve_1st_RL_full, color="indianred", label=f"mode_{mode_5}_1st_stage_{label_RL}")
     if integrator:
         if stage_2:
             if stage_1_plus_stage_2:
-                plt.plot(time_plot_int, residual_mode_5_curve_1st_int_full, label=f"mode_{mode_5}_1st_stage_{label_int}")
-            plt.plot(time_plot_int, residual_mode_5_curve_2nd_int_full, label=f"mode_{mode_5}_2nd_stage_{label_int}")
-        else: plt.plot(time_plot_int, residual_mode_5_curve_1st_int_full, label=f"mode_{mode_5}_1st_stage_{label_int}")
+                plt.plot(time_plot_int, residual_mode_5_curve_1st_int_full, color="cornflowerblue", label=f"mode_{mode_5}_1st_stage_{label_int}")
+            plt.plot(time_plot_int, residual_mode_5_curve_2nd_int_full, color="blue", label=f"mode_{mode_5}_2nd_stage_{label_int}")
+        else: plt.plot(time_plot_int, residual_mode_5_curve_1st_int_full, color="cornflowerblue", label=f"mode_{mode_5}_1st_stage_{label_int}")
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(time_plot_ideal, residual_mode_5_curve_1st_ideal_full, label=f"mode_{mode_5}_1st_stage_{label_ideal}")
             plt.plot(time_plot_ideal, residual_mode_5_curve_2nd_ideal_full, label=f"mode_{mode_5}_2nd_stage_{label_ideal}")
         else: plt.plot(time_plot_ideal, residual_mode_5_curve_1st_ideal_full, label=f"mode_{mode_5}_1st_stage_{label_ideal}")
-    plt.plot(time_plot_atm, atm_mode_5_curve, color="black", label=f"atm_mode_{mode_5}_curve")
-    plt.title(f"residual/atm timeseries mode_{mode_5}, gain {env.CL_gain_pyr}")
+    #plt.plot(time_plot_atm, atm_mode_5_curve, color="black", label=f"atm_mode_{mode_5}_curve")
+    plt.title(f"residual/atm timeseries mode_{mode_5}, gain {CL_gain_pyr}")
     plt.xlabel("time (s)")
     plt.grid(True, alpha=0.5)
     plt.minorticks_on()
@@ -679,16 +688,16 @@ if plot_tPSD:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(PSD_residual_mode_1_freq_t_1st_RL[np.where(PSD_residual_mode_1_freq_t_1st_RL <= 250)]
-                         , PSD_residual_mode_1_1st_RL[np.where(PSD_residual_mode_1_freq_t_1st_RL <= 250)], '--', label=f"PSD_mode_{mode_1}_1st_{label_RL}")
-            plt.plot(PSD_residual_mode_1_freq_t_2nd_RL, PSD_residual_mode_1_2nd_RL, label=f"PSD_mode_{mode_1}_2nd_{label_RL}")
-        else: plt.plot(PSD_residual_mode_1_freq_t_1st_RL, PSD_residual_mode_1_1st_RL, label=f"PSD_mode_{mode_1}_1st_{label_RL}")
+                         , PSD_residual_mode_1_1st_RL[np.where(PSD_residual_mode_1_freq_t_1st_RL <= 250)], '--', color="indianred", label=f"PSD_mode_{mode_1}_1st_{label_RL}")
+            plt.plot(PSD_residual_mode_1_freq_t_2nd_RL, PSD_residual_mode_1_2nd_RL, color="red", label=f"PSD_mode_{mode_1}_2nd_{label_RL}")
+        else: plt.plot(PSD_residual_mode_1_freq_t_1st_RL, PSD_residual_mode_1_1st_RL, color="indianred", label=f"PSD_mode_{mode_1}_1st_{label_RL}")
     if integrator:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(PSD_residual_mode_1_freq_t_1st_int[np.where(PSD_residual_mode_1_freq_t_1st_int <= 250)]
-                         , PSD_residual_mode_1_1st_int[np.where(PSD_residual_mode_1_freq_t_1st_int <= 250)], '--', label=f"PSD_mode_{mode_1}_1st_{label_int}")
-            plt.plot(PSD_residual_mode_1_freq_t_2nd_int, PSD_residual_mode_1_2nd_int, label=f"PSD_mode_{mode_1}_2nd_{label_int}")
-        else: plt.plot(PSD_residual_mode_1_freq_t_1st_int, PSD_residual_mode_1_1st_int, label=f"PSD_mode_{mode_1}_1st_{label_int}")
+                         , PSD_residual_mode_1_1st_int[np.where(PSD_residual_mode_1_freq_t_1st_int <= 250)], '--', color="cornflowerblue", label=f"PSD_mode_{mode_1}_1st_{label_int}")
+            plt.plot(PSD_residual_mode_1_freq_t_2nd_int, PSD_residual_mode_1_2nd_int, color="blue", label=f"PSD_mode_{mode_1}_2nd_{label_int}")
+        else: plt.plot(PSD_residual_mode_1_freq_t_1st_int, PSD_residual_mode_1_1st_int, color="cornflowerblue", label=f"PSD_mode_{mode_1}_1st_{label_int}")
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
@@ -699,7 +708,7 @@ if plot_tPSD:
 
 
     plt.plot(PSD_atm_mode_1_freq_t, PSD_atm_mode_1, color="black", label=f"atm_PSD_mode_{mode_1}")
-    plt.title(f"residual PSD mode_{mode_1}, gain {env.CL_gain_pyr}")
+    plt.title(f"residual PSD mode_{mode_1}, gain {CL_gain_pyr}")
     plt.xlabel("frequency (Hz)")
     plt.yscale("log")
     plt.xscale("log")
@@ -714,16 +723,16 @@ if plot_tPSD:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(PSD_residual_mode_2_freq_t_1st_RL[np.where(PSD_residual_mode_2_freq_t_1st_RL <= 250)]
-                         , PSD_residual_mode_2_1st_RL[np.where(PSD_residual_mode_2_freq_t_1st_RL <= 250)], '--', label=f"PSD_mode_{mode_2}_1st_{label_RL}")
-            plt.plot(PSD_residual_mode_2_freq_t_2nd_RL, PSD_residual_mode_2_2nd_RL, label=f"PSD_mode_{mode_2}_2nd_{label_RL}")
-        else: plt.plot(PSD_residual_mode_2_freq_t_1st_RL, PSD_residual_mode_2_1st_RL, label=f"PSD_mode_{mode_2}_1st_{label_RL}")
+                         , PSD_residual_mode_2_1st_RL[np.where(PSD_residual_mode_2_freq_t_1st_RL <= 250)], '--', color="indianred", label=f"PSD_mode_{mode_2}_1st_{label_RL}")
+            plt.plot(PSD_residual_mode_2_freq_t_2nd_RL, PSD_residual_mode_2_2nd_RL, color="red", label=f"PSD_mode_{mode_2}_2nd_{label_RL}")
+        else: plt.plot(PSD_residual_mode_2_freq_t_1st_RL, PSD_residual_mode_2_1st_RL, color="indianred", label=f"PSD_mode_{mode_2}_1st_{label_RL}")
     if integrator:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(PSD_residual_mode_2_freq_t_1st_int[np.where(PSD_residual_mode_2_freq_t_1st_int <= 250)]
-                         , PSD_residual_mode_2_1st_int[np.where(PSD_residual_mode_2_freq_t_1st_int <= 250)], '--', label=f"PSD_mode_{mode_2}_1st_{label_int}")
-            plt.plot(PSD_residual_mode_2_freq_t_2nd_int, PSD_residual_mode_2_2nd_int, label=f"PSD_mode_{mode_2}_2nd_{label_int}")
-        else: plt.plot(PSD_residual_mode_2_freq_t_1st_int, PSD_residual_mode_2_1st_int, label=f"PSD_mode_{mode_2}_1st_{label_int}")
+                         , PSD_residual_mode_2_1st_int[np.where(PSD_residual_mode_2_freq_t_1st_int <= 250)], '--', color="cornflowerblue", label=f"PSD_mode_{mode_2}_1st_{label_int}")
+            plt.plot(PSD_residual_mode_2_freq_t_2nd_int, PSD_residual_mode_2_2nd_int, color="blue", label=f"PSD_mode_{mode_2}_2nd_{label_int}")
+        else: plt.plot(PSD_residual_mode_2_freq_t_1st_int, PSD_residual_mode_2_1st_int, color="cornflowerblue", label=f"PSD_mode_{mode_2}_1st_{label_int}")
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
@@ -734,7 +743,7 @@ if plot_tPSD:
 
 
     plt.plot(PSD_atm_mode_2_freq_t, PSD_atm_mode_2, color="black", label=f"atm_PSD_mode_{mode_2}")
-    plt.title(f"residual PSD mode_{mode_2}, gain {env.CL_gain_pyr}")
+    plt.title(f"residual PSD mode_{mode_2}, gain {CL_gain_pyr}")
     plt.xlabel("frequency (Hz)")
     plt.yscale("log")
     plt.xscale("log")
@@ -749,16 +758,16 @@ if plot_tPSD:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(PSD_residual_mode_3_freq_t_1st_RL[np.where(PSD_residual_mode_3_freq_t_1st_RL <= 250)]
-                         , PSD_residual_mode_3_1st_RL[np.where(PSD_residual_mode_3_freq_t_1st_RL <= 250)], '--', label=f"PSD_mode_{mode_3}_1st_{label_RL}")
-            plt.plot(PSD_residual_mode_3_freq_t_2nd_RL, PSD_residual_mode_3_2nd_RL, label=f"PSD_mode_{mode_3}_2nd_{label_RL}")
-        else: plt.plot(PSD_residual_mode_3_freq_t_1st_RL, PSD_residual_mode_3_1st_RL, label=f"PSD_mode_{mode_3}_1st_{label_RL}")
+                         , PSD_residual_mode_3_1st_RL[np.where(PSD_residual_mode_3_freq_t_1st_RL <= 250)], '--', color="indianred", label=f"PSD_mode_{mode_3}_1st_{label_RL}")
+            plt.plot(PSD_residual_mode_3_freq_t_2nd_RL, PSD_residual_mode_3_2nd_RL, color="red", label=f"PSD_mode_{mode_3}_2nd_{label_RL}")
+        else: plt.plot(PSD_residual_mode_3_freq_t_1st_RL, PSD_residual_mode_3_1st_RL, color="indianred", label=f"PSD_mode_{mode_3}_1st_{label_RL}")
     if integrator:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(PSD_residual_mode_3_freq_t_1st_int[np.where(PSD_residual_mode_3_freq_t_1st_int <= 250)]
-                         , PSD_residual_mode_3_1st_int[np.where(PSD_residual_mode_3_freq_t_1st_int <= 250)], '--', label=f"PSD_mode_{mode_3}_1st_{label_int}")
-            plt.plot(PSD_residual_mode_3_freq_t_2nd_int, PSD_residual_mode_3_2nd_int, label=f"PSD_mode_{mode_3}_2nd_{label_int}")
-        else: plt.plot(PSD_residual_mode_3_freq_t_1st_int, PSD_residual_mode_3_1st_int, label=f"PSD_mode_{mode_3}_1st_{label_int}")
+                         , PSD_residual_mode_3_1st_int[np.where(PSD_residual_mode_3_freq_t_1st_int <= 250)], '--', color="cornflowerblue", label=f"PSD_mode_{mode_3}_1st_{label_int}")
+            plt.plot(PSD_residual_mode_3_freq_t_2nd_int, PSD_residual_mode_3_2nd_int, color="blue", label=f"PSD_mode_{mode_3}_2nd_{label_int}")
+        else: plt.plot(PSD_residual_mode_3_freq_t_1st_int, PSD_residual_mode_3_1st_int, color="cornflowerblue", label=f"PSD_mode_{mode_3}_1st_{label_int}")
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
@@ -769,7 +778,7 @@ if plot_tPSD:
 
 
     plt.plot(PSD_atm_mode_3_freq_t, PSD_atm_mode_3, color="black", label=f"atm_PSD_mode_{mode_3}")
-    plt.title(f"residual PSD mode_{mode_3}, gain {env.CL_gain_pyr}")
+    plt.title(f"residual PSD mode_{mode_3}, gain {CL_gain_pyr}")
     plt.xlabel("frequency (Hz)")
     plt.yscale("log")
     plt.xscale("log")
@@ -784,26 +793,26 @@ if plot_tPSD:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(PSD_residual_mode_4_freq_t_1st_RL[np.where(PSD_residual_mode_4_freq_t_1st_RL <= 250)]
-                         , PSD_residual_mode_4_1st_RL[np.where(PSD_residual_mode_4_freq_t_1st_RL <= 250)], '--', label=f"PSD_mode_{mode_4}_1st_{label_RL}")
-            plt.plot(PSD_residual_mode_4_freq_t_2nd_RL, PSD_residual_mode_4_2nd_RL, label=f"PSD_mode_{mode_4}_2nd_{label_RL}")
-        else: plt.plot(PSD_residual_mode_4_freq_t_1st_RL, PSD_residual_mode_4_1st_RL, label=f"PSD_mode_{mode_4}_1st_{label_RL}")
+                         , PSD_residual_mode_4_1st_RL[np.where(PSD_residual_mode_4_freq_t_1st_RL <= 250)], '--', color="indianred", label=f"PSD_mode_{mode_4}_1st_{label_RL}")
+            plt.plot(PSD_residual_mode_4_freq_t_2nd_RL, PSD_residual_mode_4_2nd_RL, color="red", label=f"PSD_mode_{mode_4}_2nd_{label_RL}")
+        else: plt.plot(PSD_residual_mode_4_freq_t_1st_RL, PSD_residual_mode_4_1st_RL, color="indianred", label=f"PSD_mode_{mode_4}_1st_{label_RL}")
     if integrator:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(PSD_residual_mode_4_freq_t_1st_int[np.where(PSD_residual_mode_4_freq_t_1st_int <= 250)]
-                         , PSD_residual_mode_4_1st_int[np.where(PSD_residual_mode_4_freq_t_1st_int <= 250)], '--', label=f"PSD_mode_{mode_4}_1st_{label_int}")
-            plt.plot(PSD_residual_mode_4_freq_t_2nd_int, PSD_residual_mode_4_2nd_int, label=f"PSD_mode_{mode_4}_2nd_{label_int}")
-        else: plt.plot(PSD_residual_mode_4_freq_t_1st_int, PSD_residual_mode_4_1st_int, label=f"PSD_mode_{mode_4}_1st_{label_int}")
+                         , PSD_residual_mode_4_1st_int[np.where(PSD_residual_mode_4_freq_t_1st_int <= 250)], '--', color="cornflowerblue", label=f"PSD_mode_{mode_4}_1st_{label_int}")
+            plt.plot(PSD_residual_mode_4_freq_t_2nd_int, PSD_residual_mode_4_2nd_int, color="blue", label=f"PSD_mode_{mode_4}_2nd_{label_int}")
+        else: plt.plot(PSD_residual_mode_4_freq_t_1st_int, PSD_residual_mode_4_1st_int, color="cornflowerblue", label=f"PSD_mode_{mode_4}_1st_{label_int}")
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(PSD_residual_mode_4_freq_t_1st_ideal[np.where(PSD_residual_mode_4_freq_t_1st_ideal <= 250)]
-                         , PSD_residual_mode_4_1st_ideal[np.where(PSD_residual_mode_4_freq_t_1st_ideal <= 250)], '--', label=f"PSD_mode_{mode_4}_1st_{label_ideal}")
+                         , PSD_residual_mode_4_1st_ideal[np.where(PSD_residual_mode_4_freq_t_1st_ideal <= 250)], '--', color="indianred", label=f"PSD_mode_{mode_4}_1st_{label_ideal}")
             plt.plot(PSD_residual_mode_4_freq_t_2nd_ideal, PSD_residual_mode_4_2nd_ideal, label=f"PSD_mode_{mode_4}_2nd_{label_ideal}")
-        else: plt.plot(PSD_residual_mode_4_freq_t_1st_ideal, PSD_residual_mode_4_1st_ideal, label=f"PSD_mode_{mode_4}_1st_{label_ideal}")
+        else: plt.plot(PSD_residual_mode_4_freq_t_1st_ideal, PSD_residual_mode_4_1st_ideal, color="indianred", label=f"PSD_mode_{mode_4}_1st_{label_ideal}")
 
     plt.plot(PSD_atm_mode_4_freq_t, PSD_atm_mode_4, color="black", label=f"atm_PSD_mode_{mode_4}")
-    plt.title(f"residual PSD mode_{mode_4}, gain {env.CL_gain_pyr}")
+    plt.title(f"residual PSD mode_{mode_4}, gain {CL_gain_pyr}")
     plt.xlabel("frequency (Hz)")
     plt.yscale("log")
     plt.xscale("log")
@@ -818,16 +827,16 @@ if plot_tPSD:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(PSD_residual_mode_5_freq_t_1st_RL[np.where(PSD_residual_mode_5_freq_t_1st_RL <= 250)]
-                         , PSD_residual_mode_5_1st_RL[np.where(PSD_residual_mode_5_freq_t_1st_RL <= 250)], '--', label=f"PSD_mode_{mode_5}_1st_{label_RL}")
-            plt.plot(PSD_residual_mode_5_freq_t_2nd_RL, PSD_residual_mode_5_2nd_RL, label=f"PSD_mode_{mode_5}_2nd_{label_RL}")
-        else: plt.plot(PSD_residual_mode_5_freq_t_1st_RL, PSD_residual_mode_5_1st_RL, label=f"PSD_mode_{mode_5}_1st_{label_RL}")
+                         , PSD_residual_mode_5_1st_RL[np.where(PSD_residual_mode_5_freq_t_1st_RL <= 250)], '--', color="indianred", label=f"PSD_mode_{mode_5}_1st_{label_RL}")
+            plt.plot(PSD_residual_mode_5_freq_t_2nd_RL, PSD_residual_mode_5_2nd_RL, color="red", label=f"PSD_mode_{mode_5}_2nd_{label_RL}")
+        else: plt.plot(PSD_residual_mode_5_freq_t_1st_RL, PSD_residual_mode_5_1st_RL, color="indianred", label=f"PSD_mode_{mode_5}_1st_{label_RL}")
     if integrator:
         if stage_2:
             if stage_1_plus_stage_2:
                 plt.plot(PSD_residual_mode_5_freq_t_1st_int[np.where(PSD_residual_mode_5_freq_t_1st_int <= 250)]
-                         , PSD_residual_mode_5_1st_int[np.where(PSD_residual_mode_5_freq_t_1st_int <= 250)], '--', label=f"PSD_mode_{mode_5}_1st_{label_int}")
-            plt.plot(PSD_residual_mode_5_freq_t_2nd_int, PSD_residual_mode_5_2nd_int, label=f"PSD_mode_{mode_5}_2nd_{label_int}")
-        else: plt.plot(PSD_residual_mode_5_freq_t_1st_int, PSD_residual_mode_5_1st_int, label=f"PSD_mode_{mode_5}_1st_{label_int}")
+                         , PSD_residual_mode_5_1st_int[np.where(PSD_residual_mode_5_freq_t_1st_int <= 250)], '--', color="cornflowerblue", label=f"PSD_mode_{mode_5}_1st_{label_int}")
+            plt.plot(PSD_residual_mode_5_freq_t_2nd_int, PSD_residual_mode_5_2nd_int, color="blue", label=f"PSD_mode_{mode_5}_2nd_{label_int}")
+        else: plt.plot(PSD_residual_mode_5_freq_t_1st_int, PSD_residual_mode_5_1st_int, color="cornflowerblue", label=f"PSD_mode_{mode_5}_1st_{label_int}")
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
@@ -837,7 +846,7 @@ if plot_tPSD:
         else: plt.plot(PSD_residual_mode_5_freq_t_1st_ideal, PSD_residual_mode_5_1st_ideal, label=f"PSD_mode_{mode_5}_1st_{label_ideal}")
 
     plt.plot(PSD_atm_mode_5_freq_t, PSD_atm_mode_5, color="black", label=f"atm_PSD_mode_{mode_5}")
-    plt.title(f"residual PSD mode_{mode_5}, gain {env.CL_gain_pyr}")
+    plt.title(f"residual PSD mode_{mode_5}, gain {CL_gain_pyr}")
     plt.xlabel("frequency (Hz)")
     plt.yscale("log")
     plt.xscale("log")
@@ -897,6 +906,23 @@ if plot_tPSD:
 
     #tip
     plt.figure()
+    if RL:
+        if stage_2:
+            if stage_1_plus_stage_2:
+                plt.plot(PSD_residual_mode_1_freq_t_1st_RL[np.where(PSD_residual_mode_1_freq_t_1st_RL <= 250)]
+                         , tETF_mode_1_1st_RL[np.where(PSD_residual_mode_1_freq_t_1st_RL <= 250)], '--', color="indianred", label=f"ETF mode_{mode_1}_1st_{label_RL}")
+            plt.plot(PSD_residual_mode_1_freq_t_2nd_RL, tETF_mode_1_2nd_RL, color="red", label=f"ETF mode_{mode_1}_2nd_{label_RL}")
+        else: plt.plot(PSD_residual_mode_1_freq_t_1st_RL, tETF_mode_1_1st_RL, color="indianred", label=f"ETF mode_{mode_1}_1st_{label_RL}")
+
+    if integrator:
+        if stage_2:
+            if stage_1_plus_stage_2:
+                plt.plot(PSD_residual_mode_1_freq_t_1st_int[np.where(PSD_residual_mode_1_freq_t_1st_int <= 250)]
+                         , tETF_mode_1_1st_int[np.where(PSD_residual_mode_1_freq_t_1st_int <= 250)], '--', color="cornflowerblue", label=f"ETF mode_{mode_1}_1st_{label_int}")
+            plt.plot(PSD_residual_mode_1_freq_t_2nd_int, tETF_mode_1_2nd_int, color="blue", label=f"ETF mode_{mode_1}_2nd_{label_int}")
+        else: plt.plot(PSD_residual_mode_1_freq_t_1st_int, tETF_mode_1_1st_int, color="cornflowerblue", label=f"ETF mode_{mode_1}_1st_{label_int}")
+
+
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
@@ -904,22 +930,6 @@ if plot_tPSD:
                          , tETF_mode_1_1st_ideal[np.where(PSD_residual_mode_1_freq_t_1st_ideal <= 250)], '--', label=f"ETF mode_{mode_1}_1st_{label_ideal}")
             plt.plot(PSD_residual_mode_1_freq_t_2nd_ideal, tETF_mode_1_2nd_ideal, label=f"ETF mode_{mode_1}_2nd_{label_ideal}")
         else: plt.plot(PSD_residual_mode_1_freq_t_1st_ideal, tETF_mode_1_1st_ideal, label=f"ETF mode_{mode_1}_1st_{label_ideal}")
-
-    if integrator:
-        if stage_2:
-            if stage_1_plus_stage_2:
-                plt.plot(PSD_residual_mode_1_freq_t_1st_int[np.where(PSD_residual_mode_1_freq_t_1st_int <= 250)]
-                         , tETF_mode_1_1st_int[np.where(PSD_residual_mode_1_freq_t_1st_int <= 250)], '--', label=f"ETF mode_{mode_1}_1st_{label_int}")
-            plt.plot(PSD_residual_mode_1_freq_t_2nd_int, tETF_mode_1_2nd_int, label=f"ETF mode_{mode_1}_2nd_{label_int}")
-        else: plt.plot(PSD_residual_mode_1_freq_t_1st_int, tETF_mode_1_1st_int, label=f"ETF mode_{mode_1}_1st_{label_int}")
-
-    if RL:
-        if stage_2:
-            if stage_1_plus_stage_2:
-                plt.plot(PSD_residual_mode_1_freq_t_1st_RL[np.where(PSD_residual_mode_1_freq_t_1st_RL <= 250)]
-                         , tETF_mode_1_1st_RL[np.where(PSD_residual_mode_1_freq_t_1st_RL <= 250)], '--', label=f"ETF mode_{mode_1}_1st_{label_RL}")
-            plt.plot(PSD_residual_mode_1_freq_t_2nd_RL, tETF_mode_1_2nd_RL, label=f"ETF mode_{mode_1}_2nd_{label_RL}")
-        else: plt.plot(PSD_residual_mode_1_freq_t_1st_RL, tETF_mode_1_1st_RL, label=f"ETF mode_{mode_1}_1st_{label_RL}")
     plt.title("temporal error transfer functions")
     plt.ylabel("ETF")
     plt.xlabel("frequency Hz")
@@ -933,6 +943,25 @@ if plot_tPSD:
 
     #tilt
     plt.figure()
+
+
+    if RL:
+        if stage_2:
+            if stage_1_plus_stage_2:
+                plt.plot(PSD_residual_mode_2_freq_t_1st_RL[np.where(PSD_residual_mode_2_freq_t_1st_RL <= 250)]
+                         , tETF_mode_2_1st_RL[np.where(PSD_residual_mode_2_freq_t_1st_RL <= 250)], '--', color="indianred", label=f"ETF mode_{mode_2}_1st_{label_RL}")
+            plt.plot(PSD_residual_mode_2_freq_t_2nd_RL, tETF_mode_2_2nd_RL, color="red", label=f"ETF mode_{mode_2}_2nd_{label_RL}")
+        else: plt.plot(PSD_residual_mode_2_freq_t_1st_RL, tETF_mode_2_1st_RL, color="indianred", label=f"ETF mode_{mode_2}_1st_{label_RL}")
+
+    if integrator:
+        if stage_2:
+            if stage_1_plus_stage_2:
+                plt.plot(PSD_residual_mode_2_freq_t_1st_int[np.where(PSD_residual_mode_2_freq_t_1st_int <= 250)]
+                         , tETF_mode_2_1st_int[np.where(PSD_residual_mode_2_freq_t_1st_int <= 250)], '--', color="cornflowerblue", label=f"ETF mode_{mode_2}_1st_{label_int}")
+            plt.plot(PSD_residual_mode_2_freq_t_2nd_int, tETF_mode_2_2nd_int, color="blue", label=f"ETF mode_{mode_2}_2nd_{label_int}")
+        else: plt.plot(PSD_residual_mode_2_freq_t_1st_int, tETF_mode_2_1st_int, color="cornflowerblue", label=f"ETF mode_{mode_2}_1st_{label_int}")
+
+
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
@@ -940,22 +969,6 @@ if plot_tPSD:
                          , tETF_mode_2_1st_ideal[np.where(PSD_residual_mode_2_freq_t_1st_ideal <= 250)], '--', label=f"ETF mode_{mode_2}_1st_{label_ideal}")
             plt.plot(PSD_residual_mode_2_freq_t_2nd_ideal, tETF_mode_2_2nd_ideal, label=f"ETF mode_{mode_2}_2nd_{label_ideal}")
         else: plt.plot(PSD_residual_mode_2_freq_t_1st_ideal, tETF_mode_2_1st_ideal, label=f"ETF mode_{mode_2}_1st_{label_ideal}")
-
-    if integrator:
-        if stage_2:
-            if stage_1_plus_stage_2:
-                plt.plot(PSD_residual_mode_2_freq_t_1st_int[np.where(PSD_residual_mode_2_freq_t_1st_int <= 250)]
-                         , tETF_mode_2_1st_int[np.where(PSD_residual_mode_2_freq_t_1st_int <= 250)], '--', label=f"ETF mode_{mode_2}_1st_{label_int}")
-            plt.plot(PSD_residual_mode_2_freq_t_2nd_int, tETF_mode_2_2nd_int, label=f"ETF mode_{mode_2}_2nd_{label_int}")
-        else: plt.plot(PSD_residual_mode_2_freq_t_1st_int, tETF_mode_2_1st_int, label=f"ETF mode_{mode_2}_1st_{label_int}")
-
-    if RL:
-        if stage_2:
-            if stage_1_plus_stage_2:
-                plt.plot(PSD_residual_mode_2_freq_t_1st_RL[np.where(PSD_residual_mode_2_freq_t_1st_RL <= 250)]
-                         , tETF_mode_2_1st_RL[np.where(PSD_residual_mode_2_freq_t_1st_RL <= 250)], '--', label=f"ETF mode_{mode_2}_1st_{label_RL}")
-            plt.plot(PSD_residual_mode_2_freq_t_2nd_RL, tETF_mode_2_2nd_RL, label=f"ETF mode_{mode_2}_2nd_{label_RL}")
-        else: plt.plot(PSD_residual_mode_2_freq_t_1st_RL, tETF_mode_2_1st_RL, label=f"ETF mode_{mode_2}_1st_{label_RL}")
     plt.title("temporal error transfer functions")
     plt.ylabel("ETF")
     plt.xlabel("frequency Hz")
@@ -968,6 +981,25 @@ if plot_tPSD:
 
     #100
     plt.figure()
+
+    if RL:
+        if stage_2:
+            if stage_1_plus_stage_2:
+                plt.plot(PSD_residual_mode_3_freq_t_1st_RL[np.where(PSD_residual_mode_3_freq_t_1st_RL <= 250)]
+                         , tETF_mode_3_1st_RL[np.where(PSD_residual_mode_3_freq_t_1st_RL <= 250)], '--', color="indianred", label=f"ETF mode_{mode_3}_1st_{label_RL}")
+            plt.plot(PSD_residual_mode_3_freq_t_2nd_RL, tETF_mode_3_2nd_RL, color="red", label=f"ETF mode_{mode_3}_2nd_{label_RL}")
+        else: plt.plot(PSD_residual_mode_3_freq_t_1st_RL, tETF_mode_3_1st_RL, color="indianred", label=f"ETF mode_{mode_3}_1st_{label_RL}")
+
+
+    if integrator:
+        if stage_2:
+            if stage_1_plus_stage_2:
+                plt.plot(PSD_residual_mode_3_freq_t_1st_int[np.where(PSD_residual_mode_3_freq_t_1st_int <= 250)]
+                         , tETF_mode_3_1st_int[np.where(PSD_residual_mode_3_freq_t_1st_int <= 250)], '--', color="cornflowerblue", label=f"ETF mode_{mode_3}_1st_{label_int}")
+            plt.plot(PSD_residual_mode_3_freq_t_2nd_int, tETF_mode_3_2nd_int, color="blue", label=f"ETF mode_{mode_3}_2nd_{label_int}")
+        else: plt.plot(PSD_residual_mode_3_freq_t_1st_int, tETF_mode_3_1st_int, color="cornflowerblue", label=f"ETF mode_{mode_3}_1st_{label_int}")
+
+
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
@@ -976,21 +1008,6 @@ if plot_tPSD:
             plt.plot(PSD_residual_mode_3_freq_t_2nd_ideal, tETF_mode_3_2nd_ideal, label=f"ETF mode_{mode_3}_2nd_{label_ideal}")
         else: plt.plot(PSD_residual_mode_3_freq_t_1st_ideal, tETF_mode_3_1st_ideal, label=f"ETF mode_{mode_3}_1st_{label_ideal}")
 
-    if integrator:
-        if stage_2:
-            if stage_1_plus_stage_2:
-                plt.plot(PSD_residual_mode_3_freq_t_1st_int[np.where(PSD_residual_mode_3_freq_t_1st_int <= 250)]
-                         , tETF_mode_3_1st_int[np.where(PSD_residual_mode_3_freq_t_1st_int <= 250)], '--', label=f"ETF mode_{mode_3}_1st_{label_int}")
-            plt.plot(PSD_residual_mode_3_freq_t_2nd_int, tETF_mode_3_2nd_int, label=f"ETF mode_{mode_3}_2nd_{label_int}")
-        else: plt.plot(PSD_residual_mode_3_freq_t_1st_int, tETF_mode_3_1st_int, label=f"ETF mode_{mode_3}_1st_{label_int}")
-
-    if RL:
-        if stage_2:
-            if stage_1_plus_stage_2:
-                plt.plot(PSD_residual_mode_3_freq_t_1st_RL[np.where(PSD_residual_mode_3_freq_t_1st_RL <= 250)]
-                         , tETF_mode_3_1st_RL[np.where(PSD_residual_mode_3_freq_t_1st_RL <= 250)], '--', label=f"ETF mode_{mode_3}_1st_{label_RL}")
-            plt.plot(PSD_residual_mode_3_freq_t_2nd_RL, tETF_mode_3_2nd_RL, label=f"ETF mode_{mode_3}_2nd_{label_RL}")
-        else: plt.plot(PSD_residual_mode_3_freq_t_1st_RL, tETF_mode_3_1st_RL, label=f"ETF mode_{mode_3}_1st_{label_RL}")
     plt.title("temporal error transfer functions")
     plt.ylabel("ETF")
     plt.xlabel("frequency Hz")
@@ -1003,6 +1020,23 @@ if plot_tPSD:
 
     #200
     plt.figure()
+
+    if RL:
+        if stage_2:
+            if stage_1_plus_stage_2:
+                plt.plot(PSD_residual_mode_4_freq_t_1st_RL[np.where(PSD_residual_mode_4_freq_t_1st_RL <= 250)]
+                         , tETF_mode_4_1st_RL[np.where(PSD_residual_mode_4_freq_t_1st_RL <= 250)], '--', color="indianred", label=f"ETF mode_{mode_4}_1st_{label_RL}")
+            plt.plot(PSD_residual_mode_4_freq_t_2nd_RL, tETF_mode_4_2nd_RL, color="red", label=f"ETF mode_{mode_4}_2nd_{label_RL}")
+        else: plt.plot(PSD_residual_mode_4_freq_t_1st_RL, tETF_mode_4_1st_RL, color="indianred", label=f"ETF mode_{mode_4}_1st_{label_RL}")
+
+    if integrator:
+        if stage_2:
+            if stage_1_plus_stage_2:
+                plt.plot(PSD_residual_mode_4_freq_t_1st_int[np.where(PSD_residual_mode_4_freq_t_1st_int <= 250)]
+                         , tETF_mode_4_1st_int[np.where(PSD_residual_mode_4_freq_t_1st_int <= 250)], '--', color="cornflowerblue", label=f"ETF mode_{mode_4}_1st_{label_int}")
+            plt.plot(PSD_residual_mode_4_freq_t_2nd_int, tETF_mode_4_2nd_int, color="blue", label=f"ETF mode_{mode_4}_2nd_{label_int}")
+        else: plt.plot(PSD_residual_mode_4_freq_t_1st_int, tETF_mode_4_1st_int, color="cornflowerblue", label=f"ETF mode_{mode_4}_1st_{label_int}")
+
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
@@ -1011,21 +1045,6 @@ if plot_tPSD:
             plt.plot(PSD_residual_mode_4_freq_t_2nd_ideal, tETF_mode_4_2nd_ideal, label=f"ETF mode_{mode_4}_2nd_{label_ideal}")
         else: plt.plot(PSD_residual_mode_4_freq_t_1st_ideal, tETF_mode_4_1st_ideal, label=f"ETF mode_{mode_4}_1st_{label_ideal}")
 
-    if integrator:
-        if stage_2:
-            if stage_1_plus_stage_2:
-                plt.plot(PSD_residual_mode_4_freq_t_1st_int[np.where(PSD_residual_mode_4_freq_t_1st_int <= 250)]
-                         , tETF_mode_4_1st_int[np.where(PSD_residual_mode_4_freq_t_1st_int <= 250)], '--', label=f"ETF mode_{mode_4}_1st_{label_int}")
-            plt.plot(PSD_residual_mode_4_freq_t_2nd_int, tETF_mode_4_2nd_int, label=f"ETF mode_{mode_4}_2nd_{label_int}")
-        else: plt.plot(PSD_residual_mode_4_freq_t_1st_int, tETF_mode_4_1st_int, label=f"ETF mode_{mode_4}_1st_{label_int}")
-
-    if RL:
-        if stage_2:
-            if stage_1_plus_stage_2:
-                plt.plot(PSD_residual_mode_4_freq_t_1st_RL[np.where(PSD_residual_mode_4_freq_t_1st_RL <= 250)]
-                         , tETF_mode_4_1st_RL[np.where(PSD_residual_mode_4_freq_t_1st_RL <= 250)], '--', label=f"ETF mode_{mode_4}_1st_{label_RL}")
-            plt.plot(PSD_residual_mode_4_freq_t_2nd_RL, tETF_mode_4_2nd_RL, label=f"ETF mode_{mode_4}_2nd_{label_RL}")
-        else: plt.plot(PSD_residual_mode_4_freq_t_1st_RL, tETF_mode_4_1st_RL, label=f"ETF mode_{mode_4}_1st_{label_RL}")
     plt.title("temporal error transfer functions")
     plt.ylabel("ETF")
     plt.xlabel("frequency Hz")
@@ -1039,6 +1058,24 @@ if plot_tPSD:
 
     #5
     plt.figure()
+
+
+    if RL:
+        if stage_2:
+            if stage_1_plus_stage_2:
+                plt.plot(PSD_residual_mode_5_freq_t_1st_RL[np.where(PSD_residual_mode_5_freq_t_1st_RL <= 250)]
+                         , tETF_mode_5_1st_RL[np.where(PSD_residual_mode_5_freq_t_1st_RL <= 250)], '--', color="indianred", label=f"ETF mode_{mode_5}_1st_{label_RL}")
+            plt.plot(PSD_residual_mode_5_freq_t_2nd_RL, tETF_mode_5_2nd_RL, color="red", label=f"ETF mode_{mode_5}_2nd_{label_RL}")
+        else: plt.plot(PSD_residual_mode_5_freq_t_1st_RL, tETF_mode_5_1st_RL, color="indianred", label=f"ETF mode_{mode_5}_1st_{label_RL}")
+
+    if integrator:
+        if stage_2:
+            if stage_1_plus_stage_2:
+                plt.plot(PSD_residual_mode_5_freq_t_1st_int[np.where(PSD_residual_mode_5_freq_t_1st_int <= 250)]
+                         , tETF_mode_5_1st_int[np.where(PSD_residual_mode_5_freq_t_1st_int <= 250)], '--', color="cornflowerblue", label=f"ETF mode_{mode_5}_1st_{label_int}")
+            plt.plot(PSD_residual_mode_5_freq_t_2nd_int, tETF_mode_5_2nd_int, color="blue", label=f"ETF mode_{mode_5}_2nd_{label_int}")
+        else: plt.plot(PSD_residual_mode_5_freq_t_1st_int, tETF_mode_5_1st_int, color="cornflowerblue", label=f"ETF mode_{mode_5}_1st_{label_int}")
+
     if ideal:
         if stage_2:
             if stage_1_plus_stage_2:
@@ -1047,21 +1084,7 @@ if plot_tPSD:
             plt.plot(PSD_residual_mode_5_freq_t_2nd_ideal, tETF_mode_5_2nd_ideal, label=f"ETF mode_{mode_5}_2nd_{label_ideal}")
         else: plt.plot(PSD_residual_mode_5_freq_t_1st_ideal, tETF_mode_5_1st_ideal, label=f"ETF mode_{mode_5}_1st_{label_ideal}")
 
-    if integrator:
-        if stage_2:
-            if stage_1_plus_stage_2:
-                plt.plot(PSD_residual_mode_5_freq_t_1st_int[np.where(PSD_residual_mode_5_freq_t_1st_int <= 250)]
-                         , tETF_mode_5_1st_int[np.where(PSD_residual_mode_5_freq_t_1st_int <= 250)], '--', label=f"ETF mode_{mode_5}_1st_{label_int}")
-            plt.plot(PSD_residual_mode_5_freq_t_2nd_int, tETF_mode_5_2nd_int, label=f"ETF mode_{mode_5}_2nd_{label_int}")
-        else: plt.plot(PSD_residual_mode_5_freq_t_1st_int, tETF_mode_5_1st_int, label=f"ETF mode_{mode_5}_1st_{label_int}")
 
-    if RL:
-        if stage_2:
-            if stage_1_plus_stage_2:
-                plt.plot(PSD_residual_mode_5_freq_t_1st_RL[np.where(PSD_residual_mode_5_freq_t_1st_RL <= 250)]
-                         , tETF_mode_5_1st_RL[np.where(PSD_residual_mode_5_freq_t_1st_RL <= 250)], '--', label=f"ETF mode_{mode_5}_1st_{label_RL}")
-            plt.plot(PSD_residual_mode_5_freq_t_2nd_RL, tETF_mode_5_2nd_RL, label=f"ETF mode_{mode_5}_2nd_{label_RL}")
-        else: plt.plot(PSD_residual_mode_5_freq_t_1st_RL, tETF_mode_5_1st_RL, label=f"ETF mode_{mode_5}_1st_{label_RL}")
     plt.title("temporal error transfer functions")
     plt.ylabel("ETF")
     plt.xlabel("frequency Hz")

@@ -3,6 +3,7 @@
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
+      <excludeFolder url="file://$MODULE_DIR$/.venv312" />
     </content>
     <orderEntry type="jdk" jdkName="Python 3.8 (LAM_OOPAO)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
@@ -10,5 +11,8 @@
   <component name="PyDocumentationSettings">
     <option name="format" value="NUMPY" />
     <option name="myDocStringFormat" value="NumPy" />
+  </component>
+  <component name="TestRunnerService">
+    <option name="PROJECT_TEST_RUNNER" value="py.test" />
   </component>
 </module>

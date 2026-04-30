@@ -16,7 +16,8 @@ you need to formalise the loss calculations because for now this is a bit arbitr
 
 from scipy import signal
 import torch
-from po4ao_edw.OOPAO_environment_ZWFS_perfect import OOPAO_environment_ZWFS_perfect
+from po4ao_edw.OOPAO_environment_PWFS import OOPAO_environment_PWFS
+from po4ao_edw.OOPAO_environment_ZWFS import OOPAO_environment_ZWFS
 from torch import optim
 import numpy as np
 import time
@@ -30,11 +31,11 @@ from po4ao_PAPYRUS.po4ao_config_PAPYRUS import config
 from po4ao_PAPYRUS.po4ao_models_PAPYRUS_upd import EnsembleDynamicsFast, ConvPolicyFastFast
 from po4ao_PAPYRUS.po4ao_util_PAPYRUS import EfficientExperienceReplay, SharedAdam
 
+env = OOPAO_environment_ZWFS()
 
 
-
-sample_shape = 88 #pass it as variable
-sample_shape_pyr = 357 #pass it as variable
+sample_shape = env.DM_zer.nValidAct
+sample_shape_pyr = env.DM_pyr.nValidAct
 
 OOPAO_scaling_up   = 1e7
 OOPAO_scaling_down = 1e-7
@@ -43,20 +44,19 @@ OOPAO_scaling_down = 1e-7
 filters_per_layer = 32
 n_filt = filters_per_layer
 
-iters                = 40
+iters                = 4
 episode_length       = 750
 initial_sigma        = 0.3
 min_sigma            = 0
 warmup_episodes      = 20
 loss_penalty         = 0.1
 
-train_iter_warmup_dyn= 8000 #400
-train_iter_warmup_pol= 400 #400
+train_iter_warmup    = 400 #40
 train_iter_parallel  = 40 #40
 
 n_history            = 30 #30
 planning_horizon     = 4
-data_shape           = 10   #pass it as variable
+data_shape           = env.data_shape
 control_delay        = 1
 
 gain                 = 0.4
@@ -306,7 +306,7 @@ def training_thread(start_q, dynamics_q, dynamics_optimizer_q, replay_q, replay_
 
 
 @torch.no_grad()
-def run_episode_policy(past_obs, past_act, obs, replay, policy, sigma, episode_length, environment):
+def run_episode_policy(past_obs, past_act, obs, replay, policy, sigma, episode_length):
     """
     runs an episode on policy
 
@@ -342,7 +342,7 @@ def run_episode_policy(past_obs, past_act, obs, replay, policy, sigma, episode_l
 
 
         #dm[:] = (prev_commands * leak) + (action)
-        next_obs, INFO = environment.step(action.squeeze(), pyramid_noise=0) #pass it as variable
+        next_obs, INFO = env.step(action.squeeze(), pyramid_noise=0)
         INFO_list.append(INFO)
 
         if t % 50 == 0:
@@ -366,7 +366,7 @@ def run_episode_policy(past_obs, past_act, obs, replay, policy, sigma, episode_l
 
 
 
-def run_episode_warmup(replay, replay_warmup, sigma, episode_length, filter, filter_pyr, xvalid, yvalid, environment):
+def run_episode_warmup(replay, replay_warmup, sigma, episode_length, filter, filter_pyr, xvalid, yvalid):
     """
     runs an episode on integrator with added noise in control signals. Starts always with a flat mirror
     dynamics model is not trained
@@ -384,7 +384,7 @@ def run_episode_warmup(replay, replay_warmup, sigma, episode_length, filter, fil
     """
 
     reward_sum = 0
-    obs = environment.flatten_dm() #pass it as variable
+    obs = env.flatten_dm()
 
 
 
@@ -406,7 +406,7 @@ def run_episode_warmup(replay, replay_warmup, sigma, episode_length, filter, fil
 
         #dm[:] = (prev_commands * leak) + (action)
         #shape(10, 10)
-        next_obs, INFO = environment.step(action.squeeze(), pyramid_noise=noisy_pyr) #pass it as variable
+        next_obs, INFO = env.step(action.squeeze(), pyramid_noise=noisy_pyr)
         strehl_1 = INFO["strehl_1st"]
         strehl_2 = INFO["strehl"]
         tracker  = INFO["tracker"]
@@ -439,14 +439,10 @@ def loss_fn(state,action):
 
 
 def main():
-    env = OOPAO_environment_ZWFS_perfect()
-    # pass it as variable
-
-
     #retraining on single seed with less noise equivalent to single stage system and seeing what we get
     #note that for a single stage the warm up almost always converges
-    directory_name = 'vZWFS_1st_2nd_noise_03_phnoise1_read_4_4_QE08_mag2_epis20_iters40_perfectvZWFS_4' #trained from scratch with fresh warm up data
-    directory_name_load_buffer = 'vZWFS_1st_2nd_noise_03_phnoise1_read_4_4_QE08_mag2_epis20_perfectvZWFS'
+    directory_name = 'test' #vZWFS_1st_2nd_noise_03_phnoise1_read_4_4_QE08_mag2_epis20_eplen1500_noonline
+    directory_name_load_buffer = 'vZWFS_1st_2nd_noise_03_phnoise1_read_4_4_QE08_mag2_epis20_warmupperc05'
 
     save_buffer = False
     load_buffer = True
@@ -479,7 +475,7 @@ def main():
     finished_q = ctx.Queue()
     start_q.put(False)
 
-    M2C = np.eye(88)
+    M2C = env.M2C_
     KL_projection = M2C @ np.linalg.pinv(M2C)
     KL_projection = torch.from_numpy(np.asarray(KL_projection)).float()
 
@@ -532,7 +528,7 @@ def main():
             obs, _ = env.reset(seed=np.random.randint(0, 256))
             start = time.time()
             #-----------------------------------sample generation-----------------------------------#
-            reward_sum, past_obs, past_act, obs, strehl_warmup = run_episode_warmup(replay, replay_warmup, sigma, episode_length, KL_projection.to(device0), KL_projection_pyr, xvalid0, yvalid0, env)
+            reward_sum, past_obs, past_act, obs, strehl_warmup = run_episode_warmup(replay, replay_warmup, sigma, episode_length, KL_projection.to(device0), KL_projection_pyr, xvalid0, yvalid0)
 
             rewards[i] = reward_sum
 
@@ -598,7 +594,7 @@ def main():
 
         # -----------------------------------dynamics train-----------------------------------#
         dyn_loss, dynamics_loss = train_dynamics(dynamics, dynamics_optimizer1, replay_warmup, replay_warmup,
-                                  dyn_iters=train_iter_warmup_dyn)
+                                  dyn_iters=train_iter_warmup)
         #todo check synchronisation
         """try:
             torch.cuda.synchronize(device=device1)
@@ -607,7 +603,7 @@ def main():
 
         # -----------------------------------policy train-----------------------------------#
         pol_loss, policy_loss = train_policy(policy_optimizer1, policy, dynamics, replay_warmup, replay_warmup,
-                                pol_iters=train_iter_warmup_pol)
+                                pol_iters=train_iter_warmup)
         """try:
             torch.cuda.synchronize(device=device1)
         except RuntimeError:
@@ -633,7 +629,6 @@ def main():
         plt.grid(True)
         plt.plot(policy_loss)
         plt.yscale('log')
-        plt.show()
 
 
 
@@ -672,7 +667,7 @@ def main():
         start = time.time()
 
         reward_sum, past_obs, past_act, obs, INFO_list = run_episode_policy(past_obs, past_act, obs, replay, policy_copy, sigma,
-                                                                                episode_length, env)
+                                                                                episode_length)
 
         rewards[i + warmup_episodes] = reward_sum
         INFO_list_final.extend(INFO_list)

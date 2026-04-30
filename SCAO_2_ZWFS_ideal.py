@@ -188,7 +188,7 @@ SRC ** ATM * TEL * DM_pyr * DM_zer
 TEL.print_optical_path()
 
 #variables and performance metric initialisation
-nLoop                        = 3000
+nLoop                        = 12000
 sr                           = np.zeros(nLoop)
 sr_1st                       = []
 sr_running                   = np.zeros(nLoop)

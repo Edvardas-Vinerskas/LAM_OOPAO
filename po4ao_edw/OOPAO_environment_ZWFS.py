@@ -23,7 +23,7 @@ class OOPAO_environment_ZWFS(gym.Env):
         self.device = "cpu" #torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         self.N_SUBAPERTURE_pyr = 20
-        self.N_SUBAPERTURE_zer = 9
+        self.N_SUBAPERTURE_zer = 10
         self.DIAMETER = 1.5
         self.RESOLUTION = self.N_SUBAPERTURE_pyr * 8
         self.FREQUENCY = 1500
@@ -43,7 +43,7 @@ class OOPAO_environment_ZWFS(gym.Env):
         self.CENTRAL_OBSTRUCTION = 0
         self.MECH_COUPLING = 0.35
         self.KL_coefs_pyr = 250
-        self.KL_coefs_zer = 81
+        self.KL_coefs_zer = 50
         self.zeroPaddingFactor = 6
         self.seed = 10
 

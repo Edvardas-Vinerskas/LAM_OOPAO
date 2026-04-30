@@ -6,6 +6,9 @@ Created on Fri Jun 21 11:33:27 2024
 """
 #TODO the camera resolutino is 40 for now
 import warnings
+import matplotlib.pyplot as plt #TODO delete
+import matplotlib
+matplotlib.use('TkAgg')
 
 import numpy as np
 
@@ -78,7 +81,7 @@ class ZWFS:
             self.propagation_method = propagation_method
 
         nSubap = 20
-        #TODO redo the mask so it would be adaptive like in pyramid wfs
+        #TODO introduced the camera mask                                                                                                    
         y, x = np.ogrid[-(nSubap/2 - 0.5):(nSubap/2 + 0.5), -(nSubap/2 - 0.5):(nSubap/2 + 0.5)]
         self.cam_mask = x ** 2 + y ** 2 <= (nSubap/2 + 0.5) ** 2
         self.binning = 1
@@ -133,8 +136,8 @@ class ZWFS:
         self._img_ZWFS = 0
         self._signal = 0
 
+        #TODO camera introduction
         # WFS detector object (see Detector class)
-        # maybe should use self.resolution or zpf = 30 (at least for MTF?)
         self.cam = Detector(round(nSubap))
         self.cam.photonNoise = True
         self.cam.readoutNoise = 4 #0.2 is max more or less so we test around this value (in fact depends on the noise in the pyramid
@@ -172,7 +175,7 @@ class ZWFS:
             Na = self.telescope.resolution
             Nb = self.resolution
             m = self.diameter
-            EM = self.Amplitude * np.exp(1j*phase)
+            EM = self.Amplitude * np.exp(1j*phase) #TODO introduced amplitude
             if epsilon is None: 
                 epsilon = self.epsilon
             if computing_Ib:
@@ -213,10 +216,11 @@ class ZWFS:
             reconstructor_iteration = 1
         if phase_in is not None:
             self.telescope.src.phase = phase_in
+        #TODO introduced amplitude from the src
         self.Amplitude = np.sqrt(self.telescope.src.fluxMap) * self.telescope.pupilReflectivity
 
         self.EM_detect, self.img_ZWFS = self.propagation()
-        self.signal_2D_cam, self.signal_cam = self.wfs_integrate() #TODO later maybe write properties and setters
+        self.signal_2D_cam, self.signal_cam = self.wfs_integrate() #TODO introduced signal with noise
         if known_EM:
             Psi_b,self.Ib = self.propagation(mask = self.amplitude_mask, computing_Ib=True)
             self.beta = np.angle(Psi_b)
@@ -290,7 +294,7 @@ class ZWFS:
             logger.warning("Reconstruction failed: %s", e, exc_info=True)
             return None
 
-    #TODO I still do not fully understand how the normalisation should be done
+    #TODO changed the normalisation a bit but it doesn't matter
     def _MFT(self, Na:int, Nb:int, m, EMF_pupil, mask = 1):
         Nb = np.int64(Nb)
         Na = np.int64(Na)
@@ -338,7 +342,7 @@ class ZWFS:
         self._img_ref[self.pupil_mask] = val
         self._ref_signal = val
 
-
+    #TODO introduced relay similar to pyramid
     def relay(self, src):
         if src.tag == 'source':
             src_list = [src]
@@ -354,7 +358,7 @@ class ZWFS:
             self.wfs_measure(phase_in=self.src.phase)
             signal_2D_cam_list.append(self.signal_2D_cam)
             signal_cam_list.append(self.signal_cam)
-            frames_list.append(self.cam.frame)
+            frames_list.append(self.cam.frame) #this is kind of useless since signal_2D_cam is self.cam.frame
 
         self.signal_2D_cam = np.squeeze(np.array(signal_2D_cam_list))
         self.signal_cam = np.squeeze(np.array(signal_cam_list))
@@ -363,16 +367,17 @@ class ZWFS:
         return
 
 
-
+    #TODO introduced wfs_integrate to output signal with camera noise
     def wfs_integrate(self):
         # propagate to the detector to apply the noise
         self*self.cam
         signal_2D_cam = self.cam.frame.copy() #this is our binned and noise applied signal
+        #self.cam_mask = (signal_2D_cam >= 0.05 * signal_2D_cam.max())  #TODO which mask is better?
         signal_cam = signal_2D_cam[self.cam_mask]
         return signal_2D_cam, signal_cam
 
 
-        
+    #TODO updated the multiplication operation
     def __mul__(self,obj): 
         if obj.tag == 'detector':
             obj._integrated_time += self.telescope.samplingTime

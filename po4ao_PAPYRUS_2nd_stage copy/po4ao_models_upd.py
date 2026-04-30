@@ -7,7 +7,7 @@ import time
 # import matplotlib.pyplot as plt
 from po4ao_PAPYRUS.po4ao_config_PAPYRUS import config
 
-n_filt = config['NN_models']['filters_per_layer']
+n_filt = config['NN_models']['filters_per_layer'] #32
 
 
 class ConvDynamics(nn.Module):
@@ -81,7 +81,7 @@ class ConvDynamicsFast(nn.Module):
         ret = torch.zeros_like(out)
         ret[:, :, self.mask] = out[:, :, self.mask]
 
-        return out
+        return ret
 
 
 class ConvPolicyFast(nn.Module):
