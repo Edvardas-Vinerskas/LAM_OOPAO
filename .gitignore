@@ -151,3 +151,8 @@ OOPAO/M4_model/*.fits
 
 # numpy files
 *.npy
+/bench_sky_04_09/
+/bench_sky_04_14/
+/bench_sky_04_15/
+/bench_sky_04_15/
+/ignore_folder/
