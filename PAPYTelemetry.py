@@ -22,6 +22,7 @@ import os
 import sys
 global HERE
 HERE = os.path.dirname(os.path.abspath(__file__))
+from OOPAO.Zernike import Zernike
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
@@ -244,17 +245,20 @@ class PAPYtele:
                 f"Fichier d'influence functions introuvable : {if_path}"
             )
 
-        IF = np.load(if_path)
-        if IF[0,...].shape != self.tel.pupil.shape:
-            IF = self._rescale_matrix(IF, self.tel.pupil.shape[0], self.tel.pupil.shape[1])
-        # self.IF_ozi = np.load(HERE+'\IF_dm2.npy').reshape(97,-1).T*1e-6
-        self.IF_ozi = IF.reshape(97, -1).T.astype(np.float32) 
+        # IF = np.load(if_path)
+        # if IF[0,...].shape != self.tel.pupil.shape:
+        #     IF = self._rescale_matrix(IF, self.tel.pupil.shape[0], self.tel.pupil.shape[1])
+        # # self.IF_ozi = np.load(HERE+'\IF_dm2.npy').reshape(97,-1).T*1e-6
+        # self.IF_ozi = IF.reshape(97, -1).T.astype(np.float32) 
 
-        self.IF_ozi_std = self.IF_ozi.std(axis = 0)
+        # self.IF_ozi_std = self.IF_ozi[(self.tel.pupil==1).ravel(),:].std(axis = 0)
         # amplitude_mean = -np.ptp(self.IF_ozi_std,axis =0)
-
-        # self.dm_ozi.modes*=amplitude_mean/np.ptp(self.dm_ozi.modes)
-        self.dm_ozi.modes = self.IF_ozi.copy() 
+        self.IF_ozi =np.load('C:/Users/mmotte/OZITelemetry/ozitelemetry/IF_dm2.npy')*1e-6
+       
+        print(self.IF_ozi.shape)
+        amplitude_mean = np.ptp(self.IF_ozi,axis =0)
+        self.dm_ozi.modes*=amplitude_mean/np.ptp(self.dm_ozi.modes)
+        #self.dm_ozi.modes = self.IF_ozi.copy() 
     def _rescale_matrix(self,A, j,k, anti_aliasing = True):
         """
         Resample a 2D, 3D, or 4D array to a target spatial shape.
@@ -284,27 +288,64 @@ class PAPYtele:
         elif A.ndim == 2:
             m, n = A.shape
             return resize(A, (j, k), order=5, anti_aliasing=anti_aliasing)
-    def _compute_proj_dm(self, modal_basis, tel, dm):
+    def _compute_proj_dm(self, modal_basis, tel, dm, return_modes = False):
         dm.coefs = modal_basis
         tel*dm
         modes= tel.OPD.copy()
         modes = modes.reshape((tel.resolution**2, modes.shape[-1]))/tel.OPD[tel.pupil, :].std(axis=0)  # Flatten for projection
         cov_modes = modes.T @ modes  # Compute mode covariance
-        return np.diag(1 / np.diag(cov_modes)) @ modes.T  # Pseudo-inverse projection matrix
+        if return_modes:
+            return np.diag(1 / np.diag(cov_modes)) @ modes.T, modes  # Pseudo-inverse projection matrix
+        else:
+            return np.diag(1 / np.diag(cov_modes)) @ modes.T  # Pseudo-inverse projection matrix
+    def _compute_proj_OPDs(self, modes, tel):
+        
 
-    def project_on_OZIRIIS(self, modes):
-        proj = self._compute_proj_dm(modes, self.tel, self.dm_ozi)
+        modes = modes.reshape((tel.resolution**2, modes.shape[-1]))/modes[tel.pupil, :].std(axis=0)  # Flatten for projection
+        cov_modes = modes.T @ modes  # Compute mode covariance
+        return np.diag(1 / np.diag(cov_modes)) @ modes.T  # Pseudo-inverse projection matrix
+    def compute_Zernike_basis(self, nmodes = 30):
+        Zer_basis = Zernike(self.tel, J= nmodes)
+        Zer_basis.computeZernike(self.tel)
+        self.Zer_modes = Zer_basis.modesFullRes.copy()
+        self.proj_Zer = self._compute_proj_OPDs(self.Zer_modes, self.tel)
+    def OPDs_map_from_cmd(self):
+        OPD_map = self.IF@(self.M2C@self.rec_cmd.T)
+        return OPD_map.T.reshape(-1, self.tel.pupil.shape[0], self.tel.pupil.shape[0])
+    def project_on_OZIRIIS(self, modes, proj = None):
+        if proj is None:
+            proj, modes = self._compute_proj_dm(modes, self.tel, self.dm_ozi, return_modes = True)
         rec_modes = np.zeros((self.rec_cmd.shape[0], modes.shape[-1]))
         for i in tqdm.tqdm(range(self.rec_cmd.shape[0])):
             opds = self.IF@(self.M2C@self.rec_cmd[i])
             rec_modes[i] = proj@opds
         
-        return rec_modes
+        return rec_modes, modes, proj
+    def _project_phase(self,projector, phase):
+        """
+        Apply a projector to a stack of phase or OPD maps.
+
+        Parameters
+        ----------
+        projector : ndarray
+            Projection matrix of shape ``(n_coefficients, n_pixels)``.
+        phase : ndarray
+            Stack of 2D maps to project.
+
+        Returns
+        -------
+        ndarray
+            Projected coefficients for each input frame.
+        """
+        projected_phase = np.zeros((phase.shape[0],projector.shape[0])).astype(np.float32)
+        for i in tqdm.tqdm(range(phase.shape[0])):
+            projected_phase[i]=projector@phase[i].ravel()
+        return projected_phase.astype(np.float32)
     def __matmul__(self, obj):
         if obj.tag == "ozi":
             
-            self.ozi_if = self.project_on_OZIRIIS(np.identity(97))
-            self.ozi_modes = self.project_on_OZIRIIS(obj.M2C)
+            self.ozi_if, self.ozi_if_modes, self.ozi_proj_if = self.project_on_OZIRIIS(np.identity(97))#, proj=np.linalg.pinv(self.dm_ozi.modes))
+            self.ozi_modes, self.ozi_KL_basis, self.ozi_proj_modes = self.project_on_OZIRIIS(obj.M2C)
             print('First stage command projected on second stage')
         else:
             raise ValueError('Entered object not an OZItele')

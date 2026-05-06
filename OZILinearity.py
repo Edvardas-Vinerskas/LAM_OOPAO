@@ -528,8 +528,7 @@ class OZILin:
             mechCoupling=0.35,
             print_dm_properties=False,
             pitch=0.11,
-            misReg=m,
-            sign=-1e-5,
+            misReg=m
         )
 
         self.dm2 = DeformableMirror(
@@ -538,8 +537,7 @@ class OZILin:
             mechCoupling=0.35,
             print_dm_properties=False,
             pitch=0.11,
-            misReg=m,
-            sign=-1e-5,
+            misReg=m
         )
 
         if_path = os.path.join(HERE, "IF_vZWFS.npy")
@@ -559,11 +557,11 @@ class OZILin:
                 "On attend généralement M2C.shape[0] == 97."
             )
 
-        self.M2phase = self.IF @ self.M2C
+        self.M2phase = self.IF[(self.tel1.pupil==1).ravel(),:] @ self.M2C
         self.modes_std = self.M2phase.std(axis=0)
-        self.IF_std = self.IF.std(axis=0)
+        self.IF_std = self.IF[(self.tel1.pupil==1).ravel(),:].std(axis=0)
 
-        amplitude_mean = np.ptp(self.IF, axis=0)
+        
 
         # self.dm1.modes *= amplitude_mean / np.ptp(self.dm1.modes, axis=0)
         # self.dm2.modes *= amplitude_mean / np.ptp(self.dm2.modes, axis=0)
@@ -592,7 +590,7 @@ class OZILin:
         zwfs1 = ZWFS(
             self.tel1,
             diameter=diam,
-            phase_shift=0.33,
+            phase_shift=0.3,
             zpf=30,
             phase_shift_unit="pi",
         )
@@ -600,7 +598,7 @@ class OZILin:
         zwfs2 = ZWFS(
             self.tel2,
             diameter=diam,
-            phase_shift=-0.74,
+            phase_shift=-0.7,
             zpf=30,
             phase_shift_unit="pi",
         )
@@ -904,6 +902,7 @@ class OZILin:
             self.OPDs.shape[-2],
             self.OPDs.shape[-1],
         )
+        
 
     # ------------------------------------------------------------------
     # Projections

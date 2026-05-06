@@ -72,7 +72,12 @@ class OZITele:
                 raise ValueError('No files selected')
         self.is_nb = narrow_band
         self.tele_path = tele_path
+        
         data = np.load(self.tele_path, allow_pickle=True)
+        self.loop_gain = data.item()['lpGain'][0][0]
+
+        self.loop_leak = data.item()['lpLeak'][0][0]
+        self.controlled_modes = data.item()['nmodes'][0][0]
         self.off_mask = data.item()['validPixels'].astype(np.float32)
         self.img_raw = data.item()['CRED2Cube'].astype(np.float32)[self.temporal_crop]
         self.dark = data.item()['credDark'].astype(np.float32)
@@ -87,8 +92,10 @@ class OZITele:
             self.is_onsky = is_onsky
         if self.is_onsky:
             self.M2C = data.item()['m2c_sky']
+            self.IM = data.item()['IntMat_sky']
         else:
             self.M2C = data.item()['m2c']
+            self.IM = data.item()['IntMat']
         self.C2M =np.linalg.pinv(self.M2C)
         self.psf_sampling = 2.5354838709677416
         self.frame_count = self.img_raw[:,0,0]
@@ -121,7 +128,7 @@ class OZITele:
         # Conversion modale (vectorisée)
         for i in range(self.rec_cmd.shape[0]):
             self.rec_cmd_modal[i,:] = self.C2M@self.rec_cmd[i]
-       
+        self.ts_dm = data.item()['timeStampcredCube'][self.temporal_crop]
         self.img = self.img_raw-self.dark
         self.extract_values = extract_values
         self.img[:,:1,:] = 0
@@ -149,7 +156,7 @@ class OZITele:
                 
                 self.pupils[1],_ = self._pad_to_square(pupil2)
                 self.pupils[0],_ = self._pad_to_square(self.initial_pupils[0])
-                self.submasks[1],_ = self._pad_to_square(self.initial_pupils[0])
+                self.submasks[1],_ = self._pad_to_square(self.initial_submasks[0])
                 self.submasks[0] = self.submasks[1]
                
             else:
@@ -163,7 +170,7 @@ class OZITele:
                 
                 self.pupils[1],_ = self._pad_to_square(pupil2)
                 self.pupils[0],_ = self._pad_to_square(self.initial_pupils[0])
-                self.submasks[1],_ = self._pad_to_square(self.initial_pupils[0])
+                self.submasks[1],_ = self._pad_to_square(self.initial_submasks[0])
                 self.submasks[0] = self.submasks[1]
                 
             self._initialise_OOPAO_objects()
@@ -172,6 +179,7 @@ class OZITele:
             self.extract_Zimages()
             self.has_recontructed_phase = False
             self.has_projected_phase = False
+            self.has_recompute_rec_cmd = False
     def _initialise_OOPAO_objects(self):
         Source, Telescope, ZWFS, ZWFS2, DeformableMirror, MisRegistration, Detector = _import_oopao_symbols()
         if self.is_onsky and (~self.is_nb):
@@ -190,11 +198,11 @@ class OZITele:
             self.src2.wavelength = 1.550e-6
             self.src2.bandwidth = 0e-6
         self.tel1 = Telescope(self.submasks[0].shape[0],1.52, pupil = self.submasks[0]) 
-        self.tel1.pupilReflectivity = np.sqrt(self.pupils[0])
+        self.tel1.pupilReflectivity = np.sqrt(self.pupils[0])*self.submasks[0]
         self.tel1.pupilReflectivity[~np.isfinite(self.tel1.pupilReflectivity)]=0
         self.src1*self.tel1
         self.tel2 = Telescope(self.submasks[1].shape[0],1.52, pupil = self.submasks[1]) 
-        self.tel2.pupilReflectivity = np.sqrt(self.pupils[1])
+        self.tel2.pupilReflectivity = np.sqrt(self.pupils[1])*self.submasks[1]
         self.tel2.pupilReflectivity[~np.isfinite(self.tel2.pupilReflectivity)]=0
         self.src2*self.tel2
 
@@ -212,41 +220,46 @@ class OZITele:
                                 mechCoupling=0.35,
                                 print_dm_properties=False,
                                 pitch=0.11,
-                                misReg = m,
-                                sign=-1e-5)
+                                misReg = m)
         self.dm2 = DeformableMirror(telescope = self.tel2,
                                 nSubap=10,
                                 mechCoupling=0.35,
                                 print_dm_properties=False,
                                 pitch=0.11,
-                                misReg = m,
-                                sign=-1e-5)
+                                misReg = m)
 
         if_path = os.path.join(HERE, "IF_vZWFS.npy")
-        if not os.path.exists(if_path):
-            raise FileNotFoundError(
-                f"Fichier d'influence functions introuvable : {if_path}"
-            )
+        # if not os.path.exists(if_path):
+        #     raise FileNotFoundError(
+        #         f"Fichier d'influence functions introuvable : {if_path}"
+        #     )
 
-        IF = np.load(if_path)
-        if IF[0,...].shape != self.tel1.pupil.shape:
-            IF = self._rescale_matrix(IF, self.tel1.pupil.shape[0], self.tel1.pupil.shape[1])
-        self.IF = IF.reshape(97, -1).T.astype(np.float32) 
-        if self.M2C.shape[0] != self.IF.shape[1]:
-            raise ValueError(
-                "Shape incohérente entre M2C et IF. "
-                f"M2C.shape={self.M2C.shape}, IF.shape={self.IF.shape}. "
-                "On attend généralement M2C.shape[0] == 97."
-            )
-        self.M2phase = self.IF@self.M2C
-        self.modes_std = self.M2phase.std(axis = 0)
-        self.IF_std = self.IF.std(axis = 0)
-        self.dm1.modes = self.IF.copy()
-        self.dm2.modes = self.IF.copy()
+        # IF = np.load(if_path)
+        # if IF[0,...].shape != self.tel1.pupil.shape:
+        #     IF = self._rescale_matrix(IF, self.tel1.pupil.shape[0], self.tel1.pupil.shape[1])
+        # self.IF = IFIF.reshape(97, -1).T.astype(np.float32) 
+        # if self.M2C.shape[0] != self.IF.shape[1]:
+        #     raise ValueError(
+        #         "Shape incohérente entre M2C et IF. "
+        #         f"M2C.shape={self.M2C.shape}, IF.shape={self.IF.shape}. "
+        #         "On attend généralement M2C.shape[0] == 97."
+        #     )
+        # self.M2phase = self.IF[(self.tel1.pupil==1).ravel(),:]@self.M2C
+        # self.modes_std = self.M2phase.std(axis = 0)
+        # self.IF_std = self.IF[(self.tel1.pupil==1).ravel(),:].std(axis = 0)
+        # self.dm1.modes = self.IF.copy()
+        # self.dm2.modes = self.IF.copy()
         # amplitude_mean = np.ptp(self.IF,axis =0)
         
         # self.dm1.modes*=amplitude_mean/np.ptp(self.dm1.modes, axis = 0)
         # self.dm2.modes*=amplitude_mean/np.ptp(self.dm1.modes, axis = 0)
+        self.IF = np.load('C:/Users/mmotte/OZITelemetry/ozitelemetry/IF_dm2.npy')*1e-6#np.load(if_path).reshape(97, -1).T#
+       
+        print(self.IF.shape)
+        amplitude_mean = np.ptp(self.IF,axis =0)
+
+        self.dm1.modes*=amplitude_mean/np.ptp(self.dm1.modes)
+        self.dm2.modes*=amplitude_mean/np.ptp(self.dm1.modes)
         self.src_imaging = Source(optBand='IR1310', magnitude=-2.5)
     def _build_vzwfs_class(self):
         Source, Telescope, ZWFS, ZWFS2, DeformableMirror, MisRegistration,Detector = _import_oopao_symbols()
@@ -316,7 +329,7 @@ class OZITele:
         """
         
         self.proj_M2C = self._compute_proj_dm(self.M2C, self.tel1, self.dm1)# np.diag(1 / np.diag(cov_modes)) @ modes.T  # Pseudo-inverse projection matrix
-        self.proj_IF = self._compute_proj_dm(np.identity(self.dm1.modes.shape[-1]), self.tel1, self.dm1)
+        self.proj_IF = self._compute_proj_dm(np.identity(self.dm1.modes.shape[-1]), self.tel1, self.dm1)#np.linalg.pinv(self.dm1.modes)#
     
     def extract_Zimages(self):
         """
@@ -577,7 +590,33 @@ class OZITele:
         Zer_basis.computeZernike(self.tel1)
         self.Zer_modes = Zer_basis.modesFullRes.copy()
         self.proj_Zer = self._compute_proj_OPDs(self.Zer_modes, self.tel1)
-
+    def OPDs_map_from_cmd(self):
+        OPD_map = self.dm1.modes@self.rec_cmd.T
+        return OPD_map.T.reshape(-1, self.tel1.pupil.shape[0], self.tel1.pupil.shape[0])*(self.tel1.pupil==1)
+    def filter_OPDs(self, OPD = None, nmodes = None, modal_basis = 'KL'):
+        if nmodes is None:
+            nmodes = self.M2C.shape[-1]
+        if OPD is None:
+            OPD = self.OPDs.copy()
+        if modal_basis == 'KL':
+            self.dm1.coefs = self.M2C
+            self.tel1*self.dm1
+            modes= self.tel1.OPD.copy()
+            modes = modes/self.tel1.OPD[self.tel1.pupil, :].std(axis=0)
+            self.dm1.coefs = 0
+            self.tel1*self.dm1
+            OPDs_on_modes = self._project_phase(self.proj_M2C, OPD)
+            filtered_OPD = 0
+            for i in tqdm.tqdm(range(nmodes)):
+                filtered_OPD += OPDs_on_modes[:,None, None,i]*modes[None, :,:,i]
+        elif modal_basis == 'IF':
+            filtered_OPD = 0
+            IF_inv = np.linalg.pinv(self.dm1.modes)
+            filtered_OPD = (self.dm1.modes@(IF_inv@OPD.reshape(self.OPDs.shape[0],-1).T)).T.reshape(OPD.shape[0], OPD.shape[1], OPD.shape[2])
+        elif modal_basis == 'Zer':
+            opd_on_zer = self._project_phase(self.proj_Zer, OPD)
+            filtered_OPD = (opd_on_zer[:,None,None,:nmodes]*self.Zer_modes[None, :,:,:nmodes]).sum(axis = -1)
+        return filtered_OPD*(self.tel1.pupil==1)
     def project_OPDs(self):
         
         """
@@ -742,8 +781,8 @@ class OZITele:
         """
         if npsg is None:
             npsg = self.time.size
-        
-        self.psd_cmd_IFs = self.psd(self.time, self.rec_cmd*self.IF_std[None,:], nperseg=npsg)
+        OPDs = self.OPDs_map_from_cmd()
+        self.psd_cmd_IFs = self.psd(self.time,self._project_phase(self.proj_IF, OPDs), nperseg=npsg)
     def PSD_cmd_modal(self, npsg = None):
         """
         Compute PSDs of the reconstructed command vectors in modal space.
@@ -756,7 +795,8 @@ class OZITele:
         if npsg is None:
             npsg = self.time.size
         logger.info('Computing modal PSD from cmd')
-        self.psd_cmd_modal = self.psd(self.time, self.rec_cmd_modal*self.modes_std[None,:], nperseg=npsg)
+        OPDs = self.OPDs_map_from_cmd()
+        self.psd_cmd_modal = self.psd(self.time,  self._project_phase(self.proj_M2C, OPDs), nperseg=npsg)
     def _export_psf_setup(self, img_wvl = False):
         return {
             "is_onsky": self.is_onsky,
@@ -766,10 +806,19 @@ class OZITele:
             "pupil0": self.pupils[0],
             "psf_sampling": self.psf_sampling,
         }
-
+    def linear_reconstruction(self, nmodes = None, IM = None):
+        if nmodes is None:
+            nmodes = self.controlled_modes
+        if IM is None:
+            IM = self.compute_synth_IM()
+        self.linear_reconstructor = self.M2C[:,:nmodes]@np.linalg.pinv(IM[:,:nmodes])
+        if ~self.has_recompute_rec_cmd:
+            self.initial_rec_cmd = self.rec_cmd.copy()
+        self.rec_cmd = (self.linear_reconstructor@self.img_ZWFS1[:,self.submasks[0]].T).T
+        self.has_recompute_rec_cmd = True
     def _compute_ncpa_opd(self, ncpa=None):
         self.tel1.OPD = self.tel1.OPD * 0
-    
+        self.dm1.coefs = 0
         if ncpa is not None:
             self.dm1.coefs = self.M2C @ ncpa
         else:
@@ -777,7 +826,7 @@ class OZITele:
     
         self.tel1 * self.dm1
         return self.tel1.OPD.copy().astype(np.float32)
-    def simulate_PSF(self, imaging_wvl = True, ncpa=None, parallel=True, parall_njob=4, chunk_size=100, img_size = 100):
+    def simulate_PSF(self, imaging_wvl = True, sampling = None, ncpa=None, parallel=True, parall_njob=4, chunk_size=100, img_size = 100):
         
         if ncpa is not None:
             if ncpa.size != self.M2C.shape[-1]:
@@ -788,7 +837,8 @@ class OZITele:
     
         opd_ncpa = self._compute_ncpa_opd(ncpa)
         pupil = self.tel1.pupilReflectivity.copy()
-        sampling = np.copy(self.psf_sampling)
+        if sampling is None:
+            sampling = np.copy(self.psf_sampling)
         
         if parallel:
             if imaging_wvl:
@@ -824,6 +874,8 @@ class OZITele:
             self.simulated_psf = np.concatenate(psf_chunks, axis=0).astype(np.float32)
     
         else:
+            _, _, _, _, _, _, Detector = _import_oopao_symbols()
+            self.cam = Detector(psf_sampling=sampling*self.submasks[0].sum()**(1/2)/self.tel1.pupil.shape[0])
             if imaging_wvl:
                 self.src_imaging*self.tel1
             else:
@@ -835,7 +887,33 @@ class OZITele:
                 self.simulated_psf.append(self.cam.frame.copy().astype(np.float32))
     
             self.simulated_psf = np.asarray(self.simulated_psf, dtype=np.float32)
+    def compute_synth_IM(self,stroke_nm = 12):
+        M2Phase = self.IF*1e9 @ self.M2C
         
+        # Std across actuators? You used axis=0. Keep as-is, but at least be consistent.
+        std_phase = np.std(M2Phase, axis=0)
+
+        # Use stroke_nm instead of hardcoded 12
+        # Guard against division by zero
+        eps = 1e-12
+        M2C = self.M2C.copy()
+        stroke = stroke_nm/std_phase#np.ones(M2C.shape[1])*0.0001
+        IM1 = []
+
+        
+        for i in range(M2C.shape[-1]):
+            self.dm1.coefs = stroke[i]*M2C[:,i]
+            self.tel1*self.dm1
+            self.tel1*self.zwfs1
+            img1_pos = self.zwfs1.img_ZWFS
+          
+            
+            self.dm1.coefs = -stroke[i]*M2C[:,i]
+          
+            self.tel1*self.dm1
+            self.tel1*self.zwfs1
+            IM1.append((img1_pos - self.zwfs1.img_ZWFS)/(2*stroke[i]))
+        return np.array(IM1)[:, self.submasks[0]].T
     def compute_SR(self, wavelength = None, ncpa = None):
         opd_ncpa = self._compute_ncpa_opd(ncpa)
         if wavelength is None:
@@ -962,6 +1040,10 @@ class OZITele:
             rec_modes[i] = projector_lin@phase.ravel()
         
         return rec_modes
+    def modal_PSD(self, projected_phase):
+        projected_phase -=projected_phase.mean(axis = 0)
+        modal_psd = projected_phase.var(axis = 0)
+        return modal_psd
     def __matmul__(self, obj):
         if obj.tag == "papy":
             if self.has_recontructed_phase:

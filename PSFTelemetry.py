@@ -64,7 +64,7 @@ class PSFTele:
 
 
         #%% FIXED PARAMETERS
-        self.sampling_calib = 2.84 # from CRED3 data 05/03/2025
+        self.sampling_calib = 3.2 # from CRED3 data 05/03/2025
         self.wvl_sky = 1310e-9 # central wavelength
         self.wvl_calib = 1550e-9 # internal laser source
         if tele_path is None:
