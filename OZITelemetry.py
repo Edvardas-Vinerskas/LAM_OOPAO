@@ -6,7 +6,7 @@ Created on Thu Jan 15 13:38:53 2026
 """
 
 import numpy as np
-
+import scipy as scp
 
 from Pupil_selection import reference_intensities
 from skimage.transform import resize
@@ -253,8 +253,8 @@ class OZITele:
         
         # self.dm1.modes*=amplitude_mean/np.ptp(self.dm1.modes, axis = 0)
         # self.dm2.modes*=amplitude_mean/np.ptp(self.dm1.modes, axis = 0)
-        self.IF = np.load('C:/Users/mmotte/OZITelemetry/ozitelemetry/IF_dm2.npy')*1e-6#np.load(if_path).reshape(97, -1).T#
-       
+        self.IF = np.load(os.path.join(HERE,'IF_dm2.npy'))*1e-6#np.load(if_path).reshape(97, -1).T#
+        self.IF = scp.io.loadmat(os.path.join(HERE,'BAX418-IF.mat'))['influenceMatrix'].T*1e-6
         print(self.IF.shape)
         amplitude_mean = np.ptp(self.IF,axis =0)
 
