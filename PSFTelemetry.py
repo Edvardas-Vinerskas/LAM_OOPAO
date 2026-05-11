@@ -95,20 +95,21 @@ class PSFTele:
             self.sampling = self.sampling_calib
             papyrus.occ = 0
             self.wvl = self.wvl_calib
-    def psf_analysis(self, psf = None, elevation_deg = 80):
+    def psf_analysis(self, psf = None, elevation_deg = 80, sampling = None):
         nb_act_lin = 1 + DM.D_CALIB/DM.PITCH
         papyrus.Nact = round(nb_act_lin * DM.D_SKY/DM.D_CALIB * np.sqrt(195/DM.NACT))
         if psf is None:
             psf = self.long_exp_PSF
         ron = 10
         weights = 1/(gaussian_filter(psf, 2)+ron**2)
-
+        if sampling is None:
+            sampling = self.sampling
         if self.is_cl:
-            psfmodel = Psfao((self.crop_img,self.crop_img), system=papyrus, samp=self.sampling)
+            psfmodel = Psfao((self.crop_img,self.crop_img), system=papyrus, samp=sampling)
             psfparam_guess = [0.09, 1e-4, 0.4, 0.5, 1, 0, 1.5]
             fixed = [False, ]*7
         else:
-            psfmodel = Turbulent((self.crop_img,self.crop_img), system=papyrus, samp=self.sampling)
+            psfmodel = Turbulent((self.crop_img,self.crop_img), system=papyrus, samp=sampling)
             psfparam_guess = [0.09, 30]
             fixed = [False, ]*2
             
@@ -121,8 +122,8 @@ class PSFTele:
 
         self.otf_avg = circavg(get_otf(self.psf), center=(self.crop_img//2,self.crop_img//2))
 
-        self.SR = strehl_ratio(self.psf, self.sampling)
-        self.otf_diff = otf_diffraction(self.crop_img, self.sampling, sky=self.is_onsky)
+        self.SR = strehl_ratio(self.psf, sampling)
+        self.otf_diff = otf_diffraction(self.crop_img, sampling, sky=self.is_onsky)
         self.otf_diff_avg = circavg(self.otf_diff, center=(self.crop_img//2,self.crop_img//2))
         self.r0_zenith = self.out.x[0]/np.cos(np.pi/2-elevation_deg*np.pi/180)**(3/5)
         self.seeing = self.rad2arcsec*self.wvl/self.r0_zenith

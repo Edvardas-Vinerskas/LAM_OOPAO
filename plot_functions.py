@@ -2478,6 +2478,7 @@ def plot_n_psd_aa(
     legend_ncol=None,
     legend_loc="best",
     use_color=True,
+    curve_styles=None,
 ):
     """
     Plot N PSDs in an A&A-compatible style.
@@ -2486,6 +2487,41 @@ def plot_n_psd_aa(
     ----------
     psd_list : list of tuple
         List of PSDs to plot. Each element must be a tuple (freq, psd).
+
+    labels : list of str, optional
+        Labels associated with each PSD.
+
+    curve_styles : list of dict or dict, optional
+        Custom style for each curve.
+
+        Accepted forms:
+
+        1. List of dictionaries, same order as psd_list:
+
+            curve_styles = [
+                {"color": "black", "ls": "-", "lw": 1.3},
+                {"color": "black", "ls": "--", "lw": 1.3},
+            ]
+
+        2. Dictionary indexed by curve number:
+
+            curve_styles = {
+                0: {"color": "black", "ls": "-"},
+                1: {"color": "black", "ls": "--"},
+            }
+
+        3. Dictionary indexed by label:
+
+            curve_styles = {
+                "ZWFS - IM": {"color": "#1f77b4", "ls": "-"},
+                "vZWFS - Atan": {"color": "#1f77b4", "ls": "--"},
+            }
+
+        Supported style keys include:
+            color, ls, linestyle, lw, linewidth, alpha, zorder
+
+        If curve_styles is None, the original automatic style is used.
+
     legend_loc : str
         Legend location. Accepted values include:
         'upper right', 'upper left', 'lower right', 'lower left',
@@ -2523,7 +2559,7 @@ def plot_n_psd_aa(
     fig, ax = plt.subplots(
         figsize=(width_in, height_in),
         dpi=dpi,
-        constrained_layout=True
+        constrained_layout=True,
     )
 
     linestyles = [
@@ -2549,7 +2585,7 @@ def plot_n_psd_aa(
     else:
         colors_cycle = ["black", "0.25", "0.40", "0.55", "0.70", "0.15"]
 
-    lw = 1.5 if n_psd <= 4 else 1.1 if n_psd <= 10 else 0.9
+    default_lw = 1.5 if n_psd <= 4 else 1.1 if n_psd <= 10 else 0.9
 
     def _prepare_psd(freq, psd):
         freq = np.asarray(freq).ravel()
@@ -2573,7 +2609,10 @@ def plot_n_psd_aa(
         y = y[valid]
 
         if freq.size < 2:
-            raise ValueError("Each PSD must contain at least two valid points for the requested axis scale.")
+            raise ValueError(
+                "Each PSD must contain at least two valid points "
+                "for the requested axis scale."
+            )
 
         idx = np.argsort(freq)
         freq = freq[idx]
@@ -2586,19 +2625,98 @@ def plot_n_psd_aa(
 
         return freq, y
 
+    def _get_curve_style(i, label):
+        """
+        Return the plotting style for curve i.
+
+        The style is first built from the automatic defaults, then optionally
+        updated by curve_styles.
+        """
+
+        style = {
+            "color": colors_cycle[i % len(colors_cycle)],
+            "lw": default_lw,
+            "ls": linestyles[i % len(linestyles)],
+            "alpha": 1.0,
+            "zorder": 3,
+            "solid_capstyle": "round",
+            "dash_capstyle": "butt",
+        }
+
+        if curve_styles is None:
+            return style
+
+        if isinstance(curve_styles, (list, tuple)):
+            if len(curve_styles) != n_psd:
+                raise ValueError(
+                    "If curve_styles is a list or tuple, it must have "
+                    "the same length as psd_list."
+                )
+            custom = curve_styles[i]
+
+        elif isinstance(curve_styles, dict):
+            if label in curve_styles:
+                custom = curve_styles[label]
+            elif i in curve_styles:
+                custom = curve_styles[i]
+            else:
+                custom = None
+
+        else:
+            raise TypeError(
+                "curve_styles must be None, a list/tuple of dictionaries, "
+                "or a dictionary indexed by curve index or label."
+            )
+
+        if custom is None:
+            return style
+
+        if not isinstance(custom, dict):
+            raise TypeError(
+                "Each custom curve style must be a dictionary, "
+                f"got {type(custom)} for curve {i}."
+            )
+
+        # Accept Matplotlib aliases.
+        custom = custom.copy()
+
+        if "linestyle" in custom and "ls" not in custom:
+            custom["ls"] = custom.pop("linestyle")
+
+        if "linewidth" in custom and "lw" not in custom:
+            custom["lw"] = custom.pop("linewidth")
+
+        allowed_keys = {
+            "color",
+            "lw",
+            "ls",
+            "alpha",
+            "zorder",
+            "solid_capstyle",
+            "dash_capstyle",
+        }
+
+        unknown_keys = set(custom) - allowed_keys
+        if unknown_keys:
+            raise ValueError(
+                "Unsupported style key(s) in curve_styles: "
+                f"{sorted(unknown_keys)}. "
+                "Supported keys are: color, ls, linestyle, lw, linewidth, "
+                "alpha, zorder, solid_capstyle, dash_capstyle."
+            )
+
+        style.update(custom)
+        return style
+
     for i, ((freq, psd), label) in enumerate(zip(psd_list, labels)):
         f_plot, y_plot = _prepare_psd(freq, psd)
+        style = _get_curve_style(i, label)
 
         ax.plot(
             f_plot,
             y_plot,
-            color=colors_cycle[i % len(colors_cycle)],
-            lw=lw,
-            ls=linestyles[i % len(linestyles)],
             label=label,
-            zorder=3,
-            solid_capstyle="round",
-            dash_capstyle="butt",
+            **style,
         )
 
     ax.set_xscale(xscale)
@@ -2635,6 +2753,7 @@ def plot_n_psd_aa(
         top=True,
         right=True,
     )
+
     ax.tick_params(
         which="minor",
         direction="in",

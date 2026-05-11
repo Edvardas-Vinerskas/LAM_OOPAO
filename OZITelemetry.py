@@ -1056,23 +1056,19 @@ class OZITele:
             raise ValueError('Entered object not a PAPYtele')
 
     def _choose_file(self):
-        """
-        Open a file dialog and return the selected telemetry file path.
-
-        Returns
-        -------
-        str
-            Path to the selected file, or an empty string if no file is chosen.
-        """
-        root = tk.Tk()
-        root.withdraw()
-        
-        file_path = filedialog.askopenfilename(
-            title="Select a file",
-            filetypes=[("Python files", "*.npy"), ("All files", "*.*")]
+        from qtpy.QtWidgets import QApplication, QFileDialog
+    
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication([])
+    
+        file_path, _ = QFileDialog.getOpenFileName(
+            None,
+            "Select OZIRIIS linearity .npz file",
+            "",
+            "NPZ files (*.npz);;All files (*.*)",
         )
-        
-        root.destroy()
+    
         return file_path
     
     def _delete_img(self):

@@ -33,7 +33,7 @@ class PAPYtele:
     modal or influence-function PSDs from telemetry cubes.
     """
 
-    def __init__(self,tele_path:str = None, temporal_crop = None):
+    def __init__(self,tele_path:str = None, OG:float|np.ndarray=None, temporal_crop = None):
         """
         Initialize the telemetry analysis object from a saved telemetry file.
 
@@ -58,14 +58,18 @@ class PAPYtele:
             else:
                 raise ValueError('No files selected')
         self.tele_path = tele_path
-        data = np.load(self.tele_path, allow_pickle=True)
+        if OG is None: 
+            self.OG = 1.
+        else:
+            self.OG = OG
+        self.data = np.load(self.tele_path, allow_pickle=True)
 
-        self.dmshape = data.item()['dmCmdCube'].astype(np.float32)[self.temporal_crop]
-        self.rec_cmd = data.item()['modeCube'].astype(np.float32)[self.temporal_crop][...,0]
-        self.ts = data.item()['timeStampOcamCube'][self.temporal_crop]  # list[datetime]
+        self.dmshape = self.data.item()['dmCmdCube'].astype(np.float32)[self.temporal_crop]
+        self.rec_cmd = self.data.item()['modeCube'].astype(np.float32)[self.temporal_crop][...,0]/self.OG
+        self.ts = self.data.item()['timeStampOcamCube'][self.temporal_crop]  # list[datetime]
         self.t0 = self.ts[0]
         self.time = np.array([(t - self.t0).total_seconds() for t in self.ts], dtype=float)
-        self.M2C = data.item()['m2c']
+        self.M2C = self.data.item()['m2c']
  
         self.proj_IF = np.load(HERE+'\projector_IF_sky.npy')
         self.proj_modes= np.load(HERE+'\projector_M2C_sky.npy')
@@ -351,21 +355,17 @@ class PAPYtele:
             raise ValueError('Entered object not an OZItele')
     
     def _choose_file(self):
-        """
-        Open a file dialog and return the selected telemetry file path.
-
-        Returns
-        -------
-        str
-            Path to the selected file, or an empty string if no file is chosen.
-        """
-        root = tk.Tk()
-        root.withdraw()
-        
-        file_path = filedialog.askopenfilename(
-            title="Select a file",
-            filetypes=[("Python files", "*.npy"), ("All files", "*.*")]
+        from qtpy.QtWidgets import QApplication, QFileDialog
+    
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication([])
+    
+        file_path, _ = QFileDialog.getOpenFileName(
+            None,
+            "Select OZIRIIS linearity .npz file",
+            "",
+            "NPZ files (*.npz);;All files (*.*)",
         )
-        
-        root.destroy()
+
         return file_path

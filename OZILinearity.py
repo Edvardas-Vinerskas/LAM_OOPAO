@@ -1105,21 +1105,19 @@ class OZILin:
         return padded, padded_cr
 
     def _choose_file(self):
-        """
-        Ouvre une fenêtre de sélection de fichier .npz.
-        """
-        root = tk.Tk()
-        root.withdraw()
-
-        file_path = filedialog.askopenfilename(
-            title="Select OZIRIIS linearity .npz file",
-            filetypes=[
-                ("NPZ files", "*.npz"),
-                ("All files", "*.*"),
-            ],
+        from qtpy.QtWidgets import QApplication, QFileDialog
+    
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication([])
+    
+        file_path, _ = QFileDialog.getOpenFileName(
+            None,
+            "Select OZIRIIS linearity .npz file",
+            "",
+            "NPZ files (*.npz);;All files (*.*)",
         )
-
-        root.destroy()
+    
         return file_path
 
     def _delete_img(self):
