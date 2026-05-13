@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
-"""
-Created on Fri Apr 24 17:30:29 2026
+"""Reorganized telemetry utilities.
 
-@author: mmotte
+This file keeps the original runtime behavior while grouping methods by
+initialization, public workflows, computation/projection, utilities, and
+special methods.
 """
 
 import numpy as np
-
-
 import sys
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm
@@ -21,19 +20,16 @@ from maoppy.psfmodel import Psfao, Turbulent
 from maoppy.psffit import psffit
 from scipy.ndimage import gaussian_filter
 from tkinter.filedialog import askopenfilename
-
 from papylib.constant import TELESCOPE, DM
 from papylib.image import structured_bkg, strehl_ratio, otf_diffraction, clean_data, center_cog
 import tkinter as tk
 from tkinter import filedialog
 
-class PSFTele:
-    """
-    Analyze OZIRIIS telemetry data, reconstruct wavefront phase, and compute
-    modal or influence-function PSDs from telemetry cubes.
-    """
 
-    def __init__(self,tele_path:str = None, is_onsky:bool=True, is_cl:bool = True, crop_img = 100, temporal_crop = None):
+class PSFTele:
+    """Load PSF telemetry cubes and run PSF-oriented image analysis."""
+
+    def __init__(self, tele_path: str=None, is_onsky: bool=True, is_cl: bool=True, crop_img=100, temporal_crop=None):
         """
         Initialize the telemetry analysis object from a saved telemetry file.
 
@@ -60,75 +56,292 @@ class PSFTele:
         self.is_onsky = is_onsky
         self.is_cl = is_cl
         self._center_cog = center_cog
-        self.rad2arcsec = 180/(2*np.pi)*3600
-
-
-        #%% FIXED PARAMETERS
-        self.sampling_calib = 3.2 # from CRED3 data 05/03/2025
-        self.wvl_sky = 1310e-9 # central wavelength
-        self.wvl_calib = 1550e-9 # internal laser source
+        self.rad2arcsec = 180 / (2 * np.pi) * 3600
+        self.sampling_calib = 3.2
+        self.wvl_sky = 1.31e-06
+        self.wvl_calib = 1.55e-06
         if tele_path is None:
             tele_path = self._choose_file()
-
             if tele_path:
-                print("Selected file:", tele_path)
+                print('Selected file:', tele_path)
             else:
                 raise ValueError('No files selected')
-        
         self.tele_path = tele_path
         data = self._load(self.tele_path).astype(np.float32)
-
-        self.img_raw = data[:-1][self.temporal_crop] 
+        self.img_raw = data[:-1][self.temporal_crop]
         self.dark = data[-1]
-        self.frame_count = self.img_raw[:,0,0]
+        self.frame_count = self.img_raw[:, 0, 0]
         self.crop_img = crop_img
-        self.short_exp_psf = self.img_raw-self.dark
+        self.short_exp_psf = self.img_raw - self.dark
         img_raw_mean = self.img_raw.mean(axis=0)
         self.img_raw_mean, self.dark = self._center_cog(img_raw_mean, self.dark, crop_img)
-        self.long_exp_PSF = self.img_raw_mean- self.dark
-        
+        self.long_exp_PSF = self.img_raw_mean - self.dark
         if self.is_onsky:
-            self.sampling = self.sampling_calib * DM.D_CALIB/DM.D_SKY * self.wvl_sky/self.wvl_calib
+            self.sampling = self.sampling_calib * DM.D_CALIB / DM.D_SKY * self.wvl_sky / self.wvl_calib
             papyrus.occ = TELESCOPE.OBSTRUCTION
             self.wvl = self.wvl_sky
         else:
             self.sampling = self.sampling_calib
             papyrus.occ = 0
             self.wvl = self.wvl_calib
-    def psf_analysis(self, psf = None, elevation_deg = 80, sampling = None):
-        nb_act_lin = 1 + DM.D_CALIB/DM.PITCH
-        papyrus.Nact = round(nb_act_lin * DM.D_SKY/DM.D_CALIB * np.sqrt(195/DM.NACT))
+        self.psf_sampling = 2.8
+
+    def psf_analysis(self, psf=None, elevation_deg=80, sampling=None):
+        """Fit a PSF model and store image quality metrics on the instance.
+    
+        Parameters
+        ----------
+        psf : ndarray, optional
+            PSF image to analyze. If omitted, the long-exposure PSF is used.
+        elevation_deg : float, optional
+            Elevation angle used to convert fitted r0 into zenith seeing.
+        sampling : float, optional
+            Pixel sampling used by the PSF model. If omitted, ``self.sampling`` is used.
+        """
+        psf = self._resolve_psf_input(psf)
+    
+        results = self.analyze_psf(
+            psf=psf,
+            elevation_deg=elevation_deg,
+            sampling=sampling,
+        )
+    
+        self.out = results["out"]
+        self.psf_fit = results["psf_fit"]
+        self.psf = results["psf"]
+        self.otf_fit_avg = results["otf_fit_avg"]
+        self.otf_avg = results["otf_avg"]
+        self.SR = results["SR"]
+        self.otf_diff = results["otf_diff"]
+        self.otf_diff_avg = results["otf_diff_avg"]
+        self.r0_zenith = results["r0_zenith"]
+        self.seeing = results["seeing"]
+        self.seeing_550 = results["seeing_550"]
+        self.SR_otf = results["SR_otf"]
+        
+    def analyze_psf(self, psf, elevation_deg=80, sampling=None):
+        """Analyze a PSF and return the results without modifying the instance.
+    
+        Parameters
+        ----------
+        psf : ndarray
+            PSF image to analyze.
+        elevation_deg : float, optional
+            Elevation angle used to convert fitted r0 into zenith seeing.
+        sampling : float, optional
+            Pixel sampling used by the PSF model. If omitted, ``self.sampling`` is used.
+    
+        Returns
+        -------
+        dict
+            PSF analysis results.
+        """
+        sampling = self._resolve_sampling_input(sampling)
+    
+        psfmodel, psfparam_guess, fixed = self._build_psf_model(sampling)
+        weights = self._compute_psf_fit_weights(psf)
+    
+        out = self._fit_psf_model(
+            psf=psf,
+            psfmodel=psfmodel,
+            psfparam_guess=psfparam_guess,
+            weights=weights,
+            fixed=fixed,
+        )
+    
+        psf_fit = out.psf
+        psf_normalized = self._normalize_fitted_psf(psf, out.flux_bck)
+    
+        otf_fit_avg = self._compute_otf_radial_average(psf_fit, self.crop_img)
+        otf_avg = self._compute_otf_radial_average(psf_normalized, self.crop_img)
+    
+        SR = strehl_ratio(psf_normalized, sampling)
+    
+        otf_diff = otf_diffraction(self.crop_img, sampling, sky=self.is_onsky)
+        otf_diff_avg = circavg(
+            otf_diff,
+            center=(self.crop_img // 2, self.crop_img // 2),
+        )
+    
+        seeing_metrics = self._compute_seeing_metrics(
+            fitted_r0=out.x[0],
+            elevation_deg=elevation_deg,
+            wavelength=self.wvl,
+            rad2arcsec=self.rad2arcsec,
+        )
+    
+        SR_otf = psfmodel.strehlOTF(out.x)
+    
+        return {
+            "out": out,
+            "psf_fit": psf_fit,
+            "psf": psf_normalized,
+            "otf_fit_avg": otf_fit_avg,
+            "otf_avg": otf_avg,
+            "SR": SR,
+            "otf_diff": otf_diff,
+            "otf_diff_avg": otf_diff_avg,
+            "r0_zenith": seeing_metrics["r0_zenith"],
+            "seeing": seeing_metrics["seeing"],
+            "seeing_550": seeing_metrics["seeing_550"],
+            "SR_otf": SR_otf,
+            "sampling": sampling,
+            "elevation_deg": elevation_deg,
+        }
+    def _resolve_psf_input(self, psf):
+        """Return the input PSF or the stored long-exposure PSF."""
         if psf is None:
-            psf = self.long_exp_PSF
-        ron = 10
-        weights = 1/(gaussian_filter(psf, 2)+ron**2)
+            return self.long_exp_PSF
+        return psf
+    
+    
+    def _resolve_sampling_input(self, sampling):
+        """Return the input sampling or the instance default sampling."""
         if sampling is None:
-            sampling = self.sampling
+            return self.sampling
+        return sampling
+    
+    
+    def _build_psf_model(self, sampling):
+        """Build the PSF model and initial fitting parameters.
+    
+        Parameters
+        ----------
+        sampling : float
+            Pixel sampling used by the PSF model.
+    
+        Returns
+        -------
+        psfmodel
+            PSF model instance used by ``psffit``.
+        psfparam_guess : list
+            Initial parameter guess passed to ``psffit``.
+        fixed : list[bool]
+            Boolean mask indicating which parameters are fixed.
+        """
+        nb_act_lin = 1 + DM.D_CALIB / DM.PITCH
+        papyrus.Nact = round(
+            nb_act_lin * DM.D_SKY / DM.D_CALIB * np.sqrt(195 / DM.NACT)
+        )
+    
         if self.is_cl:
-            psfmodel = Psfao((self.crop_img,self.crop_img), system=papyrus, samp=sampling)
-            psfparam_guess = [0.09, 1e-4, 0.4, 0.5, 1, 0, 1.5]
-            fixed = [False, ]*7
+            psfmodel = Psfao(
+                (self.crop_img, self.crop_img),
+                system=papyrus,
+                samp=sampling,
+            )
+            psfparam_guess = [0.09, 0.0001, 0.4, 0.5, 1, 0, 1.5]
+            fixed = [False] * 7
         else:
-            psfmodel = Turbulent((self.crop_img,self.crop_img), system=papyrus, samp=sampling)
+            psfmodel = Turbulent(
+                (self.crop_img, self.crop_img),
+                system=papyrus,
+                samp=sampling,
+            )
             psfparam_guess = [0.09, 30]
-            fixed = [False, ]*2
-            
-        self.out = psffit(psf, psfmodel, psfparam_guess, weights=weights, fixed=fixed, max_nfev=30)
-        def get_otf(img):
-            return np.abs(fftshift(fft2(fftshift(img))))
-        self.otf_fit_avg = circavg(get_otf(self.out.psf), center=(self.crop_img//2,self.crop_img//2))
-        self.psf_fit = self.out.psf
-        self.psf = (psf-self.out.flux_bck[1])/self.out.flux_bck[0]
-
-        self.otf_avg = circavg(get_otf(self.psf), center=(self.crop_img//2,self.crop_img//2))
-
-        self.SR = strehl_ratio(self.psf, sampling)
-        self.otf_diff = otf_diffraction(self.crop_img, sampling, sky=self.is_onsky)
-        self.otf_diff_avg = circavg(self.otf_diff, center=(self.crop_img//2,self.crop_img//2))
-        self.r0_zenith = self.out.x[0]/np.cos(np.pi/2-elevation_deg*np.pi/180)**(3/5)
-        self.seeing = self.rad2arcsec*self.wvl/self.r0_zenith
-        self.seeing_550 = self.seeing * (550e-9/self.wvl)**(-1/5)
-        self.SR_otf= psfmodel.strehlOTF(self.out.x)
+            fixed = [False] * 2
+    
+        return psfmodel, psfparam_guess, fixed
+    
+    
+    @staticmethod
+    def _compute_psf_fit_weights(psf, ron=10):
+        """Compute PSF fitting weights from a smoothed PSF image.
+    
+        Parameters
+        ----------
+        psf : ndarray
+            PSF image used for fitting.
+        ron : float, optional
+            Read-out noise term added to the smoothed image.
+    
+        Returns
+        -------
+        ndarray
+            Pixel weights passed to ``psffit``.
+        """
+        return 1 / (gaussian_filter(psf, 2) + ron ** 2)
+    
+    
+    @staticmethod
+    def _fit_psf_model(psf, psfmodel, psfparam_guess, weights, fixed):
+        """Fit a PSF model without modifying the class instance."""
+        return psffit(
+            psf,
+            psfmodel,
+            psfparam_guess,
+            weights=weights,
+            fixed=fixed,
+            max_nfev=30,
+        )
+    
+    
+    @staticmethod
+    def _normalize_fitted_psf(psf, flux_bck):
+        """Normalize a fitted PSF using the fitted flux and background terms.
+    
+        Parameters
+        ----------
+        psf : ndarray
+            Raw PSF image.
+        flux_bck : sequence
+            Fitted flux and background parameters returned by ``psffit``.
+    
+        Returns
+        -------
+        ndarray
+            Normalized PSF image.
+        """
+        return (psf - flux_bck[1]) / flux_bck[0]
+    
+    
+    @staticmethod
+    def _compute_otf(img):
+        """Compute the absolute centered optical transfer function of an image."""
+        return np.abs(fftshift(fft2(fftshift(img))))
+    
+    
+    @classmethod
+    def _compute_otf_radial_average(cls, img, crop_img):
+        """Compute the circular average of an image OTF."""
+        return circavg(
+            cls._compute_otf(img),
+            center=(crop_img // 2, crop_img // 2),
+        )
+    
+    
+    @staticmethod
+    def _compute_seeing_metrics(fitted_r0, elevation_deg, wavelength, rad2arcsec):
+        """Compute zenith r0 and seeing metrics from a fitted r0 value.
+    
+        Parameters
+        ----------
+        fitted_r0 : float
+            Fitted Fried parameter returned by the PSF model.
+        elevation_deg : float
+            Elevation angle in degrees.
+        wavelength : float
+            Observation wavelength in meters.
+        rad2arcsec : float
+            Conversion factor from radians to arcseconds.
+    
+        Returns
+        -------
+        dict
+            Dictionary containing ``r0_zenith``, ``seeing``, and ``seeing_550``.
+        """
+        r0_zenith = fitted_r0 / np.cos(
+            np.pi / 2 - elevation_deg * np.pi / 180
+        ) ** (3 / 5)
+    
+        seeing = rad2arcsec * wavelength / r0_zenith
+        seeing_550 = seeing * (550e-9 / wavelength) ** (-1 / 5)
+    
+        return {
+            "r0_zenith": r0_zenith,
+            "seeing": seeing,
+            "seeing_550": seeing_550,
+        }
     def _choose_file(self):
         """
         Open a file dialog and return the selected telemetry file path.
@@ -140,18 +353,22 @@ class PSFTele:
         """
         root = tk.Tk()
         root.withdraw()
-        
-        file_path = filedialog.askopenfilename(
-            title="Select a file",
-            filetypes=[("Python files", "*.fits"), ("All files", "*.*")]
-        )
-        
+        file_path = filedialog.askopenfilename(title='Select a file', filetypes=[('Python files', '*.fits'), ('All files', '*.*')])
         root.destroy()
         return file_path
-    
-    def _delete_img(self):
-        del self.img, self.img_raw
-    def _load(self,path):
+
+    def _load(self, path):
+        """Load telemetry data from a supported file.
+
+        Parameters
+        ----------
+        path : str
+            Path to a ``.npy`` or ``.fits`` file.
+        
+        Returns
+        -------
+        ndarray
+            Loaded data array."""
         if path.endswith('.npy'):
             out = np.load(path)
         elif path.endswith('.fits'):
@@ -159,6 +376,9 @@ class PSFTele:
             out = f[0].data
             f.close()
         else:
-            raise ValueError('Do not know how to open frequired extension')
-        
+            raise ValueError('Do not know how to open required extension')
         return out
+
+    def _delete_img(self):
+        """Delete image cubes from the instance to release memory."""
+        del self.img, self.img_raw

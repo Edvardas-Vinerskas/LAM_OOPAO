@@ -180,6 +180,7 @@ def plot_psd_aa(
     journal_style=True,   # True: A&A final style ; False: working style with light grid
     etf_scale=None,       # None: same scale as PSD; otherwise "linear", "xlog", "ylog", "log"/"loglog"
     etf_ref_one = True,
+    etf_vmax = None,
 ):
     # ---------- input ----------
     label_fs = 9
@@ -320,7 +321,7 @@ def plot_psd_aa(
         
         if f_ratio_plot.size < 2:
             raise ValueError("Not enough valid ETF points to display with the requested ETF scale.")
-        
+         
         ax_etf.plot(
             f_ratio_plot, etf_plot,
             color="black",
@@ -367,7 +368,9 @@ def plot_psd_aa(
         ax.set_xlim(left=fmin, right=fmax)
         if ax_etf is not None:
             ax_etf.set_xlim(left=fmin, right=fmax)
-
+    if ax_etf is not None:
+        if etf_vmax is not None:
+            ax_etf.set_ylim(bottom = f_ratio_plot[f_ratio_plot>0].min(), top = etf_vmax)
     # ---------- labels ----------
     ax.set_xlabel(f"{f_label}", fontsize=label_fs)
     if normalised:
@@ -2837,6 +2840,993 @@ def plot_n_psd_aa(
 
         if saveformat.lower() == "all":
             for fmt in ("pdf", "png", "fig"):
+                _save_one(fmt)
+        else:
+            _save_one(saveformat)
+
+    return fig, ax
+#%%
+from pathlib import Path
+import pickle
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+
+
+def plot_psf_grid_aa(
+    psf_groups,
+    wvl,
+    telescope_diameter,
+    sampling,
+    vmin=1e-6,
+    vmax=1,
+    cmap="inferno",
+    xlabel=r"[arcsec]",
+    ylabel=r"[arcsec]",
+    cbar_label="Normalized intensity",
+    nx=None,
+    titles=None,
+    row_labels=None,
+    col_labels=None,
+    figsize=None,
+    dpi=1200,
+    origin="lower",
+    save=False,
+    savepath="psf_grid.pdf",
+    saveformat=None,
+    share_colorbar=True,
+    hide_inner_labels=True,
+):
+    """
+    Trace plusieurs PSF sous forme de grille, avec un style adapté à A&A.
+
+    Parameters
+    ----------
+    psf_groups : list[list[np.ndarray or None]]
+        Liste de lignes. Chaque ligne contient des PSF 2D ou None.
+        Les None produisent une cellule vide sans axe visible.
+
+    wvl : float
+        Longueur d'onde.
+
+    telescope_diameter : float
+        Diamètre du télescope.
+
+    sampling : float
+        Facteur d'échantillonnage.
+
+    vmin, vmax : float
+        Bornes de normalisation logarithmique appliquées aux PSF normalisées.
+
+    nx : int or None
+        Taille du crop central carré. Si None, chaque PSF est affichée entière.
+
+    titles : list[list[str or None]] or None
+        Titres individuels des sous-figures.
+
+    row_labels : list[str] or None
+        Labels ajoutés sur la première colonne de chaque ligne.
+
+    col_labels : list[str] or None
+        Labels ajoutés au-dessus de chaque colonne.
+
+    figsize : tuple or None
+        Taille de la figure en pouces. Si None, calculée automatiquement.
+
+    share_colorbar : bool
+        Si True, une seule colorbar commune est utilisée.
+
+    hide_inner_labels : bool
+        Si True, seuls les axes extérieurs portent les labels.
+    """
+
+    if not isinstance(psf_groups, (list, tuple)) or len(psf_groups) == 0:
+        raise ValueError("psf_groups doit être une liste non vide de lignes.")
+
+    nrows = len(psf_groups)
+    ncols = max(len(row) for row in psf_groups)
+
+    if ncols == 0:
+        raise ValueError("psf_groups ne contient aucune PSF.")
+
+    # Style adapté à A&A
+    rc_params = {
+        "font.size": 8,
+        "axes.labelsize": 8,
+        "axes.titlesize": 8,
+        "xtick.labelsize": 7,
+        "ytick.labelsize": 7,
+        "legend.fontsize": 7,
+        "font.family": "serif",
+        "mathtext.fontset": "cm",
+        "axes.linewidth": 0.8,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        "xtick.top": True,
+        "ytick.right": True,
+    }
+
+    # Échelle en arcsec
+    pix_scale = wvl / telescope_diameter / sampling
+    rad2arcsec = 180 / np.pi * 3600
+    pix_scale_arcsec = pix_scale * rad2arcsec
+
+    norm = LogNorm(vmin=vmin, vmax=vmax)
+
+    if figsize is None:
+        # Largeur typique A&A : une colonne ~3.35 in.
+        # Pour plusieurs colonnes, on élargit raisonnablement.
+        figsize = (3.35 * ncols / 2, 3.1 * nrows / 2)
+
+    with plt.rc_context(rc_params):
+        fig, axes = plt.subplots(
+            nrows,
+            ncols,
+            figsize=figsize,
+            squeeze=False,
+        )
+
+        images = []
+
+        for i in range(nrows):
+            row = psf_groups[i]
+
+            for j in range(ncols):
+                ax = axes[i, j]
+
+                # Cas cellule absente ou explicitement vide
+                if j >= len(row) or row[j] is None:
+                    ax.set_visible(False)
+                    continue
+
+                psf = np.asarray(row[j])
+
+                if psf.ndim != 2:
+                    raise ValueError(
+                        f"La PSF en position ({i}, {j}) doit être un array 2D."
+                    )
+
+                psf_sum = np.sum(psf)
+                if psf_sum <= 0:
+                    raise ValueError(
+                        f"La PSF en position ({i}, {j}) a une somme nulle ou négative."
+                    )
+
+                psf_norm = psf / psf_sum
+
+                # Crop central optionnel
+                if nx is not None:
+                    ny0, nx0 = psf_norm.shape
+                    cy, cx = ny0 // 2, nx0 // 2
+
+                    half = nx // 2
+                    y_start = cy - half
+                    x_start = cx - half
+                    y_end = y_start + nx
+                    x_end = x_start + nx
+
+                    if y_start < 0 or x_start < 0 or y_end > ny0 or x_end > nx0:
+                        raise ValueError(
+                            f"nx={nx} est trop grand pour la PSF en position ({i}, {j}) "
+                            f"de taille {psf_norm.shape}."
+                        )
+
+                    psf_norm = psf_norm[y_start:y_end, x_start:x_end]
+
+                ny, nx_img = psf_norm.shape
+
+                x_axis = (
+                    np.arange(nx_img) - (nx_img - 1) / 2
+                ) * pix_scale_arcsec
+                y_axis = (
+                    np.arange(ny) - (ny - 1) / 2
+                ) * pix_scale_arcsec
+
+                extent = [
+                    x_axis[0],
+                    x_axis[-1],
+                    y_axis[0],
+                    y_axis[-1],
+                ]
+
+                maxi = np.max(psf_norm)
+                if maxi <= 0:
+                    raise ValueError(
+                        f"La PSF en position ({i}, {j}) a un maximum nul ou négatif."
+                    )
+
+                im = ax.imshow(
+                    psf_norm / maxi,
+                    norm=norm,
+                    cmap=cmap,
+                    extent=extent,
+                    origin=origin,
+                )
+                images.append(im)
+
+                # Titres individuels
+                if titles is not None:
+                    if i < len(titles) and j < len(titles[i]) and titles[i][j] is not None:
+                        ax.set_title(titles[i][j])
+
+                # Labels de colonnes
+                if col_labels is not None and i == 0 and j < len(col_labels):
+                    ax.set_title(col_labels[j])
+
+                # Labels de lignes
+                if row_labels is not None and j == 0 and i < len(row_labels):
+                    ax.set_ylabel(row_labels[i])
+
+                if hide_inner_labels:
+                    if i == nrows - 1:
+                        ax.set_xlabel(xlabel)
+                    else:
+                        ax.set_xticklabels([])
+
+                    if j == 0:
+                        if row_labels is None:
+                            ax.set_ylabel(ylabel)
+                    else:
+                        ax.set_yticklabels([])
+                else:
+                    ax.set_xlabel(xlabel)
+                    ax.set_ylabel(ylabel)
+
+        if len(images) == 0:
+            raise ValueError("Aucune PSF valide à tracer : toutes les entrées sont None.")
+
+        # Colorbar commune
+        if share_colorbar:
+            visible_axes = [ax for ax in axes.ravel() if ax.get_visible()]
+            cbar = fig.colorbar(
+                images[0],
+                ax=visible_axes,
+                fraction=0.046,
+                pad=0.04,
+            )
+            cbar.set_label(cbar_label)
+        else:
+            for im, ax in zip(images, [ax for ax in axes.ravel() if ax.get_visible()]):
+                cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+                cbar.set_label(cbar_label)
+
+        fig.tight_layout()
+
+        # Sauvegarde optionnelle
+        if save:
+            path = Path(savepath)
+
+            if saveformat is None:
+                if path.suffix:
+                    saveformat = path.suffix.lower().lstrip(".")
+                else:
+                    saveformat = "pdf"
+                    path = path.with_suffix(".pdf")
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            def _save_one(fmt):
+                fmt = fmt.lower().lstrip(".")
+
+                if fmt == "fig":
+                    fig_path = path.with_suffix(".fig")
+                    with open(fig_path, "wb") as f:
+                        pickle.dump(fig, f)
+
+                elif fmt in {"pdf", "eps", "svg"}:
+                    out = path.with_suffix(f".{fmt}")
+                    fig.savefig(
+                        out,
+                        format=fmt,
+                        bbox_inches="tight",
+                        pad_inches=0.02,
+                        transparent=False,
+                    )
+
+                elif fmt in {"png", "tif", "tiff", "jpg", "jpeg"}:
+                    out = path.with_suffix(f".{fmt}")
+                    fig.savefig(
+                        out,
+                        format=fmt,
+                        dpi=max(dpi, 300),
+                        bbox_inches="tight",
+                        pad_inches=0.02,
+                        transparent=False,
+                    )
+
+                else:
+                    raise ValueError(
+                        f"Unsupported save format '{fmt}'. "
+                        "Use pdf, eps, png, tiff, jpg, jpeg, svg, fig, or all."
+                    )
+
+            if saveformat.lower() == "all":
+                for fmt in ("png", "pdf", "fig"):
+                    _save_one(fmt)
+            else:
+                _save_one(saveformat)
+
+    return fig, axes
+#%%
+def plot_curves_aa(
+    x_list,
+    y_list,
+    labels=None,
+    curve_styles=None,
+    xlabel=None,
+    ylabel=None,
+    title=None,
+    xlim=None,
+    ylim=None,
+    scale="linear",
+    figure_width="one_column",
+    figsize=None,
+    height_ratio=0.72,
+    dpi=300,
+    journal_style=True,
+    grid=False,
+    grid_kwargs=None,
+    label_fs=9,
+    tick_fs=8,
+    legend_fs=8,
+    title_fs=9,
+    tick_length=5,
+    tick_width=1.0,
+    minor_tick_length=3,
+    minor_tick_width=0.8,
+    spine_width=1.0,
+    ticks_top=True,
+    ticks_right=True,
+    major_nbins=None,
+    show_legend=True,
+    legend_loc="best",
+    legend_ncol=1,
+    legend_handlelength=3.0,
+    legend_frameon=False,
+    legend_kwargs=None,
+    use_labellines=False,
+    labellines_fallback="legend",
+    labelline_kwargs=None,
+    save=False,
+    savepath="curves_aa.pdf",
+    saveformat=None,
+    sort_by_x=False,
+    min_points=2,
+    ax=None,
+):
+    """
+    Plot one or several generic curves using an A&A-compatible publication style.
+
+    This function is designed to be inserted in a plotting utility module that
+    already imports NumPy, Matplotlib, pathlib.Path, pickle, and MaxNLocator.
+    It reuses the existing helper functions `_axis_scale_from_mode`,
+    `_valid_xy_for_scale`, and `_legend_loc_from_mode` when available.
+
+    The default style follows common Astronomy & Astrophysics figure constraints:
+    compact one-column width, readable labels after reduction, no decorative
+    background, no grid in publication mode, inward ticks, sufficiently thick
+    lines, restrained colors, and line styles that remain distinguishable in
+    grayscale.
+
+    Parameters
+    ----------
+    x_list, y_list : list of array-like
+        Lists containing the x and y values for each curve. The two lists must
+        have the same length. For each curve, `x_list[i]` and `y_list[i]` are
+        converted to one-dimensional arrays and must contain the same number of
+        elements.
+
+    labels : list of str or None, optional
+        Curve labels. If None, labels are generated as "Curve 1", "Curve 2",
+        etc. Labels are used both for legends and for dictionary-based
+        `curve_styles` lookup.
+
+    curve_styles : list of dict, dict, or None, optional
+        Optional per-curve Matplotlib style customisation.
+
+        Accepted forms are:
+
+        1. List or tuple of dictionaries, one dictionary per curve:
+
+            curve_styles = [
+                {"color": "black", "lw": 1.6, "ls": "-"},
+                {"color": "#355C9A", "lw": 1.6, "ls": "--"},
+            ]
+
+        2. Dictionary indexed by curve number:
+
+            curve_styles = {
+                0: {"marker": "o", "ms": 3.0},
+                2: {"zorder": 5},
+            }
+
+        3. Dictionary indexed by label:
+
+            curve_styles = {
+                "Model A": {"color": "black", "ls": "-"},
+                "Model B": {"color": "#355C9A", "ls": "--"},
+            }
+
+        Supported keys are all common Matplotlib `Axes.plot` keyword arguments,
+        including color, lw, linewidth, ls, linestyle, marker, markersize, ms,
+        alpha, zorder, drawstyle, solid_capstyle, dash_capstyle, markerfacecolor,
+        markeredgecolor, markeredgewidth, and similar parameters.
+
+    xlabel, ylabel : str or None, optional
+        Axis labels. Include units explicitly, for example "Frequency [Hz]".
+
+    title : str or None, optional
+        Optional axis title.
+
+    xlim, ylim : tuple or None, optional
+        Axis limits as `(min, max)`. Use None for automatic limits.
+
+    scale : {"linear", "xlog", "ylog", "log", "loglog"}, optional
+        Axis scale mode. For logarithmic axes, non-finite values and non-positive
+        values on logarithmic axes are removed before plotting. If fewer than
+        `min_points` valid points remain for a curve, a clear ValueError is
+        raised.
+
+    figure_width : {"one_column", "intermediate", "full_page"} or float, optional
+        Figure width preset or custom width in millimetres.
+
+        - "one_column": 88 mm
+        - "intermediate": 120 mm
+        - "full_page": 180 mm
+        - float: custom width in millimetres
+
+    figsize : tuple or None, optional
+        Custom figure size in inches. If provided, it overrides `figure_width`
+        and `height_ratio`.
+
+    height_ratio : float, optional
+        Figure height divided by figure width when `figsize` is None.
+
+    dpi : int, optional
+        Figure dpi. Bitmap exports are saved with at least 300 dpi.
+
+    journal_style : bool, optional
+        If True, use final publication style: no grid and no background
+        decoration. If False, a light grid can be enabled for working plots.
+
+    grid : bool, optional
+        Whether to show a grid. In publication mode (`journal_style=True`), the
+        grid remains disabled regardless of this value.
+
+    grid_kwargs : dict or None, optional
+        Extra keyword arguments passed to `Axes.grid` when a grid is enabled.
+
+    label_fs, tick_fs, legend_fs, title_fs : float, optional
+        Font sizes for axis labels, ticks, legend, and title.
+
+    tick_length, tick_width : float, optional
+        Major tick length and width.
+
+    minor_tick_length, minor_tick_width : float, optional
+        Minor tick length and width.
+
+    spine_width : float, optional
+        Axis spine width.
+
+    ticks_top, ticks_right : bool, optional
+        Whether to draw ticks on the top and right sides.
+
+    major_nbins : int or None, optional
+        If provided, apply `MaxNLocator(nbins=major_nbins)` to major ticks on
+        linear axes.
+
+    show_legend : bool, optional
+        Whether to display a legend when `use_labellines=False`, or as fallback
+        when line labels cannot be used.
+
+    legend_loc : str or None, optional
+        Legend location. Existing aliases accepted by `_legend_loc_from_mode`
+        are supported, including "best", "free", "upper right", "upper left",
+        "lower right", and "lower left".
+
+    legend_ncol : int, optional
+        Number of legend columns.
+
+    legend_handlelength : float, optional
+        Legend handle length.
+
+    legend_frameon : bool, optional
+        Whether to draw a legend frame. Default is False for a sober publication
+        style.
+
+    legend_kwargs : dict or None, optional
+        Extra keyword arguments passed to `Axes.legend`.
+
+    use_labellines : bool, optional
+        If True, place labels directly on the curves using the optional
+        `labellines` package.
+
+    labellines_fallback : {"legend", "error"}, optional
+        Behaviour if `use_labellines=True` but `labellines` is not installed.
+
+        - "legend": fall back to a standard legend.
+        - "error": raise an ImportError with a clear message.
+
+    labelline_kwargs : dict or None, optional
+        Extra keyword arguments passed to `labellines.labelLines`.
+
+    save : bool, optional
+        If True, save the figure.
+
+    savepath : str or pathlib.Path, optional
+        Output file path. If no suffix is present and `saveformat` is None,
+        ".pdf" is appended.
+
+    saveformat : str or None, optional
+        Output format. Accepted values are "pdf", "eps", "svg", "png", "tif",
+        "tiff", "jpg", "jpeg", "fig", and "all". If None, the suffix of
+        `savepath` is used, or "pdf" if no suffix is provided.
+
+    sort_by_x : bool, optional
+        If True, sort each curve by increasing x after filtering. This is useful
+        for lines, but should be disabled if the input order has a special
+        meaning.
+
+    min_points : int, optional
+        Minimum number of valid points required per curve after filtering.
+
+    ax : matplotlib.axes.Axes or None, optional
+        Existing axis on which to draw. If None, a new figure and axis are
+        created.
+
+    Returns
+    -------
+    fig, ax : tuple
+        The Matplotlib figure and axis.
+
+    Examples
+    --------
+    Minimal example with three curves:
+
+    >>> x = np.linspace(0.1, 10.0, 300)
+    >>> y1 = np.sin(x) / x
+    >>> y2 = np.cos(x) / (1.0 + 0.1 * x)
+    >>> y3 = 0.2 * np.exp(-0.2 * x)
+    >>>
+    >>> fig, ax = plot_curves_aa(
+    ...     [x, x, x],
+    ...     [y1, y2, y3],
+    ...     labels=["Sinc-like", "Damped cosine", "Exponential"],
+    ...     xlabel="Time [s]",
+    ...     ylabel="Amplitude",
+    ...     figure_width="one_column",
+    ...     save=True,
+    ...     savepath="example_curves_aa.pdf",
+    ... )
+    """
+
+    # ------------------------------------------------------------------
+    # Validate global inputs.
+    # ------------------------------------------------------------------
+    if not isinstance(x_list, (list, tuple)):
+        raise TypeError("x_list must be a list or tuple of array-like objects.")
+
+    if not isinstance(y_list, (list, tuple)):
+        raise TypeError("y_list must be a list or tuple of array-like objects.")
+
+    if len(x_list) == 0:
+        raise ValueError("x_list and y_list must contain at least one curve.")
+
+    if len(x_list) != len(y_list):
+        raise ValueError("x_list and y_list must have the same length.")
+
+    n_curves = len(x_list)
+
+    if labels is None:
+        labels = [f"Curve {i + 1}" for i in range(n_curves)]
+    else:
+        if len(labels) != n_curves:
+            raise ValueError("labels must have the same length as x_list and y_list.")
+        labels = [str(label) for label in labels]
+
+    if labellines_fallback not in {"legend", "error"}:
+        raise ValueError("labellines_fallback must be either 'legend' or 'error'.")
+
+    if min_points < 1:
+        raise ValueError("min_points must be at least 1.")
+
+    # Reuse the existing helper if the function is inserted in the current file.
+    xscale, yscale = _axis_scale_from_mode(scale)
+
+    # ------------------------------------------------------------------
+    # Figure size.
+    # ------------------------------------------------------------------
+    if figsize is None:
+        if isinstance(figure_width, str):
+            width_key = figure_width.strip().lower().replace("-", "_").replace(" ", "_")
+            width_map_mm = {
+                "one_column": 88.0,
+                "single_column": 88.0,
+                "column": 88.0,
+                "intermediate": 120.0,
+                "medium": 120.0,
+                "full_page": 180.0,
+                "full_width": 180.0,
+                "page": 180.0,
+            }
+
+            if width_key not in width_map_mm:
+                raise ValueError(
+                    "figure_width must be 'one_column', 'intermediate', "
+                    "'full_page', or a custom width in millimetres."
+                )
+
+            width_mm = width_map_mm[width_key]
+
+        else:
+            width_mm = float(figure_width)
+            if width_mm <= 0:
+                raise ValueError("Custom figure_width must be positive.")
+
+        width_in = width_mm / 25.4
+        height_in = width_in * float(height_ratio)
+        figsize = (width_in, height_in)
+
+    # ------------------------------------------------------------------
+    # Create or reuse the axis.
+    # ------------------------------------------------------------------
+    if ax is None:
+        fig, ax = plt.subplots(
+            figsize=figsize,
+            dpi=dpi,
+            constrained_layout=True,
+        )
+    else:
+        fig = ax.figure
+
+    # ------------------------------------------------------------------
+    # Default A&A-compatible style cycle.
+    # Avoid red/green as a pair and do not rely on color alone.
+    # ------------------------------------------------------------------
+    default_colors = [
+        "black",
+        "#355C9A",  # muted dark blue
+        "#8A5A00",  # muted brown/ochre
+        "#6A4C93",  # muted purple
+        "0.35",
+        "#2F4F4F",  # dark slate
+        "0.55",
+        "#4C72B0",  # restrained blue
+    ]
+
+    default_linestyles = [
+        "-",
+        (0, (7, 3)),
+        (0, (3, 2)),
+        (0, (1, 2)),
+        (0, (5, 2, 1, 2)),
+        (0, (9, 3, 2, 3)),
+    ]
+
+    default_markers = [
+        None,
+        None,
+        None,
+        None,
+        "o",
+        "s",
+        "^",
+        "D",
+    ]
+
+    if n_curves <= 4:
+        default_lw = 1.6
+    elif n_curves <= 10:
+        default_lw = 1.3
+    else:
+        default_lw = 1.1
+
+    def _normalise_style_aliases(style):
+        """Return a copy of a Matplotlib style dictionary with common aliases."""
+        style = dict(style)
+
+        if "linestyle" in style and "ls" not in style:
+            style["ls"] = style.pop("linestyle")
+
+        if "linewidth" in style and "lw" not in style:
+            style["lw"] = style.pop("linewidth")
+
+        if "markersize" in style and "ms" not in style:
+            style["ms"] = style.pop("markersize")
+
+        if "markeredgewidth" in style and "mew" not in style:
+            style["mew"] = style.pop("markeredgewidth")
+
+        return style
+
+    def _get_curve_style(i, label):
+        """Build the final style dictionary for curve i."""
+        style = {
+            "color": default_colors[i % len(default_colors)],
+            "lw": default_lw,
+            "ls": default_linestyles[i % len(default_linestyles)],
+            "marker": default_markers[i % len(default_markers)],
+            "ms": 3.0,
+            "alpha": 1.0,
+            "zorder": 3 + i,
+            "solid_capstyle": "round",
+            "dash_capstyle": "butt",
+        }
+
+        if curve_styles is None:
+            return style
+
+        if isinstance(curve_styles, (list, tuple)):
+            if len(curve_styles) != n_curves:
+                raise ValueError(
+                    "If curve_styles is a list or tuple, it must have the same "
+                    "length as x_list and y_list."
+                )
+            custom = curve_styles[i]
+
+        elif isinstance(curve_styles, dict):
+            if label in curve_styles:
+                custom = curve_styles[label]
+            elif i in curve_styles:
+                custom = curve_styles[i]
+            else:
+                custom = None
+
+        else:
+            raise TypeError(
+                "curve_styles must be None, a list or tuple of dictionaries, "
+                "or a dictionary indexed by curve index or label."
+            )
+
+        if custom is None:
+            return style
+
+        if not isinstance(custom, dict):
+            raise TypeError(
+                f"curve_styles for curve {i} must be a dictionary, "
+                f"got {type(custom)}."
+            )
+
+        custom = _normalise_style_aliases(custom)
+        style.update(custom)
+        return style
+
+    def _prepare_curve(x, y, i):
+        """Convert, validate, filter, and optionally sort one curve."""
+        x = np.asarray(x).ravel()
+        y = np.asarray(y).ravel()
+
+        if x.size != y.size:
+            raise ValueError(
+                f"Curve {i} has incompatible dimensions: "
+                f"x has {x.size} points but y has {y.size} points."
+            )
+
+        if x.size == 0:
+            raise ValueError(f"Curve {i} is empty.")
+
+        valid = _valid_xy_for_scale(x, y, xscale, yscale)
+
+        x_valid = x[valid]
+        y_valid = y[valid]
+
+        if x_valid.size < min_points:
+            if xscale == "log" or yscale == "log":
+                raise ValueError(
+                    f"Curve {i} has fewer than {min_points} valid points after "
+                    "removing non-finite values and non-positive values required "
+                    "by logarithmic axes."
+                )
+
+            raise ValueError(
+                f"Curve {i} has fewer than {min_points} valid finite points."
+            )
+
+        if sort_by_x:
+            order = np.argsort(x_valid)
+            x_valid = x_valid[order]
+            y_valid = y_valid[order]
+
+        return x_valid, y_valid
+
+    # ------------------------------------------------------------------
+    # Plot curves.
+    # ------------------------------------------------------------------
+    plotted_lines = []
+
+    for i, (x, y, label) in enumerate(zip(x_list, y_list, labels)):
+        x_plot, y_plot = _prepare_curve(x, y, i)
+        style = _get_curve_style(i, label)
+
+        line, = ax.plot(
+            x_plot,
+            y_plot,
+            label=label,
+            **style,
+        )
+        plotted_lines.append(line)
+
+    # ------------------------------------------------------------------
+    # Axes, limits, and labels.
+    # ------------------------------------------------------------------
+    ax.set_xscale(xscale)
+    ax.set_yscale(yscale)
+
+    if xlim is not None:
+        if len(xlim) != 2:
+            raise ValueError("xlim must be a tuple or list of length 2.")
+        ax.set_xlim(xlim)
+
+    if ylim is not None:
+        if len(ylim) != 2:
+            raise ValueError("ylim must be a tuple or list of length 2.")
+        ax.set_ylim(ylim)
+
+    if xlabel is not None:
+        ax.set_xlabel(xlabel, fontsize=label_fs)
+
+    if ylabel is not None:
+        ax.set_ylabel(ylabel, fontsize=label_fs)
+
+    if title is not None:
+        ax.set_title(title, fontsize=title_fs)
+
+    # ------------------------------------------------------------------
+    # Ticks and frame.
+    # ------------------------------------------------------------------
+    for spine in ax.spines.values():
+        spine.set_linewidth(spine_width)
+
+    ax.tick_params(
+        which="major",
+        direction="in",
+        length=tick_length,
+        width=tick_width,
+        labelsize=tick_fs,
+        pad=4,
+        top=ticks_top,
+        right=ticks_right,
+    )
+
+    ax.tick_params(
+        which="minor",
+        direction="in",
+        length=minor_tick_length,
+        width=minor_tick_width,
+        top=ticks_top,
+        right=ticks_right,
+    )
+
+    if major_nbins is not None:
+        if xscale == "linear":
+            ax.xaxis.set_major_locator(MaxNLocator(nbins=major_nbins))
+        if yscale == "linear":
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=major_nbins))
+
+    # ------------------------------------------------------------------
+    # Grid policy.
+    # ------------------------------------------------------------------
+    if journal_style:
+        ax.grid(False)
+    else:
+        if grid:
+            if grid_kwargs is None:
+                grid_kwargs = {
+                    "which": "major",
+                    "color": "0.88",
+                    "lw": 0.6,
+                }
+            ax.grid(True, **grid_kwargs)
+        else:
+            ax.grid(False)
+
+    # ------------------------------------------------------------------
+    # Legend or labels on lines.
+    # ------------------------------------------------------------------
+    legend_was_drawn = False
+
+    if use_labellines:
+        try:
+            from labellines import labelLines
+            labellines_available = True
+        except ImportError:
+            labellines_available = False
+
+        if labellines_available:
+            if labelline_kwargs is None:
+                labelline_kwargs = {}
+
+            default_labelline_kwargs = {
+                "align": True,
+                "fontsize": legend_fs,
+                "zorder": 10,
+            }
+            default_labelline_kwargs.update(labelline_kwargs)
+
+            labelLines(plotted_lines, **default_labelline_kwargs)
+
+        else:
+            if labellines_fallback == "error":
+                raise ImportError(
+                    "use_labellines=True requires the optional 'labellines' "
+                    "package. Install it or set labellines_fallback='legend'."
+                )
+
+            if show_legend:
+                legend_was_drawn = True
+
+    elif show_legend:
+        legend_was_drawn = True
+
+    if legend_was_drawn:
+        if legend_kwargs is None:
+            legend_kwargs = {}
+
+        ax.legend(
+            frameon=legend_frameon,
+            fontsize=legend_fs,
+            loc=_legend_loc_from_mode(legend_loc),
+            ncol=legend_ncol,
+            handlelength=legend_handlelength,
+            borderaxespad=0.4,
+            **legend_kwargs,
+        )
+
+    # ------------------------------------------------------------------
+    # Save.
+    # ------------------------------------------------------------------
+    if save:
+        path = Path(savepath)
+
+        if saveformat is None:
+            if path.suffix:
+                saveformat = path.suffix.lower().lstrip(".")
+            else:
+                saveformat = "pdf"
+                path = path.with_suffix(".pdf")
+
+        saveformat = str(saveformat).lower().lstrip(".")
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        def _save_one(fmt):
+            """Save the figure in one supported format."""
+            fmt = fmt.lower().lstrip(".")
+
+            if fmt == "fig":
+                fig_path = path.with_suffix(".fig")
+                with open(fig_path, "wb") as f:
+                    pickle.dump(fig, f)
+
+            elif fmt in {"pdf", "eps", "svg"}:
+                out = path.with_suffix(f".{fmt}")
+                fig.savefig(
+                    out,
+                    format=fmt,
+                    bbox_inches="tight",
+                    pad_inches=0.02,
+                    transparent=False,
+                )
+
+            elif fmt in {"png", "tif", "tiff", "jpg", "jpeg"}:
+                out = path.with_suffix(f".{fmt}")
+                fig.savefig(
+                    out,
+                    format=fmt,
+                    dpi=max(dpi, 300),
+                    bbox_inches="tight",
+                    pad_inches=0.02,
+                    transparent=False,
+                )
+
+            else:
+                raise ValueError(
+                    f"Unsupported save format '{fmt}'. "
+                    "Use pdf, eps, svg, png, tif, tiff, jpg, jpeg, fig, or all."
+                )
+
+        if saveformat == "all":
+            for fmt in ("pdf", "eps", "png", "fig"):
                 _save_one(fmt)
         else:
             _save_one(saveformat)

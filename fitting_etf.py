@@ -12,9 +12,7 @@ from scipy.optimize import least_squares
 from aopera.control import closed_loop_transfer
 
 
-import numpy as np
-from scipy.optimize import least_squares
-from aopera.control import closed_loop_transfer
+
 
 
 def fit_etf_discrete(
