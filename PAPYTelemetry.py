@@ -36,7 +36,7 @@ from parallel_utils import _import_oopao_symbols
 class PAPYtele:
     """Analyze PAPYRUS telemetry commands and project first-stage telemetry products."""
 
-    def __init__(self, tele_path: str=None, OG: float | np.ndarray=None, temporal_crop=None):
+    def __init__(self, tele_path: str=None, is_onsky = True, OG: float | np.ndarray=None, temporal_crop=None):
         """
         Initialize the telemetry analysis object from a saved telemetry file.
 
@@ -66,7 +66,10 @@ class PAPYtele:
             self.OG = OG
         self.data = np.load(self.tele_path, allow_pickle=True)
         self.frame_count = self.data.item()['ocamCounter'].astype(np.float32)[self.temporal_crop]
-        self.dmshape = self.data.item()['dmCmdCube'].astype(np.float32)[self.temporal_crop]
+        self.dmshape = self.data.item()['dmCmdCube'].astype(np.float32)[self.temporal_crop][...,0]
+        self.dmCL = self.data.item()['dmCLCube'].astype(np.float32)[self.temporal_crop][...,0]
+        self.dmFlat = self.data.item()['dmFlat'].astype(np.float32)[self.temporal_crop][...,0]
+        self.dmOffset = self.data.item()['dmOffset'].astype(np.float32)[self.temporal_crop][...,0]
         self.rec_cmd = self.data.item()['modeCube'].astype(np.float32)[self.temporal_crop][..., 0] / self.OG
         self.ts = self.data.item()['timeStampOcamCube'][self.temporal_crop]
         self.loop_gain = self.data.item()['lpGain'][0][0]
@@ -75,35 +78,121 @@ class PAPYtele:
         self.t0 = self.ts[0]
         self.time = np.array([(t - self.t0).total_seconds() for t in self.ts], dtype=float)
         self.M2C = self.data.item()['m2c']
+        self.C2M = np.linalg.pinv(self.M2C)
         self.proj_IF = np.load(str(HERE) +   '\projector_IF_sky.npy')
         self.proj_M2C = np.load(str(HERE) +   '\projector_M2C_sky.npy')
         pupil = self.proj_IF.sum(axis=0)
         self.pupil_mask = pupil != 0
+        self.is_onsky = is_onsky
         self.IF = np.load('IF_DM1.npy')
         self.M2phase = self.IF[self.pupil_mask, :] @ self.M2C
         self.modes_std = self.M2phase.std(axis=0)
         self.IF_std = self.IF[self.pupil_mask, :].std(axis=0)
         self.initialise_OOPAO_objects()
-
+        self.compute_projectors()
+        self.OPDs_map_from_cmd()
+        self.psf_sampling = 2.55
+        # self.project_OPDs()
     def initialise_OOPAO_objects(self):
         """Initialise OOPAO objects needed to project PAPYRUS telemetry onto OZIRIIS modes."""
         Source, Telescope, _, _, DeformableMirror, MisRegistration, _ = _import_oopao_symbols()
+        from parameterFile_papytwin import initializeParameterFile
+        param = initializeParameterFile()
+        print(param['nActuator'])
         self.src = Source(optBand='V', magnitude=0)
-        pupil = self.pupil_mask.reshape(-1, np.int64(self.pupil_mask.shape[0] ** (1 / 2)))[::-1, :]
-        self.tel = Telescope(pupil.shape[0], 1.52, pupil=pupil)
+        self.tel = self._tel_first_stage(param)
+        self.dm = self._DM_first_stage(param)
+        self.tel_ozi = self._tel_second_stage(self.tel)
         self.src * self.tel
+        self.src * self.tel_ozi
         param = np.load(str(HERE) +   '\dm_second_stage_misreg_dict.npy', allow_pickle=True).item()
         m = MisRegistration(param)
-        self.dm_ozi = DeformableMirror(telescope=self.tel, nSubap=10, mechCoupling=0.35, print_dm_properties=False, pitch=0.11, misReg=m, sign=-1e-05)
-        if_path = os.path.join(HERE, 'IF_vZWFS.npy')
-        if not os.path.exists(if_path):
-            raise FileNotFoundError(f"Fichier d'influence functions introuvable : {if_path}")
-        self.IF_ozi = np.load(str(HERE) + '\IF_dm2.npy') * 1e-06
+        
+        self.dm_ozi = DeformableMirror(telescope=self.tel, nSubap=10, mechCoupling=0.35, print_dm_properties=False, pitch=0.11, misReg=m)
+        
+        self.IF_ozi = np.load(str(HERE) + '\IF_dm2.npy') * 1e-6
         print(self.IF_ozi.shape)
         amplitude_mean = np.ptp(self.IF_ozi, axis=0)
         self.dm_ozi.modes *= amplitude_mean / np.ptp(self.dm_ozi.modes)
         self.src_imaging = Source(optBand='IR1310', magnitude=0)
+        
+    def _tel_first_stage(self, param):
+        _, Telescope, _, _, _, MisRegistration, _ = _import_oopao_symbols()
+        T152onDM_size       = 35.5 # mm
+        PapyrusOnDM_size    = 37.5 # mm 
+        ratio_sky_calib = T152onDM_size/PapyrusOnDM_size
 
+        
+        # create a temporary Telescope object
+        tel_calib = Telescope(resolution    = int(np.round(param['nSubaperture']*param['nPixelPerSubap'])),
+                        diameter            = param['diameter']/ratio_sky_calib,
+                        samplingTime        = param['samplingTime'],
+                        centralObstruction  = 0,
+                        fov                 = 0)
+        
+        n_extra_pix = (param['resolution']-tel_calib.resolution)//2
+        pupil_calib = np.pad(tel_calib.pupil,[n_extra_pix,n_extra_pix])
+        print(pupil_calib.shape)
+
+        # create a temporary Telescope object
+        pupil_sky = self.pupil_mask.reshape(80,80)
+        
+        
+        
+        # redefine the pupil padding to accomodate for the calibration or sky mode
+        tel = Telescope(resolution          = param['resolution'],
+                        diameter            = param['diameter'] * param['resolution']/tel_calib.resolution,
+                        samplingTime        = param['samplingTime'],
+                        centralObstruction  = 0,
+                        fov                 = 0)    
+        
+        if self.is_onsky:
+            tel.pupil = pupil_sky
+        else:
+            tel.pupil = pupil_calib
+        return tel
+        
+    def _tel_second_stage(self, tel_first_stage):
+        _, Telescope, _, _, _, MisRegistration, _ = _import_oopao_symbols()
+        papypupil,_ = self._crop_pupil(tel_first_stage.pupil.copy())
+        pupil = np.pad(papypupil, pad_width=((5,3),(3,5))) #hard coded
+        tel_2nd = Telescope(pupil.shape[0], 1.52, pupil=pupil)
+        return tel_2nd
+    
+    def _DM_first_stage(self, param):
+        _, _, _, _, DeformableMirror, MisRegistration, _ = _import_oopao_symbols()
+        
+        T152onDM_size       = 35.5 # mm
+        misReg          = MisRegistration(param)
+        pitch           = 2.5 #mm
+        DM_diag_size    = param['nActuator'] * pitch #mm
+        scale_T152DM = DM_diag_size / T152onDM_size
+        D_T152 = 1.52
+        
+        x = np.linspace(-scale_T152DM * D_T152/2, scale_T152DM * D_T152/2, param['nActuator'])
+        [X,Y] = np.meshgrid(x,x)
+        
+        DM_coordinates = np.asarray([X.reshape(17**2),Y.reshape(17**2)]).T
+        dist           = np.sqrt(DM_coordinates[:,0]**2 + DM_coordinates[:,1]**2)
+        DM_coordinates = DM_coordinates[dist <= D_T152/2 + 2.2 *pitch * D_T152 / T152onDM_size, :]
+        DM_pitch       = pitch * D_T152 / T152onDM_size
+        
+        # hardcoded for now
+        alpao_unit     = 30*7591.024876#1.507e5#
+        
+        param['dm_coordinates'] = DM_coordinates
+        param['pitch']          = DM_pitch
+        
+        dm=DeformableMirror(telescope    = self.tel,\
+                            nSubap       = 16,\
+                            mechCoupling = param['mechanicalCoupling'],\
+                            misReg       = misReg, \
+                            coordinates  = DM_coordinates,\
+                            pitch        = DM_pitch,\
+                            modes        = None,
+                            flip_lr      = True,
+                            sign         = -1/alpao_unit)
+        return dm
     def compute_Zernike_basis(self, nmodes=30):
         """Compute a Zernike basis and its corresponding OPD projector."""
         Zer_basis = Zernike(self.tel, J=nmodes)
@@ -113,17 +202,30 @@ class PAPYtele:
 
     def OPDs_map_from_cmd(self):
         """Reconstruct OPD maps from PAPYRUS modal commands."""
-        OPD_map = (self.IF @ (self.M2C @ self.rec_cmd.T))*self.pupil_mask
-        return OPD_map.T.reshape(-1, self.tel.pupil.shape[0], self.tel.pupil.shape[0])
+        OPD_map = (self.dm.modes @ (self.M2C @ self.rec_cmd.T))*self.tel.pupil.reshape(-1,1)
+        self.OPDs_from_cmd = OPD_map.T.reshape(-1, self.tel.pupil.shape[0], self.tel.pupil.shape[0])
+        return self.OPDs_from_cmd
+    
+    def compute_projectors(self, keep_pupil_only = False):
+        """
+        Compute projection matrices onto modal commands and influence functions.
 
+        
+        """
+        self._projector_keep_pupil_status = keep_pupil_only
+        self.proj_M2C = self._compute_proj_dm(self.M2C, self.tel, self.dm,keep_pupil_only)
+        self.proj_IF = self._compute_proj_dm(np.identity(self.dm.modes.shape[-1]), self.tel, self.dm,keep_pupil_only)
+        
     def project_on_OZIRIIS(self, modes, proj=None):
         """Project first-stage commands onto an OZIRIIS modal basis."""
         if proj is None:
-            proj, modes = self._compute_proj_dm(modes, self.tel, self.dm_ozi, return_modes=True)
+            proj, modes = self._compute_proj_dm(modes, self.tel_ozi, self.dm_ozi, return_modes=True)
         rec_modes = np.zeros((self.rec_cmd.shape[0], modes.shape[-1]))
         for i in tqdm.tqdm(range(self.rec_cmd.shape[0])):
-            opds = self.IF @ (self.M2C @ self.rec_cmd[i])
-            rec_modes[i] = proj @ opds
+            opds = self.dm.modes @ (self.M2C @ self.rec_cmd[i])
+            opds_ = np.zeros_like(self.tel_ozi.pupil).astype(np.float32)
+            opds_[self.tel_ozi.pupil] = opds[self.tel.pupil.ravel()]
+            rec_modes[i] = proj @ opds_.ravel()
         return (rec_modes, modes, proj)
 
     def PSD_cmd_IFs(self, npsg=None):
@@ -137,7 +239,7 @@ class PAPYtele:
         """
         if npsg is None:
             npsg = self.time.size
-        self.psd_cmd_IFs = self.psd(self.time, (self.M2C @ self.rec_cmd.T).T * self.IF_std[None, :], nperseg=npsg)
+        self.psd_cmd_IFs = self.psd(self.time, (self.proj_IF@self.OPDs_from_cmd.reshape(self.OPDs_from_cmd.shape[0],-1).T).T, nperseg=npsg)
 
     def PSD_cmd_modal(self, npsg=None):
         """
@@ -151,7 +253,7 @@ class PAPYtele:
         if npsg is None:
             npsg = self.time.size
         logger.info('Computing modal PSD from cmd')
-        self.psd_cmd_modal = self.psd(self.time, self.rec_cmd * self.modes_std[None, :], nperseg=npsg)
+        self.psd_cmd_modal = self.psd(self.time, (self.proj_M2C@self.OPDs_from_cmd.reshape(self.OPDs_from_cmd.shape[0],-1).T).T, nperseg=npsg)
 
     def compute_all_PSD(self, npsg=None):
         """
@@ -213,16 +315,37 @@ class PAPYtele:
         psd = np.stack(psd, axis=1)
         return (f.astype(np.float32), psd.astype(np.float32))
     
+    def _crop_pupil(self, pupil = None):
+        if pupil is None:
+            pupil = self.tel.pupil
+        where_pupil = np.where(pupil)
+        x_, x = where_pupil[0].min(),where_pupil[0].max()
+        y_, y = where_pupil[1].min(),where_pupil[1].max()
+        final_mask = pupil[x_:x+1,y_:y+1]
+        return final_mask, (x_, x,y_, y)
+    def _crop_opd(self, OPDs:np.ndarray= None, pupil = None):
+        if OPDs is None:
+            OPDs = self.OPDs
+        if pupil is None:
+            pupil = self.tel.pupil
+        final_mask = self._crop_pupil()
+        if OPDs.ndim == 3:
+            OPDs_crop = np.zeros((OPDs.shape[0], final_mask.shape[0], final_mask.shape[1])).astype(np.float32)
+            OPDs_crop[:, final_mask] = OPDs[:, pupil]
+        else:
+            OPDs_crop = np.zeros_like(final_mask).astype(np.float32)
+            OPDs_crop[final_mask] = OPDs[pupil]
+        return final_mask, OPDs_crop
+    
     def simulate_PSF(self, imaging_wvl=True, sampling=None, ncpa=None, parallel=True, parall_njob=4, chunk_size=100, img_size=100):
         """Simulate PSF images from reconstructed OPD maps."""
         if ncpa is not None:
             if ncpa.size != self.M2C.shape[-1]:
                 raise ValueError('ncpa must be an array of the size of the number of modes in the M2C')
-        if not self.has_recontructed_phase:
-            raise RuntimeError('Must compute phase before projection')
+        
         opd_ncpa = self._compute_ncpa_opd(ncpa)
-        pupil = self.tel.pupilReflectivity.copy()
-        OPDs = self.OPDs_map_from_cmd()
+        pupil = self.tel.pupil
+        OPDs = self.OPDs_from_cmd
         if sampling is None:
             sampling = np.copy(self.psf_sampling)
         if parallel:
@@ -231,7 +354,7 @@ class PAPYtele:
             else:
                 wvl = self.src.wavelength
             print(wvl)
-            n_frames = self.OPDs.shape[0]
+            n_frames = OPDs.shape[0]
             opd_ncpa *= 2 * np.pi / wvl
  
             chunks = [OPDs[i:i + chunk_size] * 2 * np.pi / wvl for i in range(0, n_frames, chunk_size)]
@@ -240,13 +363,13 @@ class PAPYtele:
             self.simulated_psf = np.concatenate(psf_chunks, axis=0).astype(np.float32)
         else:
             _, _, _, _, _, _, Detector = _import_oopao_symbols()
-            self.cam = Detector(psf_sampling=sampling * self.submasks[0].sum() ** (1 / 2) / self.tel1.pupil.shape[0])
+            self.cam = Detector(psf_sampling=sampling * self.submasks[0].sum() ** (1 / 2) / self.tel.pupil.shape[0])
             if imaging_wvl:
                 self.src_imaging * self.tel
             else:
                 self.src * self.tel
             self.simulated_psf = []
-            for i in tqdm.tqdm(range(self.OPDs.shape[0]), desc='PSF simulation'):
+            for i in tqdm.tqdm(range(OPDs.shape[0]), desc='PSF simulation'):
                 self.tel.OPD = OPDs[i] + opd_ncpa
                 self.tel * self.cam
                 self.simulated_psf.append(self.cam.frame.copy().astype(np.float32))
@@ -254,38 +377,109 @@ class PAPYtele:
         
     def _compute_ncpa_opd(self, ncpa=None):
         """Compute the static NCPA OPD map from modal coefficients."""
-        self.tel1.OPD = self.tel1.OPD * 0
-        self.dm1.coefs = 0
+        self.tel.OPD = self.tel.OPD * 0
+        self.dm_ozi.coefs = 0
         if ncpa is not None:
-            self.dm1.coefs = self.M2C @ ncpa
+            self.dm_ozi.coefs = self.M2C @ ncpa
         else:
-            self.dm1.coefs = self.dm1.coefs * 0
-        self.tel1 * self.dm1
-        return self.tel1.OPD.copy().astype(np.float32)
+            self.dm_ozi.coefs = self.dm_ozi.coefs * 0
+        self.tel * self.dm_ozi
+        return self.tel.OPD.copy().astype(np.float32)
 
     def compute_lost_frames(self):
         """Detect frame counter discontinuities in the telemetry sequence."""
         self.lost_frames = np.diff(self.frame_count) - 1
         self.where_lost_frames = np.append(False, self.lost_frames > 0)
     
-    def _compute_proj_dm(self, modal_basis, tel, dm, return_modes=False):
-        """Compute a diagonal-normalized projection matrix from DM-generated modes."""
+    def _compute_proj_dm(self, modal_basis, tel, dm, return_modes=False, keep_pupil_only = False, filtering = None):
+        """
+        Calcule un projecteur à partir des modes DM générés dans OOPAO.
+        """
+        modal_basis = np.asarray(modal_basis, dtype=np.float32)
+
+        if modal_basis.ndim != 2:
+            raise ValueError(
+                f"modal_basis doit être 2D. Shape reçue : {modal_basis.shape}"
+            )
+
         dm.coefs = modal_basis
         tel * dm
+
         modes = tel.OPD.copy()
-        modes = modes.reshape((tel.resolution ** 2, modes.shape[-1])) / tel.OPD[tel.pupil, :].std(axis=0)
+        modes = modes.reshape((tel.resolution**2, modes.shape[-1]))
+
+        std = tel.OPD[tel.pupil, :].std(axis=0)
+        std = np.where(np.abs(std) < 1e-30, 1.0, std)
+
+        modes = modes / std[None, :]
+
         cov_modes = modes.T @ modes
+        diag = np.diag(cov_modes)
+        diag = np.where(np.abs(diag) < 1e-30, 1.0, diag)
         if return_modes:
-            return (np.diag(1 / np.diag(cov_modes)) @ modes.T, modes)
+            return (np.diag(1.0 / diag) @ modes.T).astype(np.float32), modes
         else:
-            return np.diag(1 / np.diag(cov_modes)) @ modes.T
+            return (np.diag(1.0 / diag) @ modes.T).astype(np.float32)
+    def _compute_proj_OPDs(self, modes, tel, keep_pupil_only = False, filtering = None):
+        """
+        Calcule un projecteur à partir de modes OPD déjà définis.
+        """
+        modes = np.asarray(modes, dtype=np.float32)
 
-    def _compute_proj_OPDs(self, modes, tel):
-        """Compute a diagonal-normalized projection matrix from OPD modes."""
-        modes = modes.reshape((tel.resolution ** 2, modes.shape[-1])) / modes[tel.pupil, :].std(axis=0)
-        cov_modes = modes.T @ modes
-        return np.diag(1 / np.diag(cov_modes)) @ modes.T
+        if modes.ndim != 3:
+            raise ValueError(
+                "modes doit avoir la shape (resolution, resolution, n_modes). "
+                f"Shape reçue : {modes.shape}"
+            )
 
+        if modes.shape[:2] != tel.pupil.shape:
+            raise ValueError(
+                "Shape spatiale des modes incompatible avec la pupille. "
+                f"modes.shape[:2]={modes.shape[:2]}, pupil.shape={tel.pupil.shape}"
+            )
+
+        std = modes[tel.pupil, :].std(axis=0)
+        
+
+        modes_flat = modes.reshape((tel.resolution**2, modes.shape[-1]))
+        modes_flat = modes_flat / std[None, :]
+
+        cov_modes = modes_flat.T @ modes_flat
+        diag = np.diag(cov_modes)
+        diag = np.where(np.abs(diag) < 1e-30, 1.0, diag)
+    
+        return (np.diag(1.0 / diag) @ modes_flat.T).astype(np.float32)
+    
+    def project_OPDs(self, remove_mean = False):
+        """
+        Project reconstructed OPD maps onto influence functions and modes.
+
+        Raises
+        ------
+        RuntimeError
+            If phase reconstruction has not been computed yet.
+        """
+
+        if self._projector_keep_pupil_status:
+    
+        
+            if remove_mean:
+                mean = self.OPDs[:,self.tel.pupil==1].mean(axis=0)
+            else:
+                mean = 0
+            self.OPDs_on_IFs = self._project_phase(self.proj_IF, self.OPDs[:,self.tel.pupil==1]-mean)
+            self.OPDs_on_modes = self._project_phase(self.proj_M2C, self.OPDs[:,self.tel.pupil==1]-mean)
+            self.has_projected_phase = True
+        else: 
+            if remove_mean:
+                mean = self.OPDs.mean(axis=0)
+            else:
+                mean = 0
+            self.OPDs_on_IFs = self._project_phase(self.proj_IF, self.OPDs-mean)
+            self.OPDs_on_modes = self._project_phase(self.proj_M2C, self.OPDs-mean)
+            self.has_projected_phase = True
+            
+    
     def _project_phase(self, projector, phase):
         """
         Apply a projector to a stack of phase or OPD maps.
@@ -372,7 +566,38 @@ class PAPYtele:
         f = interp1d(t, x, axis=0, kind='linear', bounds_error=False, fill_value='extrapolate')
         xu = f(tu)
         return (tu, xu, fs)
-
+    def _get_psf_for_analysis(self):
+        """Return the simulated PSF image used for PSF analysis.
+    
+        If ``self.simulated_psf`` is a cube, the long-exposure PSF is estimated as
+        the temporal average of the simulated frames.
+        """
+        if not hasattr(self, "simulated_psf"):
+            raise RuntimeError("Must run simulate_PSF before PSF analysis.")
+    
+        if self.simulated_psf.ndim == 3:
+            return self.simulated_psf.mean(axis=0)
+    
+        if self.simulated_psf.ndim == 2:
+            return self.simulated_psf
+    
+        raise ValueError(
+            "simulated_psf must be either a 2D image or a 3D temporal cube."
+        )
+    
+    
+    def _safe_store_psf_analysis_result(self, name, value):
+        """Store a PSF analysis result without overwriting existing attributes."""
+        if not hasattr(self, "psf_analysis_results"):
+            self.psf_analysis_results = {}
+    
+        self.psf_analysis_results[name] = value
+    
+        if not hasattr(self, name):
+            setattr(self, name, value)
+        else:
+            safe_name = f"simulated_{name}"
+            setattr(self, safe_name, value)
     def _choose_file(self):
         from qtpy.QtWidgets import QApplication, QFileDialog
         app = QApplication.instance()
@@ -389,3 +614,39 @@ class PAPYtele:
             print('First stage command projected on second stage')
         else:
             raise ValueError('Entered object not an OZItele')
+    def __mul__(self, obj):
+        """Analyze the simulated PSF using a PSFTele-like analyzer.
+    
+        Parameters
+        ----------
+        obj : object
+            PSF telemetry analyzer. It must expose an ``analyze_psf`` method.
+    
+        Returns
+        -------
+        OZITele
+            Current instance, updated with PSF analysis results.
+    
+        Raises
+        ------
+        TypeError
+            If the provided object cannot analyze PSFs.
+        RuntimeError
+            If no simulated PSF is available.
+        """
+        if not obj.tag == 'psf':
+            raise ValueError('The multiplied object must be a PSF object')
+    
+        psf = self._get_psf_for_analysis()
+    
+        results = obj.analyze_psf(
+            psf=psf,
+            sampling=obj.sampling,
+        )
+    
+        for name, value in results.items():
+            self._safe_store_psf_analysis_result(name, value)
+    
+        print("Simulated PSF analyzed with PSFTele")
+    
+        return self

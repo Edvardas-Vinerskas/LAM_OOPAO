@@ -29,7 +29,7 @@ from tkinter import filedialog
 class PSFTele:
     """Load PSF telemetry cubes and run PSF-oriented image analysis."""
 
-    def __init__(self, tele_path: str=None, is_onsky: bool=True, is_cl: bool=True, crop_img=100, temporal_crop=None):
+    def __init__(self, tele_path: str=None, is_onsky: bool=True, is_cl: bool=True, crop_img=100, temporal_crop=None, dark_path = None):
         """
         Initialize the telemetry analysis object from a saved telemetry file.
 
@@ -57,7 +57,7 @@ class PSFTele:
         self.is_cl = is_cl
         self._center_cog = center_cog
         self.rad2arcsec = 180 / (2 * np.pi) * 3600
-        self.sampling_calib = 3.2
+        self.sampling_calib = 2.86
         self.wvl_sky = 1.31e-06
         self.wvl_calib = 1.55e-06
         if tele_path is None:
@@ -69,7 +69,10 @@ class PSFTele:
         self.tele_path = tele_path
         data = self._load(self.tele_path).astype(np.float32)
         self.img_raw = data[:-1][self.temporal_crop]
-        self.dark = data[-1]
+        if dark_path is None:
+            self.dark = data[-1]
+        else:
+            self.dark = self._load(dark_path).astype(np.float32).mean(axis=0)
         self.frame_count = self.img_raw[:, 0, 0]
         self.crop_img = crop_img
         self.short_exp_psf = self.img_raw - self.dark
@@ -84,7 +87,7 @@ class PSFTele:
             self.sampling = self.sampling_calib
             papyrus.occ = 0
             self.wvl = self.wvl_calib
-        self.psf_sampling = 2.8
+
 
     def psf_analysis(self, psf=None, elevation_deg=80, sampling=None):
         """Fit a PSF model and store image quality metrics on the instance.

@@ -166,6 +166,7 @@ def plot_psd_aa(
     psd_label=r"nm$^2$/Hz",
     fmin=None,
     fmax=None,
+    ylim = None,
     scale="log",
     normalised=False,
     compute_etf=True,
@@ -362,7 +363,8 @@ def plot_psd_aa(
     # ---------- axes ----------
     ax.set_xscale(xscale)
     ax.set_yscale(yscale)
-
+    if ylim is not None:
+        ax.set_ylim(ylim)
     # ---------- limits ----------
     if fmin is not None or fmax is not None:
         ax.set_xlim(left=fmin, right=fmax)
@@ -2846,12 +2848,6 @@ def plot_n_psd_aa(
 
     return fig, ax
 #%%
-from pathlib import Path
-import pickle
-
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm
 
 
 def plot_psf_grid_aa(
@@ -2876,49 +2872,99 @@ def plot_psf_grid_aa(
     savepath="psf_grid.pdf",
     saveformat=None,
     share_colorbar=True,
+    individual_colorbars=False,
     hide_inner_labels=True,
+    normalize_each=True,
+    use_log_norm=True,
+    cbar_position=(0.18, 0.085, 0.64, 0.025),
+    layout_rect=(0.0, 0.13, 1.0, 1.0),
+    wspace=0.25,
+    hspace=0.32,
 ):
     """
-    Trace plusieurs PSF sous forme de grille, avec un style adapté à A&A.
+    Trace plusieurs PSF sous forme de grille avec un style adapté à Astronomy & Astrophysics.
 
     Parameters
     ----------
     psf_groups : list[list[np.ndarray or None]]
         Liste de lignes. Chaque ligne contient des PSF 2D ou None.
-        Les None produisent une cellule vide sans axe visible.
+        Une entrée None produit une cellule vide sans axe visible.
 
     wvl : float
-        Longueur d'onde.
+        Longueur d'onde en mètres.
 
     telescope_diameter : float
-        Diamètre du télescope.
+        Diamètre du télescope en mètres.
 
     sampling : float
         Facteur d'échantillonnage.
 
     vmin, vmax : float
-        Bornes de normalisation logarithmique appliquées aux PSF normalisées.
+        Bornes de normalisation de l'image affichée.
+
+    cmap : str
+        Colormap Matplotlib.
+
+    xlabel, ylabel : str
+        Labels des axes.
+
+    cbar_label : str
+        Label de la colorbar.
 
     nx : int or None
-        Taille du crop central carré. Si None, chaque PSF est affichée entière.
+        Taille du crop central carré. Si None, chaque image est gardée entière.
 
     titles : list[list[str or None]] or None
-        Titres individuels des sous-figures.
+        Titres individuels, même structure que psf_groups.
 
     row_labels : list[str] or None
-        Labels ajoutés sur la première colonne de chaque ligne.
+        Labels affichés sur la première colonne, un par ligne.
 
     col_labels : list[str] or None
-        Labels ajoutés au-dessus de chaque colonne.
+        Labels affichés au-dessus des colonnes.
+        Ignorés pour une case si titles[i][j] existe déjà.
 
     figsize : tuple or None
-        Taille de la figure en pouces. Si None, calculée automatiquement.
+        Taille de figure en pouces.
 
     share_colorbar : bool
-        Si True, une seule colorbar commune est utilisée.
+        Si True, utilise une colorbar commune horizontale en bas.
+
+    individual_colorbars : bool
+        Si True et share_colorbar=False, ajoute une colorbar par axe.
 
     hide_inner_labels : bool
-        Si True, seuls les axes extérieurs portent les labels.
+        Si True, seuls les axes extérieurs gardent les labels.
+
+    normalize_each : bool
+        Si True :
+            chaque image est normalisée par sa somme puis par son maximum.
+            C'est le comportement de ta fonction plot_psf_aa originale.
+
+        Si False :
+            les images sont affichées telles quelles.
+            À utiliser pour des PSF ou résidus déjà normalisés.
+
+    use_log_norm : bool
+        Si True, utilise LogNorm(vmin, vmax).
+        Si False, utilise une normalisation linéaire avec vmin/vmax.
+
+    cbar_position : tuple
+        Position de la colorbar commune :
+        (left, bottom, width, height), en coordonnées relatives à la figure.
+
+    layout_rect : tuple
+        Rectangle réservé aux subplots dans tight_layout :
+        (left, bottom, right, top).
+        Le bottom doit être supérieur à la position verticale de la colorbar.
+
+    wspace, hspace : float
+        Espacement horizontal et vertical entre les subplots.
+
+    Returns
+    -------
+    fig, axes
+        Figure Matplotlib et tableau 2D d'axes.
     """
 
     if not isinstance(psf_groups, (list, tuple)) or len(psf_groups) == 0:
@@ -2928,9 +2974,24 @@ def plot_psf_grid_aa(
     ncols = max(len(row) for row in psf_groups)
 
     if ncols == 0:
-        raise ValueError("psf_groups ne contient aucune PSF.")
+        raise ValueError("psf_groups ne contient aucune colonne.")
 
-    # Style adapté à A&A
+    if share_colorbar and individual_colorbars:
+        raise ValueError(
+            "share_colorbar=True et individual_colorbars=True sont incompatibles. "
+            "Une colorbar commune ou des colorbars individuelles, pas les deux."
+        )
+
+    valid_psfs = [
+        psf
+        for row in psf_groups
+        for psf in row
+        if psf is not None
+    ]
+
+    if len(valid_psfs) == 0:
+        raise ValueError("Aucune PSF valide à tracer : toutes les entrées sont None.")
+
     rc_params = {
         "font.size": 8,
         "axes.labelsize": 8,
@@ -2947,17 +3008,96 @@ def plot_psf_grid_aa(
         "ytick.right": True,
     }
 
-    # Échelle en arcsec
     pix_scale = wvl / telescope_diameter / sampling
     rad2arcsec = 180 / np.pi * 3600
     pix_scale_arcsec = pix_scale * rad2arcsec
 
-    norm = LogNorm(vmin=vmin, vmax=vmax)
+    if use_log_norm:
+        norm = LogNorm(vmin=vmin, vmax=vmax)
+    else:
+        norm = plt.Normalize(vmin=vmin, vmax=vmax)
 
     if figsize is None:
-        # Largeur typique A&A : une colonne ~3.35 in.
-        # Pour plusieurs colonnes, on élargit raisonnablement.
-        figsize = (3.35 * ncols / 2, 3.1 * nrows / 2)
+        figsize = (
+            max(3.35, 2.4 * ncols),
+            max(2.5, 2.3 * nrows),
+        )
+
+    def _center_crop(arr, crop_size, i, j):
+        ny0, nx0 = arr.shape
+
+        if crop_size > ny0 or crop_size > nx0:
+            raise ValueError(
+                f"nx={crop_size} est trop grand pour la PSF en position ({i}, {j}) "
+                f"de taille {arr.shape}."
+            )
+
+        cy, cx = ny0 // 2, nx0 // 2
+        half = crop_size // 2
+
+        y_start = cy - half
+        x_start = cx - half
+        y_end = y_start + crop_size
+        x_end = x_start + crop_size
+
+        return arr[y_start:y_end, x_start:x_end]
+
+    def _prepare_image(psf, i, j):
+        psf = np.asarray(psf, dtype=float)
+
+        if psf.ndim != 2:
+            raise ValueError(
+                f"La PSF en position ({i}, {j}) doit être un array 2D."
+            )
+
+        if not np.any(np.isfinite(psf)):
+            raise ValueError(
+                f"La PSF en position ({i}, {j}) ne contient aucune valeur finie."
+            )
+
+        psf = np.nan_to_num(psf, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if nx is not None:
+            psf = _center_crop(psf, nx, i, j)
+
+        if normalize_each:
+            psf_sum = np.sum(psf)
+
+            if psf_sum <= 0:
+                raise ValueError(
+                    f"La PSF en position ({i}, {j}) a une somme nulle ou négative."
+                )
+
+            image = psf / psf_sum
+
+            peak = np.max(image)
+            if peak <= 0:
+                raise ValueError(
+                    f"La PSF en position ({i}, {j}) a un maximum nul ou négatif."
+                )
+
+            image = image / peak
+
+        else:
+            image = psf.copy()
+
+        if use_log_norm:
+            # LogNorm ne supporte pas les valeurs <= 0.
+            image = np.where(image > 0, image, np.nan)
+
+        ny, nx_img = image.shape
+
+        x_axis = (np.arange(nx_img) - (nx_img - 1) / 2) * pix_scale_arcsec
+        y_axis = (np.arange(ny) - (ny - 1) / 2) * pix_scale_arcsec
+
+        extent = [
+            x_axis[0],
+            x_axis[-1],
+            y_axis[0],
+            y_axis[-1],
+        ]
+
+        return image, extent
 
     with plt.rc_context(rc_params):
         fig, axes = plt.subplots(
@@ -2968,6 +3108,7 @@ def plot_psf_grid_aa(
         )
 
         images = []
+        image_axes = []
 
         for i in range(nrows):
             row = psf_groups[i]
@@ -2975,125 +3116,90 @@ def plot_psf_grid_aa(
             for j in range(ncols):
                 ax = axes[i, j]
 
-                # Cas cellule absente ou explicitement vide
                 if j >= len(row) or row[j] is None:
                     ax.set_visible(False)
                     continue
 
-                psf = np.asarray(row[j])
-
-                if psf.ndim != 2:
-                    raise ValueError(
-                        f"La PSF en position ({i}, {j}) doit être un array 2D."
-                    )
-
-                psf_sum = np.sum(psf)
-                if psf_sum <= 0:
-                    raise ValueError(
-                        f"La PSF en position ({i}, {j}) a une somme nulle ou négative."
-                    )
-
-                psf_norm = psf / psf_sum
-
-                # Crop central optionnel
-                if nx is not None:
-                    ny0, nx0 = psf_norm.shape
-                    cy, cx = ny0 // 2, nx0 // 2
-
-                    half = nx // 2
-                    y_start = cy - half
-                    x_start = cx - half
-                    y_end = y_start + nx
-                    x_end = x_start + nx
-
-                    if y_start < 0 or x_start < 0 or y_end > ny0 or x_end > nx0:
-                        raise ValueError(
-                            f"nx={nx} est trop grand pour la PSF en position ({i}, {j}) "
-                            f"de taille {psf_norm.shape}."
-                        )
-
-                    psf_norm = psf_norm[y_start:y_end, x_start:x_end]
-
-                ny, nx_img = psf_norm.shape
-
-                x_axis = (
-                    np.arange(nx_img) - (nx_img - 1) / 2
-                ) * pix_scale_arcsec
-                y_axis = (
-                    np.arange(ny) - (ny - 1) / 2
-                ) * pix_scale_arcsec
-
-                extent = [
-                    x_axis[0],
-                    x_axis[-1],
-                    y_axis[0],
-                    y_axis[-1],
-                ]
-
-                maxi = np.max(psf_norm)
-                if maxi <= 0:
-                    raise ValueError(
-                        f"La PSF en position ({i}, {j}) a un maximum nul ou négatif."
-                    )
+                image, extent = _prepare_image(row[j], i, j)
 
                 im = ax.imshow(
-                    psf_norm / maxi,
+                    image,
                     norm=norm,
                     cmap=cmap,
                     extent=extent,
                     origin=origin,
                 )
+
                 images.append(im)
+                image_axes.append(ax)
 
-                # Titres individuels
+                # Titre individuel prioritaire
+                title_set = False
                 if titles is not None:
-                    if i < len(titles) and j < len(titles[i]) and titles[i][j] is not None:
-                        ax.set_title(titles[i][j])
+                    if i < len(titles) and j < len(titles[i]):
+                        if titles[i][j] is not None:
+                            ax.set_title(titles[i][j])
+                            title_set = True
 
-                # Labels de colonnes
-                if col_labels is not None and i == 0 and j < len(col_labels):
-                    ax.set_title(col_labels[j])
+                # Label de colonne si pas déjà un titre individuel
+                if not title_set and col_labels is not None:
+                    if i == 0 and j < len(col_labels):
+                        ax.set_title(col_labels[j])
 
-                # Labels de lignes
-                if row_labels is not None and j == 0 and i < len(row_labels):
-                    ax.set_ylabel(row_labels[i])
-
+                # Labels d'axes
                 if hide_inner_labels:
                     if i == nrows - 1:
                         ax.set_xlabel(xlabel)
                     else:
+                        ax.set_xlabel("")
                         ax.set_xticklabels([])
 
                     if j == 0:
-                        if row_labels is None:
+                        if row_labels is not None and i < len(row_labels):
+                            ax.set_ylabel(row_labels[i])
+                        else:
                             ax.set_ylabel(ylabel)
                     else:
+                        ax.set_ylabel("")
                         ax.set_yticklabels([])
                 else:
                     ax.set_xlabel(xlabel)
-                    ax.set_ylabel(ylabel)
+
+                    if row_labels is not None and j == 0 and i < len(row_labels):
+                        ax.set_ylabel(row_labels[i])
+                    else:
+                        ax.set_ylabel(ylabel)
 
         if len(images) == 0:
-            raise ValueError("Aucune PSF valide à tracer : toutes les entrées sont None.")
+            raise ValueError("Aucune image valide n'a été tracée.")
 
-        # Colorbar commune
         if share_colorbar:
-            visible_axes = [ax for ax in axes.ravel() if ax.get_visible()]
+            fig.tight_layout(rect=layout_rect)
+            fig.subplots_adjust(wspace=wspace, hspace=hspace)
+
+            cax = fig.add_axes(cbar_position)
+
             cbar = fig.colorbar(
                 images[0],
-                ax=visible_axes,
-                fraction=0.046,
-                pad=0.04,
+                cax=cax,
+                orientation="horizontal",
             )
             cbar.set_label(cbar_label)
+
         else:
-            for im, ax in zip(images, [ax for ax in axes.ravel() if ax.get_visible()]):
-                cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-                cbar.set_label(cbar_label)
+            fig.tight_layout()
+            fig.subplots_adjust(wspace=wspace, hspace=hspace)
 
-        fig.tight_layout()
+            if individual_colorbars:
+                for im, ax in zip(images, image_axes):
+                    cbar = fig.colorbar(
+                        im,
+                        ax=ax,
+                        fraction=0.046,
+                        pad=0.04,
+                    )
+                    cbar.set_label(cbar_label)
 
-        # Sauvegarde optionnelle
         if save:
             path = Path(savepath)
 

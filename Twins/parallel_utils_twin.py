@@ -69,71 +69,56 @@ def _import_all_oopao_symbols():
     return Source, Telescope, ZWFS, ZWFS2, DeformableMirror, MisRegistration, Detector, Atmosphere
 
 def _build_vzwfs_from_setup(setup):
-    Source, Telescope, ZWFS, ZWFS2, _, _, _ = _import_oopao_symbols()
+    Source, Telescope, _, ZWFS2, _, _, _ = _import_oopao_symbols()
 
-    src1 = Source(optBand=setup.get("src1_optBand", "H"), magnitude=-2.5)
-    src1.wavelength = setup["src1_wavelength"]
-    src1.bandwidth = setup["src1_bandwidth"]
+    if setup["is_onsky"]:
+        src = Source(optBand='H', magnitude=-2.5)
+    else:
+        src = Source(optBand='IR1310', magnitude=-2.5)
 
-    src2 = Source(optBand=setup.get("src2_optBand", "H"), magnitude=-2.5)
-    src2.wavelength = setup["src2_wavelength"]
-    src2.bandwidth = setup["src2_bandwidth"]
+    src.wavelength = setup["wavelength"]
+    src.bandwidth = setup["bandwidth"]
 
-    tel1 = Telescope(
+    tel = Telescope(
         setup["submask0"].shape[0],
         1.52,
         pupil=setup["submask0"]
     )
-    tel1.pupilReflectivity = np.sqrt(setup["pupil0"]) * setup["submask0"]
-    tel1.pupilReflectivity[~np.isfinite(tel1.pupilReflectivity)] = 0
-    src1 * tel1
 
-    tel2 = Telescope(
-        setup["submask1"].shape[0],
-        1.52,
-        pupil=setup["submask1"]
+    tel.pupilReflectivity = np.sqrt(setup["pupil0"])
+    tel.pupilReflectivity[~np.isfinite(tel.pupilReflectivity)] = 0
+
+    src * tel
+
+    vzwfs = ZWFS2(
+        tel=tel,
+        diameter=setup["diameter"],
+        phase_shift=setup["phase_shift"],
+        zpf=setup["zpf"]
     )
-    tel2.pupilReflectivity = np.sqrt(setup["pupil1"]) * setup["submask1"]
-    tel2.pupilReflectivity[~np.isfinite(tel2.pupilReflectivity)] = 0
-    src2 * tel2
+    print("WORKER zwfs1 phase_shift:", vzwfs.zwfs1.phase_shift)
+    print("WORKER zwfs2 phase_shift:", vzwfs.zwfs2.phase_shift)
 
-    zwfs1 = ZWFS(
-        tel1,
-        diameter=setup["diam"],
-        phase_shift=setup["phase_shift_1"],
-        zpf=setup["zpf"],
-        phase_shift_unit=setup["phase_shift_unit"]
-    )
+    print("WORKER zwfs1 zpf:", vzwfs.zwfs1.zpf)
+    print("WORKER zwfs2 zpf:", vzwfs.zwfs2.zpf)
 
-    zwfs2 = ZWFS(
-        tel2,
-        diameter=setup["diam"],
-        phase_shift=setup["phase_shift_2"],
-        zpf=setup["zpf"],
-        phase_shift_unit=setup["phase_shift_unit"]
-    )
+    print("WORKER zwfs1 diameter:", vzwfs.zwfs1.diameter)
+    print("WORKER zwfs2 diameter:", vzwfs.zwfs2.diameter)
+    return vzwfs
 
-    return ZWFS2(ZWFS1=zwfs1, ZWFS2=zwfs2)
-
-def _reconstruct_phase_worker(im1, im2, setup, method='atan', damping=0.5, iteration=10, modes_filtering = False, modal_basis = None, nmodes = None):
+def _reconstruct_phase_worker(im1, im2, setup, method='atan', damping=0.5, iteration=10):
     with _suppress_output():
         vzwfs = _build_vzwfs_from_setup(setup)
+
         vzwfs.zwfs1.img_ZWFS = im1
         vzwfs.zwfs2.img_ZWFS = im2
-        if modes_filtering:
-            phase = vzwfs.reconstructor(
-                iteration=iteration,
-                damping_iteration=damping,
-                reconstructor=method,
-                filter_modes = modes_filtering,
-                modal_basis = modal_basis[...,:nmodes]
-            )
-        else:
-            phase = vzwfs.reconstructor(
-                iteration=iteration,
-                damping_iteration=damping,
-                reconstructor=method
-            )
+
+        phase = vzwfs.reconstructor(
+            iteration=iteration,
+            damping_iteration=damping,
+            reconstructor=method
+        )
+
     return phase
 
 def _build_psf_objects_from_setup(setup):
