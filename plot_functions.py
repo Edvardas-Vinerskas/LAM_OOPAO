@@ -372,7 +372,7 @@ def plot_psd_aa(
             ax_etf.set_xlim(left=fmin, right=fmax)
     if ax_etf is not None:
         if etf_vmax is not None:
-            ax_etf.set_ylim(bottom = f_ratio_plot[f_ratio_plot>0].min(), top = etf_vmax)
+            ax_etf.set_ylim(None, top = etf_vmax)
     # ---------- labels ----------
     ax.set_xlabel(f"{f_label}", fontsize=label_fs)
     if normalised:

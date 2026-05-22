@@ -60,7 +60,7 @@ class OZIRIIS:
             If no file is selected when ``tele_path`` is not provided.
         """
         self.tag = 'ozi'
-        self.is_onsky = True
+        self.is_onsky = is_onsky
         if param is None:
             self.param = initializeParameterFile()
         else:
@@ -99,6 +99,7 @@ class OZIRIIS:
         self.cam = Detector(psf_sampling=self.psf_sampling)
         param = np.load(str(HERE) + '\dm_second_stage_misreg_dict.npy', allow_pickle=True).item()
         m = MisRegistration(param)
+        
         self.dm = DeformableMirror(telescope=self.tel, nSubap=10, mechCoupling=0.35, print_dm_properties=False, pitch=0.11, misReg=m)
    
         if_path = os.path.join(HERE, 'IF_vZWFS.npy')
@@ -323,6 +324,57 @@ class OZIRIIS:
             img_ZWFS1= self.vzwfs.zwfs1.img_ZWFS.copy()
             img_ZWFS2 = self.vzwfs.zwfs2.img_ZWFS.copy()
             return img_ZWFS1, img_ZWFS2
+    def filter_OPDs(self, OPD=None, nmodes=None, modal_basis='KL'):
+        """Filter OPD maps on the requested modal basis."""
+        if nmodes is None:
+            nmodes = self.M2C.shape[-1]
+        if OPD is None:
+            OPD = self.OPDs.copy()
+        if modal_basis == 'KL':
+            self.tel.resetOPD()
+            self.dm.coefs = 0
+            self.dm.coefs = self.M2C
+            self.tel * self.dm
+            modes = self.tel.OPD.copy()
+            modes = modes / self.tel.OPD[self.tel.pupil, :].std(axis=0)
+            self.tel.resetOPD()
+            self.dm.coefs = 0
+            self.tel * self.dm
+            OPDs_on_modes = self._project_phase(self.proj_M2C, OPD)
+            filtered_OPD = 0
+            for i in tqdm.tqdm(range(nmodes)):
+                filtered_OPD += OPDs_on_modes[:, None, None, i] * modes[None, :, :, i]
+        elif modal_basis == 'IF':
+            filtered_OPD = 0
+            IF_inv = np.linalg.pinv(self.dm.modes)
+            filtered_OPD = (self.dm.modes @ (IF_inv @ OPD.reshape(self.OPDs.shape[0], -1).T)).T.reshape(OPD.shape[0], OPD.shape[1], OPD.shape[2])
+        elif modal_basis == 'Zer':
+            opd_on_zer = self._project_phase(self.proj_Zer, OPD)
+            filtered_OPD = (opd_on_zer[:, None, None, :nmodes] * self.Zer_modes[None, :, :, :nmodes]).sum(axis=-1)
+        return filtered_OPD * (self.tel.pupil == 1)
+    
+    def _project_phase(self, projector, phase):
+        """
+        Apply a projector to a stack of phase or OPD maps.
+
+        Parameters
+        ----------
+        projector : ndarray
+            Projection matrix of shape ``(n_coefficients, n_pixels)``.
+        phase : ndarray
+            Stack of 2D maps to project.
+
+        Returns
+        -------
+        ndarray
+            Projected coefficients for each input frame.
+        """
+        projected_phase = np.zeros((phase.shape[0], projector.shape[0])).astype(np.float32)
+        for i in tqdm.tqdm(range(phase.shape[0])):
+            projected_phase[i] = projector @ phase[i].ravel()
+        return projected_phase.astype(np.float32)
+    
+    
     def reconstruct_all_phase(self, method='atan', iteration=10, damping=0.5, parallel=True, parall_njob=4):
         """
         Reconstruct phase maps for the full telemetry sequence.

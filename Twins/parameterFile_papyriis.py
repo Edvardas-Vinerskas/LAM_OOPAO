@@ -22,7 +22,7 @@ def initializeParameterFile():
     
     ###%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% ATMOSPHERE PROPERTIES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     
-    param['r0'                   ] = 0.07                                     # value of r0 in the visibile in [m]
+    param['r0'                   ] = 0.065                                     # value of r0 in the visibile in [m]
     param['L0'                   ] = 30                                             # value of L0 in the visibile in [m]
     param['fractionnalR0'        ] = np.array([0.45,0.1,0.1,0.25,0.1]).astype(np.float64)
     param['V0'        ] = 1.8                       # Cn2 profile

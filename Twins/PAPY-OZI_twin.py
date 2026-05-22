@@ -109,6 +109,7 @@ def project_opd_between_pupils(
         raise ValueError(f"OPDs doit être 2D ou 3D, pas ndim={OPDs.ndim}")
 
     return OPDs_projected
+
 #%% Compute the OOPAO Objects
 
 Papytwin = Papyrus()
@@ -138,9 +139,9 @@ from pymatreader import read_mat
 adr ='C:/Users/mmotte/oopao/OOPAO/tutorials/PAPYRUS/'
 M2C = np.load('M2C_1rst.npy')
 
-valid_pixel = np.load('useful_pix.npy')
+valid_pixel = np.load('C:/Users/mmotte/OZITelemetry/ozitelemetry/Twins/validpix_papyrus.npy')
 
-im = read_mat(adr+'intMat_klOOPAO_synthetic_bin=1_F=500_rMod=5_20250604_0307.mat')['matrix_inf']
+im = np.load('C:/Users/mmotte/OZITelemetry/ozitelemetry/Twins/IM_bench_papyrus.npy')
 
 # index of the KL modes included in the int-mat
 ind = [1, 5, 10, 20, 30, 50, 80, 100, 150]
@@ -161,8 +162,9 @@ correct = True
 Papytwin.check_pwfs_pupils(valid_pixel_map = var_im, correct=correct,n_it=6)
 
 #%% PAPYRUS/PAPYTWIN Interaction Matrix Comparison 
+from plot_functions import plot_psd_aa, plot_sr_aa, plot_psf_aa, plot_frame_count_aa, plot_phase_map_aa, plot_etf_fit_aa,plot_cumulative_psd_aa, plot_phase_comparison_aa, plot_n_psd_aa, plot_curves_aa
 
-M2C_CL      = M2C[:,ind]
+M2C_CL      = M2C
 wfs.modulation = 5
 stroke = 0.0001
 calib = InteractionMatrix(  ngs            = ngs,\
@@ -177,9 +179,42 @@ calib = InteractionMatrix(  ngs            = ngs,\
                             noise          = 'off',
                             print_time=False,
                             display=True)
-
+    
+#%%
+difference = np.linalg.pinv(im)@calib.D
+difference = np.linalg.pinv(calib.D)@im
+diag_obs = np.diag(difference)
+modes = np.arange(M2C.shape[-1])
+fig, ax = plot_curves_aa(
+    x_list=[modes],
+    y_list=[diag_obs],
+    labels=[
+        r"$\mathrm{diag}\!\left(IM_\mathrm{syn,obs}^{+} IM_\mathrm{bench}\right)$"
+    ],
+    xlabel="Mode index",
+    ylabel=r"Diagonal of $IM_\mathrm{synth}^{+} IM$",
+    scale="linear",
+    figure_width="one_column",
+    show_legend=True,
+    legend_loc="best",
+    curve_styles={
+        r"$\mathrm{diag}\!\left(IM_\mathrm{syn,obs}^{+} IM_\mathrm{bench}\right)$": {
+            "color": "black",
+            "ls": "-",
+            "lw": 1.6,
+            "marker": "o",
+            "ms": 2.8,
+            "mew": 0.0,
+            "alpha": 1.0,
+        },
+    },
+    save=False,
+    savepath="IM_synth_diagonal_comparison.pdf",
+    saveformat="all",
+)
+#%%
 #%% PAPYTWIN Full Interaction Matrix Computation
-
+Papytwin.set_pupil(calibration = True)
 wfs.modulation = 5
 
 stroke = 0.0001
@@ -206,11 +241,11 @@ M2C_CL = M2C[:,:end_mode]
 # use of experimental calibration
 # if full int-mat is available only
 calib_CL    = CalibrationVault(im[:,:end_mode])
-Papytwin.set_pupil(calibration = False, sky_offset=[2,2])
+
     
     
 #%%
-    
+Papytwin.set_pupil(calibration = False, sky_offset=[2,2]) 
     
 # =============================================================================
 # Second Stage
@@ -220,6 +255,12 @@ OZItwin = OZIRIIS()
 
 IM_z1, _ = OZItwin.compute_synth_IM()
 calib_CL_2nd    = CalibrationVault(IM_z1[:,:nmodes]).M
+
+#%%
+
+
+
+
 
 
 #%% Second stage atmosphere
@@ -231,7 +272,8 @@ atm_OPDs_2nd = np.zeros((nLoop, OZItwin.atm.OPD.shape[0],OZItwin.atm.OPD.shape[1
 for i in tqdm.tqdm(range(nLoop)):
     OZItwin.atm.update()
     atm_OPDs_2nd[i] = OZItwin.atm.OPD_no_pupil.copy()
-
+#%%
+atm_OPDs_1rst = OZItwin._rescale_matrix(atm_OPDs_2nd, tel.pupil.shape[0],tel.pupil.shape[0] )
 #%% first stage atm
 
 atm_OPDs_1rst = project_opd_between_pupils(
@@ -270,17 +312,20 @@ total                       = np.zeros(nLoop)
 residual_SRC                = np.zeros(nLoop)
 residual_NGS                = np.zeros(nLoop)
 dm_commands = np.zeros((nLoop, dm.nValidAct))
-wfsSignal               = np.arange(0,wfs.nSignal)*0
 
 # loop parameters
-gainCL                  = 0.5
+gainCL                  = 0
 leak = 0.995
 wfs.cam.photonNoise     = False
 display                 = False
-frame_delay             = 2
-reconstructor = M2C_CL@calib_CL.M
-reconstructed_cmd = np.zeros((nLoop,241))
+frame_delay             =0 
+wfsSignal               = np.zeros((int(nLoop/ratio_samp)+frame_delay,wfs.nSignal))
+
+reconstructor = M2C_CL@calib.M
+reconstructed_cmd = np.zeros((int(nLoop/ratio_samp),241))
 opds = np.zeros((nLoop,tel.pupil.shape[0],tel.pupil.shape[1]))
+opds_res = np.zeros((nLoop,tel.pupil.shape[0],tel.pupil.shape[1]))
+k = 0
 
 for i in range(nLoop):
 
@@ -288,37 +333,37 @@ for i in range(nLoop):
     
         
             # update phase screens => overwrite tel.OPD and consequently tel.src.phase  
-    atm.update(atm_OPDs_1rst[i])
+    atm.update(atm_OPDs_1rst[i]*tel.pupil)
         # save phase variance
     total[i]=np.std(tel.OPD[np.where(tel.pupil>0)])*1e9
     # propagate light from the NGS through the atmosphere, telescope, DM to the WFS and NGS camera with the CL commands applied
     
-    atm*ngs*tel*dm*slow_tt*wfs
+    atm*ngs*tel*dm*wfs
     opds[i]= dm.OPD.copy()
+    opds_res[i]= tel.OPD.copy()
     wfs*wfs.focal_plane_camera
     # save residuals corresponding to the NGS
     residual_NGS[i] = np.std(tel.OPD[np.where(tel.pupil>0)])*1e9
-    
+    if i%ratio_samp==0:
+        
+        wfsSignal[k+frame_delay]=wfs.signal.copy()
+        reconstructed_cmd[k] = np.matmul(reconstructor,wfsSignal[k])
+        # apply the commands on the DM
+        dm.coefs=dm.coefs-gainCL*reconstructed_cmd[k]
+        k+=1
     
         
         # propagate light from the SRC through the atmosphere, telescope, DM to the Instrument camera
-    atm*src*tel*dm*slow_tt
+    atm*src*tel*dm
     
     dm_commands[i,:] = dm.coefs.copy()
     # save residuals corresponding to the NGS
     residual_SRC[i] = np.std(tel.OPD[np.where(tel.pupil>0)])*1e9
     OPD_SRC         = tel.mean_removed_OPD.copy()
-    if i%ratio_samp==0:
-        if frame_delay ==1:        
-            wfsSignal=wfs.signal
-        reconstructed_cmd[i] = np.matmul(reconstructor,wfsSignal)
-        # apply the commands on the DM
-        dm.coefs=dm.coefs-gainCL*reconstructed_cmd[i]
     
         # store the slopes after computing the commands => 2 frames delay
        
-        if frame_delay ==2:        
-            wfsSignal=wfs.signal
+        
     print(
     f'\rLoop {i+1}/{nLoop} '
     f'NGS: {residual_NGS[i]:.3f} '
@@ -326,16 +371,175 @@ for i in range(nLoop):
     end='',
     flush=True
     )
-        
-        
+#%%      
+from OOPAO.GainSensingCamera import GainSensingCamera
+pupil = tel.pupil.ravel()==1
+
+tel.resetOPD()
+dm.coefs = 0
+dm.coefs = M2C.copy()
+tel * dm
+
+modes = tel.OPD.copy().reshape(tel.resolution**2, M2C_CL.shape[-1])
+
+# Important : on restreint vraiment à la pupille
+modes_pupil = modes.copy()
+
+# Retrait piston spatial des modes, optionnel mais recommandé
+modes_pupil -= modes_pupil.mean(axis=0, keepdims=True)
+
+# Normalisation sur la pupille
+modes_pupil /= modes_pupil[pupil, :].std(axis=0, keepdims=True)
+
+# Gram complet, pas seulement la diagonale
+cov_modes = modes_pupil.T @ modes_pupil
+diag = np.diag(cov_modes)
+diag = np.where(np.abs(diag) < 1e-30, 1.0, diag)
+
+proj_1rst =(np.diag(1.0 / diag) @ modes_pupil.T).astype(np.float32) # (np.diag(1.0 / diag) @ modes_pupil.T).astype(np.float32) #@ modes_pupil.T).astype(np.float32)
+#%%
+tel.resetOPD()
+dm.coefs = 0
+ngs*tel*dm*wfs
+gsc = GainSensingCamera(wfs.mask, modes_pupil.reshape(80,80,-1))
+nit = 100
+og = np.zeros((nit, modes.shape[-1]))
+wfs.focal_plane_camera.resolution = wfs.nRes
+
+tel * wfs
+wfs * wfs.focal_plane_camera
+wfs.focal_plane_camera * gsc
+
+for i in tqdm.tqdm(range(nit)):
+
+    tel.OPD = atm_OPDs_1rst[i]*tel.pupil
+    tel * wfs
+    wfs * wfs.focal_plane_camera
+    wfs.focal_plane_camera * gsc
+    og[i] = gsc.og.copy()
+
+print(og.mean())
+#%%
+
+pupil = tel.pupil.ravel()==1
+
+tel.resetOPD()
+dm.coefs = 0
+dm.coefs = M2C
+tel * dm
+
+modes = tel.OPD.copy().reshape(tel.resolution**2, M2C_CL.shape[-1])
+
+# Important : on restreint vraiment à la pupille
+modes_pupil = modes[pupil, :].copy()
+
+# Retrait piston spatial des modes, optionnel mais recommandé
+modes_pupil -= modes_pupil.mean(axis=0, keepdims=True)
+
+# Normalisation sur la pupille
+modes_pupil /= modes_pupil.std(axis=0, keepdims=True)
+
+# Gram complet, pas seulement la diagonale
+cov_modes = modes_pupil.T @ modes_pupil
+diag = np.diag(cov_modes)
+diag = np.where(np.abs(diag) < 1e-30, 1.0, diag)
+
+proj_1rst =(np.diag(1.0 / diag) @ modes_pupil.T).astype(np.float32) # (np.diag(1.0 / diag) @ modes_pupil.T).astype(np.float32) #@ modes_pupil.T).astype(np.float32)
+
+
+
+#%%
+rec_cmd_from_signal = M2C_CL@((calib_CL.M@wfsSignal.T)*(1/og.mean(axis=0))[:,None])
+rec_opd = dm.modes @ (rec_cmd_from_signal)
+res_opd = opds_res.copy()
+
+rec_opd = dm.modes @ (reconstructed_cmd.T)
+
+it = np.arange(0,nLoop)
+
+proj_opd_res = proj_1rst @ res_opd.reshape(nLoop, -1).T[pupil, :][:,50:]
+proj_opd_rec = (proj_1rst @ rec_opd[:,:][pupil, :][:,50:])*(1/og.mean(axis=0))[:,None]
+#%%
+def modal_PSD(projected_phase):
+    """Return variance per projected mode after mean removal."""
+    projected_phase = projected_phase.copy()
+    projected_phase -= projected_phase.mean(axis=0)
+    modal_psd = projected_phase.var(axis=0)
+    return modal_psd
+#%%
+from plot_functions import plot_psd_aa, plot_sr_aa, plot_psf_aa, plot_frame_count_aa, plot_phase_map_aa, plot_etf_fit_aa,plot_cumulative_psd_aa, plot_phase_comparison_aa, plot_n_psd_aa, plot_curves_aa
+
+master_folder = 'C:/Users/mmotte/OZIRIIS/simulation_final/'
+modal_psd_res = modal_PSD(proj_opd_res.T)
+modal_psd_rec = modal_PSD(proj_opd_rec.T)
+
+x = np.arange(modal_psd_res.size)
+y_list = [np.asarray(modal_psd_res).ravel() * 1e18, np.asarray(modal_psd_rec).ravel() * 1e18]
+x_list = [np.arange(modal_psd_res.size),np.arange(modal_psd_rec.size), np.arange(modal_psd_rec.size)]
+x=np.arange(modal_psd_rec.size)
+psds = [
+    (x, modal_psd_res*1e18),
+    (x, modal_psd_rec*1e18),
+]
+
+labels = [
+    "Real res",
+    "Pyr residuals",
+]
+
+fig, ax = plot_n_psd_aa(
+    psds,
+    labels=labels,
+    fmin=None,
+    fmax=None,
+    one_column=False,
+    save=False,
+    savepath=master_folder + "simulation/modal_psd_pyr/modal_psd_Zer_psd_ZWFS_vs_pyr_cl.fig",
+    saveformat="all",
+    f_label="Zernike modes",
+    psd_label=r"PSD [nm$^2$/modes]",
+)
+#%%
+fig_atg, ax_atg = plot_psd_aa( 
+    x,
+    modal_psd_res*1e18,
+    f2=x,
+    psd2=modal_psd_rec*1e18,
+    label1="Real res",
+    label2="Pyr residuals",
+    method=np.nansum,
+    f_label="KL",
+    psd_label=r"PSD [nm$^2$/modes]",
+    scale = 'log',
+    etf_scale="xlog",
+    fmin=None,
+    fmax=None,
+    normalised=False,
+    show_legend=True,
+    one_column=True,
+    dpi=300,
+    save=False,
+    compute_etf=True,
+    name_etf="Ratio",
+    savepath=master_folder+f"/psd_comparison",
+    saveformat='all',
+
+    journal_style=True,   # True: A&A final style ; False: working style with light grid
+)
+
+
+
+
+
+      
 
 #%%m
 residuals_opds_1rst = project_opd_between_pupils(
     OZItwin,
-    opds,
+    opds_res,
     input_pupil=tel.pupil,
     output_pupil=OZItwin.tel.pupil
-)+atm_OPDs_2nd
+)
 #%%
 # allocate memory to save data
 SR_NGS_2nd                      = np.zeros(nLoop)
@@ -347,7 +551,7 @@ dm_commands_2nd   = np.zeros((nLoop, OZItwin.dm.nValidAct))
 wfsSignal_2nd                 = np.arange(0,OZItwin.vzwfs.zwfs1.nSignal)*0
 
 # loop parameters
-gainCL_2nd                    = 0.
+gainCL_2nd                    = 0
 leak_2nd = 0.98
 frame_delay_2nd               = 2
 reconstructor_2nd   =OZItwin.M2C[:,:nmodes]@calib_CL_2nd
@@ -382,14 +586,14 @@ for i in range(nLoop):
     residual_SRC_2nd[i] = np.std(OZItwin.tel.OPD[np.where(OZItwin.tel.pupil>0)])*1e9
     OPD_SRC_2nd         = OZItwin.tel.mean_removed_OPD.copy()
     if frame_delay_2nd ==1:        
-        wfsSignal_2nd=OZItwin.vzwfs.zwfs1.signal
+        wfsSignal_2nd=OZItwin.vzwfs.zwfs1.signal.copy()
     reconstructed_cmd_2nd[i]=np.matmul(reconstructor_2nd,wfsSignal_2nd)
     # apply the commands on the DM
     OZItwin.dm.coefs=leak_2nd*OZItwin.dm.coefs-gainCL_2nd*reconstructed_cmd_2nd[i]
     
     # store the slopes after computing the commands => 2 frames delay
     if frame_delay_2nd ==2:        
-        wfsSignal_2nd=OZItwin.vzwfs.zwfs1.signal
+        wfsSignal_2nd=OZItwin.vzwfs.zwfs1.signal.copy()
     
     
     print(
@@ -425,7 +629,7 @@ phase_2nd-=phase_2nd.mean(axis=0, keepdims=True)
 phase = (dm.modes@reconstructed_cmd[x%ratio_samp==0].T)
 
 #%%[pupil, :]
-proj_modes_2nd = OZItwin.proj_IF@phase_2nd
+proj_modes_2nd = OZItwin.proj_M2C@phase_2nd
 
 #%%
 phase_1st = (project_opd_between_pupils(
@@ -434,24 +638,18 @@ phase_1st = (project_opd_between_pupils(
     input_pupil=tel.pupil,
     output_pupil=OZItwin.tel.pupil
 ).reshape(phase.shape[-1],-1).T)
-#%%
-
 
 #%%
 phase_1st-=phase_1st.mean(axis=0, keepdims=True)
 
-proj_modes_1rst =  OZItwin.proj_IF@phase_1st
+proj_modes_1rst =  OZItwin.proj_M2C@phase_1st
 
-#%%
-
-
-#%%
 
 
 #%%
 opd_pupil = residuals_opds_1rst.reshape(nLoop, -1).T
 opd_pupil = opd_pupil-opd_pupil.mean(axis=0, keepdims=True)
-opd_true =OZItwin.proj_IF@ opd_pupil
+opd_true =OZItwin.proj_M2C@ opd_pupil
 
 #%%
 OZItwin.create_images_from_phase(opds_2nd/OZItwin.src.wavelength*2*np.pi)
@@ -461,12 +659,12 @@ OPDs_atan_paral = OZItwin.OPDs.copy()*1
 # OZItwin.reconstruct_all_phase(parallel=False, parall_njob=6, iteration = 20)
 # OPDs_atan_seq = OZItwin.OPDs.copy()*1
 #%%
-opds_at = OZItwin.OPDs.copy().reshape(nLoop, -1).T
-opd_atan  = OZItwin.proj_IF@ (opds_at-opds_at.mean(axis=0, keepdims=True))
+opds_at = OZItwin.filter_OPDs(OZItwin.OPDs.copy(),nmodes = nmodes).reshape(nLoop, -1).T
+opd_atan  = OZItwin.proj_M2C@ (opds_at-opds_at.mean(axis=0, keepdims=True))
 #%%
 opd_atm = atm_OPDs_2nd.reshape(nLoop,-1).T
 opd_atm -= opd_atm.mean(axis=0, keepdims=True)
-opd_atm =OZItwin.proj_IF@ opd_atm
+opd_atm =OZItwin.proj_M2C@ opd_atm
 
 
 #%%
@@ -476,7 +674,9 @@ def modal_PSD(projected_phase):
     modal_psd = projected_phase.var(axis=0)
     return modal_psd
 #%%
-master_folder = 'C:/Users/mmotte/OZIRIIS/data_calibration/'
+from plot_functions import plot_psd_aa, plot_sr_aa, plot_psf_aa, plot_frame_count_aa, plot_phase_map_aa, plot_etf_fit_aa,plot_cumulative_psd_aa, plot_phase_comparison_aa, plot_n_psd_aa, plot_curves_aa
+
+master_folder = 'C:/Users/mmotte/OZIRIIS/simulation_final/'
 modal_psd_papy_ol = modal_PSD(proj_modes_1rst.T)
 modal_psd_ozi = modal_PSD(proj_modes_2nd.T)
 modal_psd_ozi_atg = modal_PSD(opd_atan.T)
@@ -503,7 +703,7 @@ fig, ax = plot_n_psd_aa(
     fmin=None,
     fmax=None,
     one_column=False,
-    save=True,
+    save=False,
     savepath=master_folder + "simulation/modal_psd_zwfs_ol/modal_psd_Zer_psd_ZWFS_vs_pyr_cl.fig",
     saveformat="all",
     f_label="Zernike modes",
@@ -537,7 +737,6 @@ opd_true = proj_35 @ opd_pupil
 
 #%%
 #%%
-from plot_functions import plot_psd_aa, plot_sr_aa, plot_psf_aa, plot_frame_count_aa, plot_phase_map_aa, plot_etf_fit_aa,plot_cumulative_psd_aa, plot_phase_comparison_aa, plot_n_psd_aa, plot_curves_aa
 
 master_folder = 'C:/Users/mmotte/OZIRIIS/data_calibration/'
 modal_psd_papy_ol = modal_PSD(proj_modes_1rst.T)
@@ -830,3 +1029,61 @@ fig, ax = plot_n_psd_aa(
     psd_label=r"PSD [nm$^2$/modes]",
     curve_styles=curve_styles,
 )
+#%%
+nmodes = 195
+pupil = tel.pupil.ravel().astype(bool)
+
+# projecteur 35 modes, pas le projecteur global
+tel.resetOPD()
+dm.coefs = 0
+dm.coefs = M2C[:, :nmodes]#np.identity(97) #M2C[:, :nmodes]
+tel * dm
+
+modes_map = tel.OPD.copy()
+modes = modes_map.reshape(tel.resolution**2, nmodes)
+
+# modes_pupil = modes
+# modes_pupil = modes_pupil / modes_pupil[pupil, :].std(axis=0, keepdims=True)
+
+# proj_35 = np.linalg.pinv(modes_pupil)
+#%%
+
+from OOPAO.GainSensingCamera import GainSensingCamera
+gsc = GainSensingCamera(wfs.mask, modes.reshape(80,80,-1))
+og = []
+wfs.focal_plane_camera.resolution = wfs.nRes
+tel.resetOPD()
+tel * wfs
+wfs * wfs.focal_plane_camera
+wfs.focal_plane_camera * gsc
+
+for i in tqdm.tqdm(range(100)):
+
+    tel.OPD = atm_OPDs_1rst[i]
+    tel * wfs
+    wfs * wfs.focal_plane_camera
+    wfs.focal_plane_camera * gsc
+    og.append(gsc.og)
+#%%
+#%%
+from OOPAO.Zernike import Zernike
+
+zer = Zernike(tel, 200)
+zer.computeZernike(tel)
+modes = zer.modesFullRes.reshape(tel.resolution**2, -1)
+
+# Important : on restreint vraiment à la pupille
+modes_pupil = modes.copy()
+
+# Retrait piston spatial des modes, optionnel mais recommandé
+modes_pupil -= modes_pupil.mean(axis=0, keepdims=True)
+
+# Normalisation sur la pupille
+modes_pupil /= modes_pupil.std(axis=0, keepdims=True)
+
+# Gram complet, pas seulement la diagonale
+cov_modes = modes_pupil.T @ modes_pupil
+diag = np.diag(cov_modes)
+
+
+proj_1rst =(np.diag(1.0 / diag) @ modes_pupil.T).astype(np.float32) #@  np.linalg.pinv(modes_pupil)# (np.diag(1.0 / diag) @ modes_pupil.T).astype(np.float32) #@ modes_pupil.T).astype(np.float32)
