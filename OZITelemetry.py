@@ -318,14 +318,16 @@ class OZITele:
 
         std = tel.OPD[tel.pupil, :].std(axis=0)
         std = np.where(np.abs(std) < 1e-30, 1.0, std)
-
-        modes = modes / std[None, :]
+        if keep_pupil_only:
+        
+            modes = modes[tel.pupil.ravel()==1, :] / std[None, :]
+        else:
+            modes = modes / std[None, :]
 
         cov_modes = modes.T @ modes
         diag = np.diag(cov_modes)
-        diag = np.where(np.abs(diag) < 1e-30, 1.0, diag)
 
-        return (np.diag(1.0 / diag) @ modes.T).astype(np.float32)
+        return np.linalg.pinv(modes)#(np.diag(1.0 / diag) @ modes.T).astype(np.float32)
 
     def _compute_proj_OPDs(self, modes, tel, keep_pupil_only = False, filtering = None):
         """
@@ -345,17 +347,21 @@ class OZITele:
                 f"modes.shape[:2]={modes.shape[:2]}, pupil.shape={tel.pupil.shape}"
             )
 
-        std = modes[tel.pupil, :].std(axis=0)
+     
+        modes = modes.reshape((tel.resolution**2, modes.shape[-1]))
+
+        std = modes[tel.pupil.ravel()==1, :].std(axis=0)
         std = np.where(np.abs(std) < 1e-30, 1.0, std)
+        if keep_pupil_only:
+        
+            modes = modes[tel.pupil.ravel()==1, :] / std[None, :]
+        else:
+            modes = modes / std[None, :]
 
-        modes_flat = modes.reshape((tel.resolution**2, modes.shape[-1]))
-        modes_flat = modes_flat / std[None, :]
-
-        cov_modes = modes_flat.T @ modes_flat
+        cov_modes = modes.T @ modes
         diag = np.diag(cov_modes)
-        diag = np.where(np.abs(diag) < 1e-30, 1.0, diag)
 
-        return (np.diag(1.0 / diag) @ modes_flat.T).astype(np.float32)
+        return (np.diag(1.0 / diag) @ modes.T).astype(np.float32)
     def extract_Zimages(self):
         """
         Extract and format the two ZWFS image streams from the raw image cube.

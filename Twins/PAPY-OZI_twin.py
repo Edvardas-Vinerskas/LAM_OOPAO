@@ -161,6 +161,16 @@ var_im = var_im>0.005
 correct = True
 Papytwin.check_pwfs_pupils(valid_pixel_map = var_im, correct=correct,n_it=6)
 
+#%% PAPYRUS/PAPYTWIN DM/WFS Mis-registration calibration
+
+# Slow if index_modes is long
+index_modes = np.arange(10,150,50)
+calibrate_mis_registration = True
+if calibrate_mis_registration:
+    Papytwin.calibrate_mis_registration(M2C = M2C,
+                           input_im = int_mat_binned,
+                           index_modes = index_modes)
+
 #%% PAPYRUS/PAPYTWIN Interaction Matrix Comparison 
 from plot_functions import plot_psd_aa, plot_sr_aa, plot_psf_aa, plot_frame_count_aa, plot_phase_map_aa, plot_etf_fit_aa,plot_cumulative_psd_aa, plot_phase_comparison_aa, plot_n_psd_aa, plot_curves_aa
 
