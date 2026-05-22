@@ -285,7 +285,7 @@ class Pyramid:
         self.cam = Detector(round(nSubap*self.zeroPaddingFactor))
         # WFS focal plane detector object (see Detector class)
         self.focal_plane_camera = Detector(int(
-            (modulation*4+12)*self.zeroPaddingFactor), psf_sampling=self.zeroPaddingFactor)
+            (modulation*4+12)*self.zeroPaddingFactor*self.telescope.resolution/self.telescope.initial_resolution), psf_sampling=self.zeroPaddingFactor*self.telescope.resolution/self.telescope.initial_resolution)
         self.focal_plane_camera.is_focal_plane_camera = True
         # Light ratio for the valid pixels selection
         self.lightRatio = lightRatio
@@ -450,7 +450,7 @@ class Pyramid:
 
     def get_phase_mask(self, resolution, n_subap, n_pix_separation, n_pix_edge, psf_centering=False, sx=[0, 0, 0, 0], sy=[0, 0, 0, 0]):
         # new mask compution to include Pyramid rooftop (F.Oyarzun 08/2025)
-        rooftop_pixels = self.rooftop * self.zeroPaddingFactor / np.sqrt(2)
+        rooftop_pixels = self.rooftop/ np.sqrt(2)#♦ * self.zeroPaddingFactor / np.sqrt(2)
         # size of the mask in pixel
         n_tot = int((n_subap*2+n_pix_separation+n_pix_edge*2) * self.telescope.resolution/self.nSubap)
 
@@ -666,7 +666,7 @@ class Pyramid:
         if phase_in is not None:
             self.src.phase = phase_in
         # mask amplitude for the light propagation
-        self.maskAmplitude = self.convert_for_gpu(np.sqrt(self.src.fluxMap/self.nTheta))
+        self.maskAmplitude = self.convert_for_gpu(np.sqrt((self.src.fluxMap * self.src.scintillation)/self.nTheta))
 
         if self.spatialFilter is not None:
             if np.ndim(phase_in) == 2:
