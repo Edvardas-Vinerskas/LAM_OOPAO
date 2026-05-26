@@ -210,3 +210,23 @@ class ZWFS2:
         self.zwfs2.img_ref = img2
         self._img_ref = val
         self._ref_signal = np.append(self.zwfs1.ref_signal, self.zwfs2.ref_signal)
+    def relay(self, src):
+        if src.tag == 'source':
+            src_list = [src]
+        elif src.tag == 'asterism':
+            src_list = src.src
+        signal_2D_cam_list = []
+        signal_cam_list = []
+
+
+        for src in src_list:
+            src.optical_path.append([self.tag, self])
+            self.src = src
+            self.wfs_measure(phase_in=self.src.phase)
+            signal_2D_cam_list.append(self.img_ZWFS)
+            signal_cam_list.append(self.signal)
+
+        self.signal_2D_cam = np.squeeze(np.array(signal_2D_cam_list))
+        self.signal_cam = np.squeeze(np.array(signal_cam_list))
+
+        return

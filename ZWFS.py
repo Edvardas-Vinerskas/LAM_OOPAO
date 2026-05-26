@@ -97,17 +97,20 @@ class ZWFS:
         #     self.nSubap = nSubap
         self.pupil_mask = (self.telescope.pupil != 0)
         self.nSignal = np.sum(self.pupil_mask).astype(np.int64)#self.telescope.pupil.size
+        print(True)
         if propagation_method == 'FFT':
             if zpf <=2:
-                warnings.warn('Zero-padding factor should be superior to 2 for an FFT propagation method')
+                raise ValueError('Zero-padding factor should be superior to 2 for an FFT propagation method')
             else:
                 self.zpf = zpf
                 self.resolution = np.int64(self.zpf*self.telescope.resolution)
         elif propagation_method == 'MFT':
+            print(True)
             if zpf <=4:
-                warnings.warn('Number of pixel inside the mask should be superior to 4 for a MFT propagation method')
+                raise ValueError('Number of pixel inside the mask should be superior to 4 for a MFT propagation method')
             else:
                 self.resolution = zpf
+                print(self.resolution)
                 self.zpf = zpf
         
         
@@ -207,7 +210,7 @@ class ZWFS:
             # b = time.time()
             # print(b-a)
         # print(np.sum(IM_detect))
-        return EM_det,IM_detect
+        return EM_det,IM_detect*(self.telescope.pupil==1)
     def wfs_measure(self, phase_in = None, reconstruction_method = None, known_EM = False, reconstructor_iteration:int = 1, estimated_phase = 0):
         if reconstructor_iteration<1:
             warnings.warn('Number of iteration ofr the reconstructor should be superior or equal to 1, Taking 1')
@@ -348,15 +351,54 @@ class ZWFS:
         self._img_ref = np.zeros(self._img_ref.shape)
         self._img_ref[self.pupil_mask] = val
         self._ref_signal = val
-   
         
+    def relay(self, src):
+        if src.tag == 'source':
+            src_list = [src]
+        elif src.tag == 'asterism':
+            src_list = src.src
+        signal_2D_cam_list = []
+        signal_cam_list = []
+        frames_list = []
+ 
+        for src in src_list:
+            src.optical_path.append([self.tag, self])
+            self.src = src
+            self.wfs_measure(phase_in=self.src.phase)
+            signal_2D_cam_list.append(self.img_ZWFS)
+            signal_cam_list.append(self.signal)
+            frames_list.append(self.img_ZWFS) #this is kind of useless since signal_2D_cam is self.cam.frame
+ 
+        self.signal_2D_cam = np.squeeze(np.array(signal_2D_cam_list))
+        self.signal_cam = np.squeeze(np.array(signal_cam_list))
+        self.frames = np.squeeze(np.array(frames_list))
+ 
+        return
+ 
+ 
+    #TODO introduced wfs_integrate to output signal with camera noise
+    def wfs_integrate(self):
+        # propagate to the detector to apply the noise
+        self*self.cam
+        signal_2D_cam = self.cam.frame.copy() #this is our binned and noise applied signal
+        #self.cam_mask = (signal_2D_cam >= 0.05 * signal_2D_cam.max())  #TODO which mask is better?
+        signal_cam = signal_2D_cam[self.cam_mask]
+        return signal_2D_cam, signal_cam
+ 
+ 
+    #TODO updated the multiplication operation
     def __mul__(self,obj): 
-        if obj.tag=='detector':
-            obj._integrated_time+=self.telescope.samplingTime
-            obj.integrate(obj._integrated_time)
-
+        if obj.tag == 'detector':
+            obj._integrated_time += self.telescope.samplingTime
+            intensity = self.img_ZWFS
+            frame = (obj.set_binning(intensity, self.telescope.resolution / obj.resolution))
+            if self.binning != 1:
+                try:
+                    frame = (obj.rebin(frame, (obj.resolution // self.binning, obj.resolution//self.binning)))
+                except:
+                    warning('The shape of the detector (' + str(obj.frame.shape) + ')' + 'is not valid with the binning value requested:' + str(self.binning) + '! -- Ignoring the binning.')
+            obj.integrate(frame)
         else:
-            print('Error light propagated to the wrong type of object')
-        return -1
+            OopaoError('Error light propagated to the wrong type of object')
 
 #%%
