@@ -79,8 +79,8 @@ class PAPYtele:
         self.time = np.array([(t - self.t0).total_seconds() for t in self.ts], dtype=float)
         self.M2C = self.data.item()['m2c']
         self.C2M = np.linalg.pinv(self.M2C)
-        self.proj_IF = np.load(str(HERE) +   '\projector_IF_sky.npy')
-        self.proj_M2C = np.load(str(HERE) +   '\projector_M2C_sky.npy')
+        self.proj_IF = np.load(str(HERE) +   '/projector_IF_sky.npy')
+        self.proj_M2C = np.load(str(HERE) +   '/projector_M2C_sky.npy')
         pupil = self.proj_IF.sum(axis=0)
         self.pupil_mask = pupil != 0
         self.is_onsky = is_onsky
@@ -105,12 +105,12 @@ class PAPYtele:
         self.tel_ozi = self._tel_second_stage(self.tel)
         self.src * self.tel
         self.src * self.tel_ozi
-        param = np.load(str(HERE) +   '\dm_second_stage_misreg_dict.npy', allow_pickle=True).item()
+        param = np.load(str(HERE) +   '/dm_second_stage_misreg_dict.npy', allow_pickle=True).item()
         m = MisRegistration(param)
         
         self.dm_ozi = DeformableMirror(telescope=self.tel, nSubap=10, mechCoupling=0.35, print_dm_properties=False, pitch=0.11, misReg=m)
         
-        self.IF_ozi = np.load(str(HERE) + '\IF_dm2.npy') * 1e-6
+        self.IF_ozi = np.load(str(HERE) + '/IF_dm2.npy') * 1e-6
         print(self.IF_ozi.shape)
         amplitude_mean = np.ptp(self.IF_ozi, axis=0)
         self.dm_ozi.modes *= amplitude_mean / np.ptp(self.dm_ozi.modes)
@@ -163,7 +163,8 @@ class PAPYtele:
         _, _, _, _, DeformableMirror, MisRegistration, _ = _import_oopao_symbols()
         
         T152onDM_size       = 35.5 # mm
-        misReg          = MisRegistration(param)
+        param_misreg = np.load(str(HERE)+'/dm_first_stage_misreg_dict.npy', allow_pickle=True).item()
+        misReg          = MisRegistration(param_misreg)
         pitch           = 2.5 #mm
         DM_diag_size    = param['nActuator'] * pitch #mm
         scale_T152DM = DM_diag_size / T152onDM_size
@@ -183,17 +184,17 @@ class PAPYtele:
         param['dm_coordinates'] = DM_coordinates
         param['pitch']          = DM_pitch
         
-        dm=DeformableMirror(telescope    = self.tel,\
-                            nSubap       = 16,\
-                            mechCoupling = param['mechanicalCoupling'],\
-                            misReg       = misReg, \
-                            coordinates  = DM_coordinates,\
-                            pitch        = DM_pitch,\
+        dm=DeformableMirror(telescope    = self.tel,
+                            nSubap       = 16,
+                            mechCoupling = param['mechanicalCoupling'],
+                            misReg       = misReg, 
+                            coordinates  = DM_coordinates,
+                            pitch        = DM_pitch,
                             modes        = None,
                             flip_lr      = True,
                             sign         = -1/alpao_unit)
         return dm
-    def compute_Zernike_basis(self, nmodes=30):
+    def compute_Zernike_basis(self, nmodes=195):
         """Compute a Zernike basis and its corresponding OPD projector."""
         Zer_basis = Zernike(self.tel, J=nmodes)
         Zer_basis.computeZernike(self.tel)
@@ -254,7 +255,30 @@ class PAPYtele:
             npsg = self.time.size
         logger.info('Computing modal PSD from cmd')
         self.psd_cmd_modal = self.psd(self.time, (self.proj_M2C@self.OPDs_from_cmd.reshape(self.OPDs_from_cmd.shape[0],-1).T).T, nperseg=npsg)
-
+        
+    def correct_DM_model_issue(self, IM_bench,*, IM_synth=None, rec_synth=None):
+        if (IM_synth is None) and (rec_synth is None):
+            raise ValueError(
+                "IM_synth or rec_synth must be provided"
+            )
+        if (IM_synth is not None) == (rec_synth is not None):
+            logger.warning(
+                "IM_synth and rec_synth both provided, ising rec_synth by default"
+            )
+        if rec_synth is not None:
+            factor =np.diag((rec_synth@IM_bench))[2:50].mean()
+        else:
+            from OOPAO.calibration.CalibrationVault import CalibrationVault
+            rec_synth = CalibrationVault(IM_synth).M
+            factor =np.diag((rec_synth@IM_bench))[2:50].mean()
+        try : 
+            self.initial_rec_cmd = self.initial_rec_cmd.copy()
+            print('Bench rec_cmd already saved in the variable initial_rec_cmd')
+        except:
+            self.initial_rec_cmd = self.rec_cmd.copy()
+            print('Bench rec_cmd is now saved in the variable initial_rec_cmd')
+        self.rec_cmd = factor*self.initial_rec_cmd.copy()
+        return self.rec_cmd 
     def compute_all_PSD(self, npsg=None):
         """
         Compute all available PSD products for reconstructed phases and commands.
@@ -385,7 +409,7 @@ class PAPYtele:
             self.dm_ozi.coefs = self.dm_ozi.coefs * 0
         self.tel * self.dm_ozi
         return self.tel.OPD.copy().astype(np.float32)
-
+    
     def compute_lost_frames(self):
         """Detect frame counter discontinuities in the telemetry sequence."""
         self.lost_frames = np.diff(self.frame_count) - 1
@@ -416,10 +440,11 @@ class PAPYtele:
         cov_modes = modes.T @ modes
         diag = np.diag(cov_modes)
         diag = np.where(np.abs(diag) < 1e-30, 1.0, diag)
+        inv =  (np.diag(1.0 / diag) @ modes.T).astype(np.float32)
         if return_modes:
-            return (np.diag(1.0 / diag) @ modes.T).astype(np.float32), modes
+            inv, modes
         else:
-            return (np.diag(1.0 / diag) @ modes.T).astype(np.float32)
+            return inv
     def _compute_proj_OPDs(self, modes, tel, keep_pupil_only = False, filtering = None):
         """
         Calcule un projecteur à partir de modes OPD déjà définis.
@@ -497,9 +522,8 @@ class PAPYtele:
             Projected coefficients for each input frame.
         """
         projected_phase = np.zeros((phase.shape[0], projector.shape[0])).astype(np.float32)
-        for i in tqdm.tqdm(range(phase.shape[0])):
-            projected_phase[i] = projector @ phase[i].ravel()
-        return projected_phase.astype(np.float32)
+        projected_phase = projector @ phase.reshape(phase.shape[0],-1).T
+        return projected_phase.astype(np.float32).T
 
     def _rescale_matrix(self, A, j, k, anti_aliasing=True):
         """

@@ -14,9 +14,9 @@ from matplotlib.patches import Circle
 import numpy as np
 from astropy.io import fits
 from numpy.fft import fft2, fftshift
-from maoppy.utils import circavg
+from maoppy.utils import circavg, compute_otf
 from maoppy.instrument import papyrus
-from maoppy.psfmodel import Psfao, Turbulent
+from maoppy.psfmodel import Psfao, Turbulent, PsfaoPolychromatic
 from maoppy.psffit import psffit
 from scipy.ndimage import gaussian_filter
 from tkinter.filedialog import askopenfilename
@@ -79,17 +79,23 @@ class PSFTele:
         img_raw_mean = self.img_raw.mean(axis=0)
         self.img_raw_mean, self.dark = self._center_cog(img_raw_mean, self.dark, crop_img)
         self.long_exp_PSF = self.img_raw_mean - self.dark
+        nb_act_lin = 16
+        nb_mode_control = 195 # number of KL modes controlled
+        
         if self.is_onsky:
             self.sampling = self.sampling_calib * DM.D_CALIB / DM.D_SKY * self.wvl_sky / self.wvl_calib
             papyrus.occ = TELESCOPE.OBSTRUCTION
+            papyrus.Nact = round(nb_act_lin * 37.5/35.5 * np.sqrt(nb_mode_control/241))
+            ron = 10
             self.wvl = self.wvl_sky
         else:
             self.sampling = self.sampling_calib
             papyrus.occ = 0
+            
             self.wvl = self.wvl_calib
 
 
-    def psf_analysis(self, psf=None, elevation_deg=80, sampling=None):
+    def psf_analysis(self, psf=None, elevation_deg=90, sampling=None, band = [1050e-9,1450e-9]):
         """Fit a PSF model and store image quality metrics on the instance.
     
         Parameters
@@ -107,6 +113,7 @@ class PSFTele:
             psf=psf,
             elevation_deg=elevation_deg,
             sampling=sampling,
+            band = band
         )
     
         self.out = results["out"]
@@ -116,13 +123,12 @@ class PSFTele:
         self.otf_avg = results["otf_avg"]
         self.SR = results["SR"]
         self.otf_diff = results["otf_diff"]
-        self.otf_diff_avg = results["otf_diff_avg"]
         self.r0_zenith = results["r0_zenith"]
         self.seeing = results["seeing"]
         self.seeing_550 = results["seeing_550"]
         self.SR_otf = results["SR_otf"]
         
-    def analyze_psf(self, psf, elevation_deg=80, sampling=None):
+    def analyze_psf(self, psf, elevation_deg=90, sampling=None, polychromatic = True, band = [1050e-9,1450e-9]):
         """Analyze a PSF and return the results without modifying the instance.
     
         Parameters
@@ -139,9 +145,15 @@ class PSFTele:
         dict
             PSF analysis results.
         """
-        sampling = self._resolve_sampling_input(sampling)
-    
-        psfmodel, psfparam_guess, fixed = self._build_psf_model(sampling)
+        self.sampling_calib  = self._resolve_sampling_input(sampling)
+        if polychromatic:
+            self.wvl_sky = np.array(band)
+            self.sampling = self.sampling_calib * DM.D_CALIB / DM.D_SKY * self.wvl_sky / self.wvl_calib
+        else:
+            self.wvl_sky = 1310e-9
+            self.sampling = [self.sampling_calib * DM.D_CALIB / DM.D_SKY * self.wvl_sky / self.wvl_calib]
+        
+        psfmodel, psfparam_guess, fixed = self._build_psf_model(self.sampling )
         weights = self._compute_psf_fit_weights(psf)
     
         out = self._fit_psf_model(
@@ -158,13 +170,10 @@ class PSFTele:
         otf_fit_avg = self._compute_otf_radial_average(psf_fit, self.crop_img)
         otf_avg = self._compute_otf_radial_average(psf_normalized, self.crop_img)
     
-        SR = strehl_ratio(psf_normalized, sampling)
+        SR = np.round(np.abs(compute_otf(out.psf)).sum() / np.abs(psfmodel.otfDiffraction).sum() * 100, decimals = 1)#strehl_ratio(psf_normalized, self.sampling )
     
-        otf_diff = otf_diffraction(self.crop_img, sampling, sky=self.is_onsky)
-        otf_diff_avg = circavg(
-            otf_diff,
-            center=(self.crop_img // 2, self.crop_img // 2),
-        )
+        otf_diff = psfmodel.otfDiffraction
+        
     
         seeing_metrics = self._compute_seeing_metrics(
             fitted_r0=out.x[0],
@@ -183,12 +192,11 @@ class PSFTele:
             "otf_avg": otf_avg,
             "SR": SR,
             "otf_diff": otf_diff,
-            "otf_diff_avg": otf_diff_avg,
             "r0_zenith": seeing_metrics["r0_zenith"],
             "seeing": seeing_metrics["seeing"],
             "seeing_550": seeing_metrics["seeing_550"],
             "SR_otf": SR_otf,
-            "sampling": sampling,
+            "sampling":  self.sampling,
             "elevation_deg": elevation_deg,
         }
     def _resolve_psf_input(self, psf):
@@ -201,7 +209,7 @@ class PSFTele:
     def _resolve_sampling_input(self, sampling):
         """Return the input sampling or the instance default sampling."""
         if sampling is None:
-            return self.sampling
+            return self.sampling_calib
         return sampling
     
     
@@ -228,21 +236,20 @@ class PSFTele:
         )
     
         if self.is_cl:
-            psfmodel = Psfao(
+            psfmodel = PsfaoPolychromatic(
                 (self.crop_img, self.crop_img),
                 system=papyrus,
                 samp=sampling,
             )
-            psfparam_guess = [0.09, 0.0001, 0.4, 0.5, 1, 0, 1.5]
-            fixed = [False] * 7
+            psfparam_guess = [0.05, 1e-4, 0.4, 0.5, 1, 0, 1.5]
+            fixed = [False, ]*7
+            psfmodel.bounds[1][0] = 0.4 # min seeing set to 0.72"
+            psfmodel.bounds[0][3] = 0.5 # min alpha
+            
         else:
-            psfmodel = Turbulent(
-                (self.crop_img, self.crop_img),
-                system=papyrus,
-                samp=sampling,
-            )
+            psfmodel = Turbulent((self.crop_img, self.crop_img), system=papyrus, samp=sampling)
             psfparam_guess = [0.09, 30]
-            fixed = [False] * 2
+            fixed = [False, ]*2
     
         return psfmodel, psfparam_guess, fixed
     
@@ -275,7 +282,7 @@ class PSFTele:
             psfparam_guess,
             weights=weights,
             fixed=fixed,
-            max_nfev=30,
+            max_nfev=60,
         )
     
     

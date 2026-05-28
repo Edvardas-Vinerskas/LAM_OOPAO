@@ -65,7 +65,7 @@ class OZIRIIS:
             self.param = initializeParameterFile()
         else:
             self.param = param
-        self.M2C = np.load(str(HERE) +'\M2C_2nd.npy')
+        self.M2C = np.load(str(HERE) +'/M2C_2nd.npy')
         self.psf_sampling = 2.56
         self.initialise_OOPAO_objects()
         self.compute_projectors()
@@ -97,7 +97,7 @@ class OZIRIIS:
         self.zwfs1 = self.vzwfs.zwfs1
         self.zwfs2 = self.vzwfs.zwfs2
         self.cam = Detector(psf_sampling=self.psf_sampling)
-        param = np.load(str(HERE) + '\dm_second_stage_misreg_dict.npy', allow_pickle=True).item()
+        param = np.load(str(HERE) + '/dm_second_stage_misreg_dict.npy', allow_pickle=True).item()
         m = MisRegistration(param)
         
         self.dm = DeformableMirror(telescope=self.tel, nSubap=10, mechCoupling=0.35, print_dm_properties=False, pitch=0.11, misReg=m)
