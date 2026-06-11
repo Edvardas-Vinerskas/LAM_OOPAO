@@ -21,14 +21,14 @@ from maoppy.psffit import psffit
 from papylib.image import strehl_ratio, center_cog, compute_cog
 
 
-try:
+"""try:
     from maoppy.psfmodel import PsfaoPolychromatic
 except:
     print('Warning: PsfaoPolychromatic is not available from MAOPPY, create an alias here!')
     class PsfaoPolychromatic(Psfao):
         def __init__(self, *args, samp=None, **kwargs):
             super().__init__(*args, samp=np.mean(samp), **kwargs)
-
+"""
 try:
     from aoerror.variance import var_fitting, var_temporal
 except:
@@ -42,11 +42,12 @@ except:
 # path = r'C:\Users\rfetick\Documents\papyrus\AIT OHP\2025-03-05\\'
 # bkg_name = 'cred3Avg6.npy'
 # psf_name = 'cred3Avg15.npy'
-save_name = 'RL100'
-path = 'bench_sky_04_15/onsky_dubhe_1st200_2nd400_v1_20260415-220508/'
+save_name = 'OL'
+iters = 1
+path = 'bench_sky_04_16/onsky_arcturus_1st200_2nd400_v8_linear_20260417-040839/'
 process_dir = os.path.join(path, 'process')
 os.makedirs(process_dir, exist_ok=True)
-psf_name = 'HD95689-CL-2026-04-15T22_10_16-Cube_RL.fits'
+psf_name = 'HD124897-CL-2026-04-17T04_17_14-Cube_pythint.fits'
 #path = r'C:\Users\rfetick\Downloads\2025-10-28\\'
 
 #all_psf = [f for f in os.listdir(path) if f.endswith('.fits')]
@@ -57,19 +58,21 @@ is_close_loop = True
 save_png = True
 
 nx = 100 # number of pixels for cropping
-nb_mode_control = 195
-elevation_deg = 90 # star elevation
-pix_mas = 70.6 # pixel size [milli-arcsec]
+nb_mode_control = 50
+elevation_deg = 70 # star elevation
+pix_mas = 63.3 #70.6 # pixel size [milli-arcsec]75.9
 
 ### FIXED PARAMETERS
 wvl = 1310e-9 # central wavelength
 
 DM_D_CALIB = 37.5 # mm
 DM_D_SKY = 35.5 # mm
-DM_PITCH = 2.5 # mm
+DM_PITCH = 3.75 # mm
 DM_NACT = 97 #241
+save_results = False
 
-TELESCOPE_OBSTRUCTION = 0
+
+TELESCOPE_OBSTRUCTION = 0.27
 TELESCOPE_DIAMETER = 1.52 # m
 
 NCPA_ASTIG_NM = 0 #80
@@ -103,7 +106,7 @@ def get_otf(img):
 
 
 rad2arcsec = 180/np.pi * 3600
-sampling = rad2arcsec * wvl/TELESCOPE_DIAMETER /(pix_mas*1e-3) # camera sampling at the observation wavelength
+sampling = rad2arcsec * wvl/TELESCOPE_DIAMETER /(pix_mas*1e-3) # camera sampling at the observation wavelength ()
 papyrus.occ = TELESCOPE_OBSTRUCTION
 nb_act_lin = 1 + DM_D_CALIB/DM_PITCH
 papyrus.Nact = round(nb_act_lin * DM_D_SKY/DM_D_CALIB * np.sqrt(nb_mode_control/DM_NACT))
@@ -112,7 +115,8 @@ ron = 10
 samp_list = np.array([1, 1.1/1.4, 1.2/1.4, 1.3/1.4]) * sampling
 
 if is_close_loop:
-    psfmodel = PsfaoPolychromatic((nx,nx), system=papyrus, samp=samp_list)
+    #psfmodel = PsfaoPolychromatic((nx,nx), system=papyrus, samp=samp_list)
+    psfmodel = Psfao((nx, nx), system=papyrus, samp=sampling,)
     psfparam_guess = [0.09, 1e-4, 0.4, 0.5, 1, 0, 1.5]
     fixed = [False, ]*7
     psfmodel.bounds[1][0] = 0.4 # min seeing set to 0.72"
@@ -131,11 +135,16 @@ cube_wth_bg = cube[:-2,...]
 
 
 sr_psfao_list = []
-for i in range(5):
-    img = np.mean(cube_wth_bg[100 * i:100 * (i+1),...], axis=0)
+seeing_list = []
+cx_list = []
+cy_list = []
+for i in range(iters):
+    #img = np.mean(cube_wth_bg[100 * i:100 * (i+1),...], axis=0)
+    img = np.mean(cube_wth_bg, axis=0)
     bkg = bkg + np.median(img-bkg)
 
     ### PROCESS PSF
+    
     cx, cy = compute_cog(img, bkg, integer=True)
     cube_c = cube[:-2, cy-nx//2:cy+nx//2, cx-nx//2:cx+nx//2]
     psf_c, bkg_c = center_cog(img, bkg, nx)
@@ -161,7 +170,11 @@ for i in range(5):
         seeing = rad2arcsec*wvl/r0_zenith
         seeing_550 = seeing * (550e-9/wvl)**(-1/5)
         sr_psfao = np.array(psfmodel.strehlOTF(out.x))
-        sr_psfao_list.append(sr_psfao[0])
+        if is_close_loop:
+            sr_psfao_list.append(sr_psfao) #sr_psfao[0]
+        else:
+            sr_psfao_list.append(sr_psfao)
+        seeing_list.append(seeing_550)
         
         print('Strehl : %.1f %% (from OTF)'%(100*sr))
         print('Strehl : %s %% (from fit)'%(100*sr_psfao))
@@ -183,11 +196,31 @@ for i in range(5):
             plt.ylim(-hfov-dy, hfov-dy)
             
         
-        plt.figure(1, figsize=(14,8))
-        plt.clf()
+        plt.figure(1, figsize=(5,5), dpi=300)
+
+        plt.title(f'Linear | Strehl: {100 * sr_psfao:.1f}%', fontsize=20)
+        dx,dy = out.dxdy * pix_mas * 1e-3
+        maxi = np.max(psf_norm)
+        im1 = plt.imshow(psf_norm/maxi, norm=LogNorm(vmin=1e-3, vmax=1), cmap='Spectral_r', extent=[axis[0],axis[-1],axis[0],axis[-1]])
+        cbar = plt.colorbar(im1, fraction=0.046, pad=0.04)
+        cbar.ax.tick_params(labelsize=12)
+        corr_zone = Circle([dx,-dy], wvl/TELESCOPE_DIAMETER*papyrus.Nact/2*rad2arcsec, fc='none', ec='k', ls=':')
+        #plt.gca().add_artist(corr_zone)
+        plt.xlabel('[arcsec]', fontsize=16)
+        plt.ylabel('Arcturus, $m_H$ = -2.81', fontsize=16)
+        hfov = 1.2
+        plt.xlim(-hfov+dx, hfov+dx)
+        plt.ylim(-hfov-dy, hfov-dy)
+        plt.tick_params(axis='both', labelsize=14)
+        plt.tight_layout()
+        plt.savefig('psf_linear.png', dpi=300, bbox_inches='tight')
+        plt.show()
+
+
+        '''plt.clf()
         
         plt.subplot(231)
-        plt.title('data')
+        plt.title(f'Linear | Sterhl: {sr_psfao}')
         setplt(psf_norm)
         
         plt.subplot(232)
@@ -232,44 +265,48 @@ for i in range(5):
         plt.show()
         if save_png:
             plt.savefig(path+r'process\\fitting_'+psf_name[:-5]+'.png')
-        
+        '''
         ### PLOT INSTANTANEOUS
         
-        cx_raw = np.zeros(cube_c.shape[0])
-        cy_raw = np.zeros(cube_c.shape[0])
-        maxi = np.zeros(cube_c.shape[0])
-        flux = np.zeros(cube_c.shape[0])
-        
-        for j in range(cube_c.shape[0]):
-            cx_raw[j],cy_raw[j] = compute_cog(cube_c[j,...], bkg_c, low=0.4)
-            maxi[j] = np.max(cube_c[j,...]-bkg_c)
-            flux[j] = np.sum(cube_c[j,...]-bkg_c)
-        
-        cx_avg = int(round(np.mean(cx_raw)))
-        cy_avg = int(round(np.mean(cy_raw)))
-        
-        sr_instant = cube_c[:,cx_avg,cy_avg] - bkg_c[cx_avg,cy_avg]
-        
-        cx = cx_raw/sampling
-        cy = cy_raw/sampling
+        if i == iters - 1:
+            cx_raw = np.zeros(cube_c.shape[0])
+            cy_raw = np.zeros(cube_c.shape[0])
+            maxi = np.zeros(cube_c.shape[0])
+            flux = np.zeros(cube_c.shape[0])
+            
+            for j in range(cube_c.shape[0]):
+                cx_raw[j],cy_raw[j] = compute_cog(cube_c[j,...], bkg_c, low=0.4)
+                maxi[j] = np.max(cube_c[j,...]-bkg_c)
+                flux[j] = np.sum(cube_c[j,...]-bkg_c)
+            
+            cx_avg = int(round(np.mean(cx_raw)))
+            cy_avg = int(round(np.mean(cy_raw)))
+            
+            sr_instant = cube_c[:,cx_avg,cy_avg] - bkg_c[cx_avg,cy_avg]
+            
+            cx = cx_raw/sampling
+            cy = cy_raw/sampling
 
 
-        cx -= np.mean(cx)
-        cy -= np.mean(cy)
-        
-        maxi = maxi/flux
-        maxi /= np.mean(maxi)
-        
-        var_x = np.var(cx)
-        var_y = np.var(cy)
-        var_xy = np.sum(cx*cy)/len(cx)
-        corr = np.array([[var_x,var_xy],[var_xy,var_y]])
-        
-        eigval, eigvec = np.linalg.eigh(corr)
-        theta = np.arctan2(eigvec[0,1], eigvec[0,0]) * 180/np.pi
+            cx -= np.mean(cx)
+            cy -= np.mean(cy)
+            
+            maxi = maxi/flux
+            maxi /= np.mean(maxi)
+            
+            var_x = np.var(cx)
+            var_y = np.var(cy)
+            var_xy = np.sum(cx*cy)/len(cx)
+            corr = np.array([[var_x,var_xy],[var_xy,var_y]])
+            
+            eigval, eigvec = np.linalg.eigh(corr)
+            theta = np.arctan2(eigvec[0,1], eigvec[0,0]) * 180/np.pi
+
+            cx_list.append(cx)
+            cy_list.append(cy)
         
         #Center of gravity inside the camera TODO you can use the cx and cy for jitter frequency calculations
-        plt.figure(2)
+        '''plt.figure(2)
         plt.clf()
         plt.title('CoG    std=(%.1f,%.1f) $\lambda/D$'%(np.sqrt(eigval[1]),np.sqrt(eigval[0])))
         plt.scatter(cx, cy, alpha=0.2)
@@ -326,33 +363,50 @@ for i in range(5):
         plt.tight_layout()
             
         if save_png:
-            plt.savefig(path+r'process\\cog_follow_'+psf_name[:-5]+'.png')
+            plt.savefig(path+r'process\\cog_follow_'+psf_name[:-5]+'.png')'''
             
         ### SAVE DATA
-        all_cog_maj += [np.sqrt(eigval[0])]
+        '''all_cog_maj += [np.sqrt(eigval[0])]
         all_cog_min += [np.sqrt(eigval[1])]
         all_theta += [theta]
         all_sr += [sr_psfao[0]]
         all_seeing += [seeing_550]
         all_po4ao += ['PO4AO' in psf_name.upper()]
         dt = re.findall('[0-9][0-9-]+T[0-9_]+',psf_name)[0].replace('_',':')
-        all_date += [datetime.fromisoformat(dt)]
+        all_date += [datetime.fromisoformat(dt)]'''
         
         
     else:
         print('Issue with data: %s'%psf_name)
   
-print(sr_psfao_list)
-np.save(f'bench_sky_04_15/onsky_dubhe_1st200_2nd400_v1_20260415-220508/sr_psfao_array_{save_name}.npy', np.asarray(sr_psfao_list))
+
+savedir = path
+os.makedirs(savedir, exist_ok=True)
+
+seeing_array        = np.asarray(seeing_list)
+strehl_array        = np.asarray(sr_psfao_list)
+cx_array            = np.asarray(cx_list).reshape(np.asarray(cx_list).shape[1])
+cy_array            = np.asarray(cy_list).reshape(np.asarray(cy_list).shape[1])
+
+
+if save_results == True:
+    np.savez(
+        os.path.join(savedir, f'results_{save_name}.npz'),
+        seeing        = seeing_array,       # [arcsec @ 550nm]
+        strehl        = strehl_array,           # from PSF fit
+        cx            = cx_array,
+        cy            = cy_array
+    )
+    print(f"Results saved to {savedir}/results_{save_name}.npz")
 
 #%% PLOT STATS
-plt.close('all')
+'''plt.close('all')
 
 plt.figure(1, figsize=(25,6))
 plt.clf()
 
 plt.subplot(141)
-plt.scatter(all_seeing, 100*np.array(all_sr), label='integrator', s=60)
+plt.scatter(all_seeing, 100*np.array(all_sr), label='integrator', s=60)'''
 try:
     x_seeing_550 = np.arange(1, 6, 0.1)
     x_seeing = x_seeing_550 * (wvl/550e-9)**(-1/5)
@@ -370,7 +424,7 @@ try:
     plt.plot(x_seeing_550, sr_marechal, c='k', ls='--', label='fitting + temporal(%u m/s)'%round(windspeed), zorder=0)
 except:
     pass
-plt.xlabel('Seeing [arcsec] @ 550 nm')
+'''plt.xlabel('Seeing [arcsec] @ 550 nm')
 plt.ylabel('Strehl [%%] @ %u nm'%(wvl*1e9))
 plt.xlim(1, 4)
 plt.yticks(np.arange(0,100,5))
@@ -445,4 +499,4 @@ plt.ylim(bottom=0)
 plt.grid()
 plt.gca().xaxis.set_major_formatter(xformatter)
 
-plt.tight_layout()
+plt.tight_layout()'''
