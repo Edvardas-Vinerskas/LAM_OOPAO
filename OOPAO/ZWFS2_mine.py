@@ -4,7 +4,10 @@ Created on Mon Sep  2 11:42:34 2024
 
 @author: mmotte
 """
-
+#TODO there is a bug with self.signal somewhere
+# not a bug but the reference signal is removed from signal
+# so for the img_ZWFS the reference signal is not removed
+# but for signal it is removed
 import inspect
 import multiprocessing
 import sys
@@ -19,7 +22,7 @@ from OOPAO.Detector import Detector
 
 import numpy as np
 import matplotlib.pyplot as plt
-from OOPAO.ZWFS_og import ZWFS
+from OOPAO.ZWFS_mine import ZWFS
 class ZWFS2: #zpf 30, diameter 2.14, phase_shift [-0.75 * np.pi,0.3 * np.pi]
     def __init__(self, tel = None, diameter:float = None, phase_shift = [-np.pi/2,np.pi/2], flux_ratio:float = 1/2, transmittance:complex = 1, zpf = 4, phase_shift_unit = 'radian', propagation_method = 'MFT', ZWFS1 = None, ZWFS2=None):
 
@@ -64,6 +67,9 @@ class ZWFS2: #zpf 30, diameter 2.14, phase_shift [-0.75 * np.pi,0.3 * np.pi]
         if reconstructor is not None:
             self.retrieved_phase = self.reconstructor(reconstructor, iteration= reconstructor_iteration)
         self.img_ZWFS = np.concatenate((self.zwfs1.img_ZWFS,self.zwfs2.img_ZWFS), axis = 1)#(-self.zwfs1.img_ZWFS+self.zwfs2.img_ZWFS)/(2*self.telescope.pupil**2+1-(self.zwfs1.img_ZWFS+self.zwfs2.img_ZWFS))
+        self.signal_2D_cam = np.concatenate((self.zwfs1.signal_2D_cam, self.zwfs2.signal_2D_cam), axis=1)
+        self.signal_2D_cam_padded = np.concatenate((self.zwfs1.signal_2D_cam_padded, self.zwfs2.signal_2D_cam_padded), axis=1)
+        self.signal_cam = np.concatenate((self.zwfs1.signal_cam, self.zwfs2.signal_cam))
         # # self.img_ZWFS[self.telescope.pupil==0]=0
         # self.signal = self.img_ZWFS.reshape(self.img_ZWFS.size)
         self.nSignal = self.signal.size
@@ -152,3 +158,25 @@ class ZWFS2: #zpf 30, diameter 2.14, phase_shift [-0.75 * np.pi,0.3 * np.pi]
         self.zwfs2.img_ref = img2
         self._img_ref = val
         self._ref_signal = np.append(self.zwfs1.ref_signal, self.zwfs2.ref_signal)
+
+
+    def relay(self, src):
+        if src.tag == 'source':
+            src_list = [src]
+        elif src.tag == 'asterism':
+            src_list = src.src
+        signal_2D_cam_list = []
+        signal_cam_list = []
+
+
+        for src in src_list:
+            src.optical_path.append([self.tag, self])
+            self.src = src
+            self.wfs_measure(phase_in=self.src.phase)
+            signal_2D_cam_list.append(self.signal_2D_cam)
+            signal_cam_list.append(self.signal_cam)
+
+        self.signal_2D_cam = np.squeeze(np.array(signal_2D_cam_list))
+        self.signal_cam = np.squeeze(np.array(signal_cam_list))
+
+        return

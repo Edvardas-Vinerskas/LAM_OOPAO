@@ -4,21 +4,17 @@ Created on Fri Jun 21 11:33:27 2024
 
 @author: mmotte
 """
-#TODO the camera resolutino is 40 for now
+
 import warnings
-import matplotlib.pyplot as plt #TODO delete
-import matplotlib
-matplotlib.use('TkAgg')
 
 import numpy as np
 
 from numpy.fft import fft2,ifft2,fftshift
 from .Detector import Detector
-from .tools.tools import warning, OopaoError
-
+from OOPAO.Telescope import Telescope
 import logging  # For logging messages
 
-
+import sys
 logging.basicConfig(level=logging.INFO)  # Set up logging
 logger = logging.getLogger(__name__)  # Create logger
 
@@ -26,14 +22,12 @@ def cart2pol(x, y):
     rho = np.sqrt(x**2 + y**2)
     phi = np.arctan2(y, x)
     return rho, phi
-
-        
 #%%
 
 class ZWFS:
     def __init__(
         self,
-        tel,
+        tel:Telescope,
         diameter: float = 1.06,
         phase_shift: float = np.pi/2,
         transmittance: float = 1.0,
@@ -56,11 +50,11 @@ class ZWFS:
         transmittance: float
             The portion of flux going into the mask 
         zpf: int 
-            In FFT propagation method, it is the Zero padding factor. In MFT propagation method it corresponds to the diameter of the mask in fourier plane (ie the resolution of the fourier transform inside the mask): default value 4.
+            In FFT propagation method, it is the Zero padding factor. In MFT propagation method it correspond to the diameter of the mask in fourier plane (ie the resolution of the fourier transform inside the mask): default value 4.
         phase_shift_unit: string
             If one want to express the depth in lambda, pi, or radian. default : radian
         propagation_method: string
-            Select the fourier transform propagation method: default MFT, possibility with FFT but MFT recommended.
+            Select the fourier transform propagation method: default MFT, possibility with FFT but MFT recommanded. 
             
         ************************** PROPAGATING THE LIGHT TO THE ZWFS OBJECT **************************
         The light can be propagated from a telescope object tel through the ZWFS object wfs using the * operator:
@@ -74,18 +68,28 @@ class ZWFS:
 
 
         """
+        OOPAO_path = [s for s in sys.path if "OOPAO" in s]
+        l = []
+        for i in OOPAO_path:
+            l.append(len(i))
+        path = OOPAO_path[np.argmin(l)]
+        precision = np.load(path+'/precision_oopao.npy')
+        if precision == 64:
+            self.precision = np.float64
+        else:
+            self.precision = np.float32
+        if self.precision is np.float32:
+            self.precision_complex = np.complex64
+        else:
+            self.precision_complex = np.complex128
         if propagation_method != 'FFT' and propagation_method != 'MFT':
             warnings.warn('Unknown propagation method, using FFT')
             self.propagation_method = 'FFT'
         else:
             self.propagation_method = propagation_method
-
-        nSubap = 20
-        #TODO introduced the camera mask                                                                                                    
-        y, x = np.ogrid[-(nSubap/2 - 0.5):(nSubap/2 + 0.5), -(nSubap/2 - 0.5):(nSubap/2 + 0.5)]
-        self.cam_mask = x ** 2 + y ** 2 <= (nSubap/2 + 0.5) ** 2
-        self.binning = 1
+        
         self.telescope = tel
+        tel.print_properties()
         self.tag = 'ZWFS' 
         # if nSubap is None:
         #     self.nSubap = self.telescope.resolution
@@ -108,7 +112,7 @@ class ZWFS:
         
         
         self.transmittance = transmittance
-        self.diameter = diameter 
+        self.diameter = np.float64(diameter) 
         if diameter <=0:
             warnings.warn(f'{diameter} is not a possible diameter, using d=1.06 instead')
             self.diameter = 1.06
@@ -127,27 +131,20 @@ class ZWFS:
         self.epsilon = (1-np.exp(1j*self.phase_shift))
         
         self.pixel_size = self.telescope.D/self.resolution
-        self.Z_bool = self.ZWFS_bool()
+        self.Z_bool =self.ZWFS_bool()
         self.Zmask = self.ZWFS_mask()
         
         self.amplitude_mask = self.Z_bool*np.sqrt(self.transmittance)
         # _, self.Ib = self.propagation(mask = self.amplitude_mask, phase = 0)
         self.Ip = self.telescope.pupilReflectivity**2*self.transmittance
         self._img_ZWFS = 0
+        self._ref_signal = 0
         self._signal = 0
-
-        #TODO camera introduction
-        # WFS detector object (see Detector class)
-        self.cam = Detector(round(nSubap))
-        self.cam.photonNoise = True
-        self.cam.readoutNoise = 4 #0.2 is max more or less so we test around this value (in fact depends on the noise in the pyramid
-        self.cam.QE = 0.8
-        self.wfs_measure(phase_in=np.zeros(self.telescope.pupil.shape))
+        self._precompute_mft()
+        self.wfs_measure()
         
         self._ref_signal = self.signal
         self._img_ref = self.img_ZWFS
-
-
     def ZWFS_bool(self):
         if self.propagation_method == 'MFT':
             Zradius_pixels = self.resolution/2
@@ -169,23 +166,25 @@ class ZWFS:
     def propagation(self, mask = None, phase = None, epsilon = None, computing_Ib = False) : 
         if phase is None:
             phase = self.telescope.src.phase
-
+        
         if self.propagation_method == 'MFT':
             # a = time.time()
-            Na = self.telescope.resolution
-            Nb = self.resolution
-            m = self.diameter
-            EM = self.Amplitude * np.exp(1j*phase) #TODO introduced amplitude
+            # Na = self.telescope.resolution
+            # Nb = self.resolution
+            # m = self.diameter
+            EM = self.telescope.pupilReflectivity*np.exp(1j*phase)
             if epsilon is None: 
                 epsilon = self.epsilon
             if computing_Ib:
-                _ , EM_det = self._MFT(Na, Nb, m, EM, mask = self.Z_bool)
+                # _ , EM_det = self._MFT(Na, Nb, m, EM, mask = self.Z_bool)
+                _ , EM_det = self._MFT_fast(EM, mask = self.Z_bool)
                 EM_det*=np.sqrt(self.transmittance)
             else:
-                _ ,EM_det = self._MFT(Na, Nb, m, EM, mask = self.Z_bool)
+                # _ ,EM_det = self._MFT(Na, Nb, m, EM, mask = self.Z_bool)
+                _ , EM_det = self._MFT_fast(EM, mask = self.Z_bool)
                 EM_det=(EM-(1-np.exp(1j*self.phase_shift))*EM_det)*np.sqrt(self.transmittance)
             # print(np.sum(np.abs(EM)**2))
-            EM_det[~self.pupil_mask]=0
+            # EM_det[~self.pupil_mask]=0
             IM_detect = np.abs(EM_det)**2
             # b = time.time()
             # print(b-a)
@@ -198,29 +197,24 @@ class ZWFS:
             EM = np.zeros((self.resolution,self.resolution), np.complex128)
             
             EM[self.resolution//2-self.telescope.resolution//2:self.resolution//2+self.telescope.resolution//2,self.resolution//2-self.telescope.resolution//2:self.resolution//2+self.telescope.resolution//2]\
-                = self.Amplitude * np.exp(1j*phase)
+                =self.telescope.pupilReflectivity*np.exp(1j*phase)
             Psi_turb = fftshift(fft2(fftshift(EM))) # 1er prop
             Psi_FP_turb = mask*Psi_turb # PF multiplication par masque
             # print(np.sum(np.abs(Psi_FP_turb)**2))
             EM_det = fftshift(ifft2(fftshift((Psi_FP_turb))))[self.resolution//2-self.telescope.resolution//2:self.resolution//2+self.telescope.resolution//2,self.resolution//2-self.telescope.resolution//2:self.resolution//2+self.telescope.resolution//2] # PP detecteur
-            EM_det[~self.pupil_mask]=0
+            # EM_det[~self.pupil_mask]=0
             IM_detect=np.abs(EM_det)**2
             # b = time.time()
             # print(b-a)
         # print(np.sum(IM_detect))
         return EM_det,IM_detect
-
     def wfs_measure(self, phase_in = None, reconstruction_method = None, known_EM = False, reconstructor_iteration:int = 1, estimated_phase = 0):
         if reconstructor_iteration<1:
             warnings.warn('Number of iteration ofr the reconstructor should be superior or equal to 1, Taking 1')
             reconstructor_iteration = 1
         if phase_in is not None:
             self.telescope.src.phase = phase_in
-        #TODO introduced amplitude from the src
-        self.Amplitude = np.sqrt(self.telescope.src.fluxMap) * self.telescope.pupilReflectivity
-
         self.EM_detect, self.img_ZWFS = self.propagation()
-        self.signal_2D_cam, self.signal_cam = self.wfs_integrate() #TODO introduced signal with noise
         if known_EM:
             Psi_b,self.Ib = self.propagation(mask = self.amplitude_mask, computing_Ib=True)
             self.beta = np.angle(Psi_b)
@@ -293,8 +287,7 @@ class ZWFS:
         except Exception as e:
             logger.warning("Reconstruction failed: %s", e, exc_info=True)
             return None
-
-    #TODO changed the normalisation a bit but it doesn't matter
+    
     def _MFT(self, Na:int, Nb:int, m, EMF_pupil, mask = 1):
         Nb = np.int64(Nb)
         Na = np.int64(Na)
@@ -302,29 +295,43 @@ class ZWFS:
         u = np.zeros((Nb, 1))
         x[:,0] = (np.arange(0, Na)-(Na)/2+0.5)*1/Na
         u[:,0] = (np.arange(0, Nb)-(Nb)/2+0.5)*m/Nb
-        #Ft = (m/(Na*Nb)*np.exp(-2*1j*np.pi*(u@x.T))@EMF_pupil@np.exp(-2*1j*np.pi*(x@u.T)))
-        #iFt = m/(Na*Nb)*np.exp(2*1j*np.pi*(x@u.T))@(Ft*mask)@np.exp(2*1j*np.pi*(u@x.T))
-        Ft = (1/(Na**2)*np.exp(-2*1j*np.pi*(u@x.T))@EMF_pupil@np.exp(-2*1j*np.pi*(x@u.T)))
-        iFt = (m/Nb)**2*np.exp(2*1j*np.pi*(x@u.T))@(Ft*mask)@np.exp(2*1j*np.pi*(u@x.T))
+        Ft = (m/(Na*Nb)*np.exp(-2*1j*np.pi*(u@x.T))@EMF_pupil@np.exp(-2*1j*np.pi*(x@u.T)))
+        iFt = m/(Na*Nb)*np.exp(2*1j*np.pi*(x@u.T))@(Ft*mask)@np.exp(2*1j*np.pi*(u@x.T))
         return Ft, iFt
-
+    def _precompute_mft(self):
+        Na = self.telescope.resolution
+        Nb = self.resolution
+        m = self.diameter
+    
+        x = (np.arange(Na) - Na/2 + 0.5) / Na
+        u = (np.arange(Nb) - Nb/2 + 0.5) * m / Nb
+    
+        self._mft_prefac = m / (Na * Nb)
+        self._mft_A = np.exp(-2j * np.pi * np.outer(u, x))   # Nb x Na
+        self._mft_B = np.exp(-2j * np.pi * np.outer(x, u))   # Na x Nb
+        self._imft_A = np.exp( 2j * np.pi * np.outer(x, u))  # Na x Nb
+        self._imft_B = np.exp( 2j * np.pi * np.outer(u, x))  # Nb x Na
+    def _MFT_fast(self, EMF_pupil, mask=1):
+        Ft = self._mft_prefac * (self._mft_A @ EMF_pupil @ self._mft_B)
+        iFt = self._mft_prefac * (self._imft_A @ (Ft * mask) @ self._imft_B)
+        return Ft, iFt
     @property
     def img_ZWFS(self):
         return self._img_ZWFS
     @img_ZWFS.setter
     def img_ZWFS(self, val):
         try:
-            self._signal = val[self.pupil_mask]-self.ref_signal
+            self._signal = val-self.ref_signal
         except:
-            self._signal = val[self.pupil_mask]
+            self._signal = val
         self._img_ZWFS = val
     @property
     def signal(self):
-        return self._signal
+        return self._img_ZWFS[self.pupil_mask] - self.ref_signal
     @signal.setter
     def signal(self,val):
         self._img_ZWFS = np.zeros(self._img_ZWFS.shape)
-        self._img_ZWFS[self.pupil_mask] = val
+        self._img_ZWFS[self.pupil_mask] = val+self.ref_signal
         self._signal = val
     @property
     def img_ref(self):
@@ -341,55 +348,15 @@ class ZWFS:
         self._img_ref = np.zeros(self._img_ref.shape)
         self._img_ref[self.pupil_mask] = val
         self._ref_signal = val
-
-    #TODO introduced relay similar to pyramid
-    def relay(self, src):
-        if src.tag == 'source':
-            src_list = [src]
-        elif src.tag == 'asterism':
-            src_list = src.src
-        signal_2D_cam_list = []
-        signal_cam_list = []
-        frames_list = []
-
-        for src in src_list:
-            src.optical_path.append([self.tag, self])
-            self.src = src
-            self.wfs_measure(phase_in=self.src.phase)
-            signal_2D_cam_list.append(self.signal_2D_cam)
-            signal_cam_list.append(self.signal_cam)
-            frames_list.append(self.cam.frame) #this is kind of useless since signal_2D_cam is self.cam.frame
-
-        self.signal_2D_cam = np.squeeze(np.array(signal_2D_cam_list))
-        self.signal_cam = np.squeeze(np.array(signal_cam_list))
-        self.frames = np.squeeze(np.array(frames_list))
-
-        return
-
-
-    #TODO introduced wfs_integrate to output signal with camera noise
-    def wfs_integrate(self):
-        # propagate to the detector to apply the noise
-        self*self.cam
-        signal_2D_cam = self.cam.frame.copy() #this is our binned and noise applied signal
-        #self.cam_mask = (signal_2D_cam >= 0.05 * signal_2D_cam.max())  #TODO which mask is better?
-        signal_cam = signal_2D_cam[self.cam_mask]
-        return signal_2D_cam, signal_cam
-
-
-    #TODO updated the multiplication operation
+   
+        
     def __mul__(self,obj): 
-        if obj.tag == 'detector':
-            obj._integrated_time += self.telescope.samplingTime
-            intensity = self.img_ZWFS
-            frame = (obj.set_binning(intensity, self.telescope.resolution / obj.resolution))
-            if self.binning != 1:
-                try:
-                    frame = (obj.rebin(frame, (obj.resolution // self.binning, obj.resolution//self.binning)))
-                except:
-                    warning('The shape of the detector (' + str(obj.frame.shape) + ')' + 'is not valid with the binning value requested:' + str(self.binning) + '! -- Ignoring the binning.')
-            obj.integrate(frame)
+        if obj.tag=='detector':
+            obj._integrated_time+=self.telescope.samplingTime
+            obj.integrate(obj._integrated_time)
+
         else:
-            OopaoError('Error light propagated to the wrong type of object')
+            print('Error light propagated to the wrong type of object')
+        return -1
 
 #%%
