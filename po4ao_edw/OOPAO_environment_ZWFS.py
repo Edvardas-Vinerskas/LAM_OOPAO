@@ -299,7 +299,7 @@ class OOPAO_environment_ZWFS(gym.Env):
         next_state = vzwfs_signal_proj_2D
 
 
-        #change to "tt_modes"
+
         INFO        = {"KL_modes": "vzwfs_KL_modes"} #tip tilt zernike coefs
 
         return next_state, INFO
