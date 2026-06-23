@@ -70,14 +70,16 @@ class PSFTele:
         data = self._load(self.tele_path).astype(np.float32)
         self.img_raw = data[:-1][self.temporal_crop]
         if dark_path is None:
-            self.dark = data[-1]
+            self._dark = data[-1]
         else:
-            self.dark = self._load(dark_path).astype(np.float32).mean(axis=0)
+            self._dark = self._load(dark_path).astype(np.float32).mean(axis=0)
         self.frame_count = self.img_raw[:, 0, 0]
+        self.img_raw[:,0,:] = 0
+        self._dark[0,:] = 0
         self.crop_img = crop_img
-        self.short_exp_psf = self.img_raw - self.dark
+        self.short_exp_psf = self.img_raw - self._dark
         img_raw_mean = self.img_raw.mean(axis=0)
-        self.img_raw_mean, self.dark = self._center_cog(img_raw_mean, self.dark, crop_img)
+        self.img_raw_mean, self.dark = self._center_cog(img_raw_mean, self._dark, crop_img)
         self.long_exp_PSF = self.img_raw_mean - self.dark
         nb_act_lin = 16
         nb_mode_control = 195 # number of KL modes controlled
@@ -145,15 +147,38 @@ class PSFTele:
         dict
             PSF analysis results.
         """
-        self.sampling_calib  = self._resolve_sampling_input(sampling)
+        sampling = self._resolve_sampling_input(sampling)
+
+        ny, nx = psf.shape
+        if ny != nx:
+            raise ValueError(f"PSF image must be square. Got shape {psf.shape}.")
+        
+        
+        weights = self._compute_psf_fit_weights(psf)
+        if self.is_onsky:
+            D = DM.D_SKY
+        else: 
+            D = DM.D_CALIB 
         if polychromatic:
             self.wvl_sky = np.array(band)
-            self.sampling = self.sampling_calib * DM.D_CALIB / DM.D_SKY * self.wvl_sky / self.wvl_calib
+            self.sampling = self.sampling_calib * DM.D_CALIB / D * self.wvl_sky / self.wvl_calib
         else:
             self.wvl_sky = 1310e-9
-            self.sampling = [self.sampling_calib * DM.D_CALIB / DM.D_SKY * self.wvl_sky / self.wvl_calib]
+            self.sampling = [self.sampling_calib * DM.D_CALIB / D * self.wvl_sky / self.wvl_calib]
         
-        psfmodel, psfparam_guess, fixed = self._build_psf_model(self.sampling )
+        if self.is_cl:
+            psfmodel, psfparam_guess, fixed = self._build_psf_model(sampling=self.sampling,
+                                                                    crop_img=nx,
+                                                                    )
+            
+        if self.is_cl:
+            psfmodel, psfparam_guess, fixed = self._build_psf_model(sampling=self.sampling,
+                                                                    crop_img=nx,
+                                                                    )
+        else:
+            psfmodel, psfparam_guess, fixed = self._build_psf_model(sampling=self.sampling.mean(),
+                                                                    crop_img=nx,
+                                                                    )
         weights = self._compute_psf_fit_weights(psf)
     
         out = self._fit_psf_model(
@@ -167,8 +192,8 @@ class PSFTele:
         psf_fit = out.psf
         psf_normalized = self._normalize_fitted_psf(psf, out.flux_bck)
     
-        otf_fit_avg = self._compute_otf_radial_average(psf_fit, self.crop_img)
-        otf_avg = self._compute_otf_radial_average(psf_normalized, self.crop_img)
+        otf_fit_avg = self._compute_otf_radial_average(psf_fit, nx)
+        otf_avg = self._compute_otf_radial_average(psf_normalized, nx)
     
         SR = np.round(np.abs(compute_otf(out.psf)).sum() / np.abs(psfmodel.otfDiffraction).sum() * 100, decimals = 1)#strehl_ratio(psf_normalized, self.sampling )
     
@@ -213,7 +238,7 @@ class PSFTele:
         return sampling
     
     
-    def _build_psf_model(self, sampling):
+    def _build_psf_model(self, sampling, crop_img=None):
         """Build the PSF model and initial fitting parameters.
     
         Parameters
@@ -234,10 +259,11 @@ class PSFTele:
         papyrus.Nact = round(
             nb_act_lin * DM.D_SKY / DM.D_CALIB * np.sqrt(195 / DM.NACT)
         )
-    
+        if crop_img is None:
+            crop_img = self.crop_img
         if self.is_cl:
             psfmodel = PsfaoPolychromatic(
-                (self.crop_img, self.crop_img),
+                (crop_img, crop_img),
                 system=papyrus,
                 samp=sampling,
             )
@@ -247,7 +273,8 @@ class PSFTele:
             psfmodel.bounds[0][3] = 0.5 # min alpha
             
         else:
-            psfmodel = Turbulent((self.crop_img, self.crop_img), system=papyrus, samp=sampling)
+            
+            psfmodel = Turbulent((crop_img, crop_img), system=papyrus, samp=sampling)
             psfparam_guess = [0.09, 30]
             fixed = [False, ]*2
     

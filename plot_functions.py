@@ -9,10 +9,12 @@ import numpy as np  # Import NumPy for numerical operations
 
 import matplotlib.pyplot as plt
 import pickle
-from matplotlib.colors import LogNorm
+from matplotlib.colors import LogNorm, Normalize, SymLogNorm
 from pathlib import Path
+import pickle
 from matplotlib import colors
 from matplotlib.ticker import MaxNLocator
+
 
 def _block_average_1d(x, N):
     
@@ -370,7 +372,6 @@ def plot_psd_aa(
         ax.set_xlim(left=fmin, right=fmax)
         if ax_etf is not None:
             ax_etf.set_xlim(left=fmin, right=fmax)
-    if ax_etf is not None:
         if etf_vmax is not None:
             ax_etf.set_ylim(None, top = etf_vmax)
     # ---------- labels ----------
@@ -436,6 +437,7 @@ def plot_psd_aa(
                     format=fmt,
                     bbox_inches="tight",
                     pad_inches=0.02,
+                    dpi=max(dpi, 600),
                     transparent=False,
                 )
 
@@ -444,7 +446,7 @@ def plot_psd_aa(
                 fig.savefig(
                     out,
                     format=fmt,
-                    dpi=max(dpi, 300),
+                    dpi=max(dpi, 600),
                     bbox_inches="tight",
                     pad_inches=0.02,
                     transparent=False,
@@ -680,8 +682,8 @@ def plot_sr_aa(
 
 
 #%%
-def plot_psf_aa(
-    psf,
+def plot_psf_grid_aa(
+    psf_groups,
     wvl,
     telescope_diameter,
     sampling,
@@ -691,19 +693,199 @@ def plot_psf_aa(
     xlabel=r"[arcsec]",
     ylabel=r"[arcsec]",
     cbar_label="Normalized intensity",
-    nx = None,
-    title=None,
-    figsize=(3.35, 3.1),   # ~ largeur colonne A&A en pouces
+    nx=None,
+    titles=None,
+    row_labels=None,
+    col_labels=None,
+    figsize=None,
     dpi=1200,
     origin="lower",
     save=False,
-    savepath="psf.pdf",
+    savepath="psf_grid.pdf",
     saveformat=None,
+    share_colorbar=True,
+    individual_colorbars=False,
+    row_colorbars=False,
+    row_cbar_orientation="vertical",
+    row_cbar_fraction=0.046,
+    row_cbar_pad=0.04,
+    row_cbar_right=0.88,
+    hide_inner_labels=True,
+    normalize_each=True,
+    norm_mode="log",
+    linthresh=1e-4,
+    linscale=1.0,
+    norm_clip=True,
+    cbar_position=(0.18, 0.085, 0.64, 0.025),
+    layout_rect=(0.0, 0.13, 1.0, 1.0),
+    wspace=0.25,
+    hspace=0.32,
 ):
-    
+    """
+    Plot several PSFs as a grid with a style adapted to Astronomy & Astrophysics.
 
-    # Style adapté à A&A
-    plt.rcParams.update({
+    Parameters
+    ----------
+    psf_groups : list[list[np.ndarray or None]]
+        List of rows. Each row contains 2D PSFs or None.
+        A None entry creates an empty hidden cell.
+
+    wvl : float
+        Wavelength in meters.
+
+    telescope_diameter : float
+        Telescope diameter in meters.
+
+    sampling : float
+        Sampling factor.
+
+    vmin, vmax : float, list, or nested list
+        Normalization limits.
+        Can be:
+        - scalar: same value for all PSFs
+        - list of length nrows: one value per row
+        - nested list matching psf_groups: one value per PSF
+
+    cmap : str
+        Matplotlib colormap.
+
+    xlabel, ylabel : str
+        Axis labels.
+
+    cbar_label : str or list or nested list
+        Colorbar label.
+        Can be scalar, row-wise, or per-PSF.
+
+    nx : int or None
+        Central square crop size. If None, each image is kept at full size.
+
+    titles : list[list[str or None]] or None
+        Individual subplot titles, with the same structure as psf_groups.
+
+    row_labels : list[str] or None
+        Labels displayed on the first column, one per row.
+
+    col_labels : list[str] or None
+        Labels displayed above columns.
+        Ignored for a cell if titles[i][j] is already defined.
+
+    figsize : tuple or None
+        Figure size in inches.
+
+    dpi : int
+        DPI used when saving raster formats.
+
+    origin : str
+        Origin passed to imshow.
+
+    save : bool
+        If True, save the figure.
+
+    savepath : str
+        Output path.
+
+    saveformat : str or None
+        Save format. If None, inferred from savepath.
+        Can be "png", "pdf", "fig", "svg", "eps", "jpg", "jpeg", "tif", "tiff", or "all".
+
+    share_colorbar : bool
+        If True, use one common horizontal colorbar at the bottom.
+
+    individual_colorbars : bool
+        If True and share_colorbar=False, add one colorbar per subplot.
+
+    row_colorbars : bool
+        If True and share_colorbar=False, add one colorbar per row.
+
+    row_cbar_orientation : {"vertical", "horizontal"}
+        Orientation of row colorbars.
+
+    row_cbar_fraction : float
+        Fraction parameter passed to fig.colorbar for row colorbars.
+
+    row_cbar_pad : float
+        Padding parameter passed to fig.colorbar for row colorbars.
+
+    row_cbar_right : float
+        Right margin used when row_colorbars=True and row_cbar_orientation="vertical".
+        Lower values leave more room for colorbar tick labels.
+
+    hide_inner_labels : bool
+        If True, only outer axes keep their labels.
+
+    normalize_each : bool
+        If True, each PSF is normalized by its sum and then by its maximum.
+        Use False for residuals or PSF differences.
+
+    norm_mode : {"linear", "log", "symlog"} or list or nested list
+        Normalization mode.
+        Can be scalar, row-wise, or per-PSF.
+
+    linthresh : float or list or nested list
+        Linear threshold for SymLogNorm.
+
+    linscale : float or list or nested list
+        Linear scale factor for SymLogNorm.
+
+    norm_clip : bool
+        If True, clip values outside vmin/vmax in the normalization.
+
+    cbar_position : tuple
+        Position of the shared bottom colorbar:
+        (left, bottom, width, height), in figure-relative coordinates.
+
+    layout_rect : tuple
+        Rectangle reserved for subplots in tight_layout:
+        (left, bottom, right, top).
+
+    wspace, hspace : float
+        Horizontal and vertical spacing between subplots.
+
+    Returns
+    -------
+    fig, axes
+        Matplotlib figure and 2D axes array.
+    """
+
+    if not isinstance(psf_groups, (list, tuple)) or len(psf_groups) == 0:
+        raise ValueError("psf_groups must be a non-empty list of rows.")
+
+    nrows = len(psf_groups)
+    ncols = max(len(row) for row in psf_groups)
+
+    if ncols == 0:
+        raise ValueError("psf_groups does not contain any column.")
+
+    n_colorbar_modes = sum(
+        [
+            bool(share_colorbar),
+            bool(individual_colorbars),
+            bool(row_colorbars),
+        ]
+    )
+
+    if n_colorbar_modes > 1:
+        raise ValueError(
+            "share_colorbar, individual_colorbars, and row_colorbars are mutually exclusive. "
+            "Choose only one colorbar mode."
+        )
+
+    if row_cbar_orientation not in {"vertical", "horizontal"}:
+        raise ValueError(
+            "row_cbar_orientation must be either 'vertical' or 'horizontal'."
+        )
+
+    valid_psfs = [
+        psf
+        for row in psf_groups
+        for psf in row
+        if psf is not None
+    ]
+
+    if len(valid_psfs) == 0:
+        raise ValueError("No valid PSF to plot: all entries are None.")
+
+    rc_params = {
         "font.size": 8,
         "axes.labelsize": 8,
         "axes.titlesize": 8,
@@ -717,101 +899,1082 @@ def plot_psf_aa(
         "ytick.direction": "in",
         "xtick.top": True,
         "ytick.right": True,
-    })
+    }
 
-    # Échelle en arcsec
     pix_scale = wvl / telescope_diameter / sampling
-    
-    rad2arcsec = 180/(2*np.pi)*3600
-    
-    psf_norm = psf/psf.sum()
-    if nx is None:
-        nx = psf.shape[0]
-    else:
-        ctr = psf_norm.shape[0]//2
-        psf_norm = psf_norm[ctr-nx//2:ctr+nx//2,ctr-nx//2:ctr+nx//2]
-    axis = np.linspace(-nx // 2, nx // 2, nx) * pix_scale * rad2arcsec
-    # Normalisation
-    maxi = np.max(psf_norm)
-    norm = LogNorm(vmin=vmin, vmax=vmax)
+    rad2arcsec = 180 / np.pi * 3600
+    pix_scale_arcsec = pix_scale * rad2arcsec
 
-    # Figure
-    fig, ax = plt.subplots(figsize=figsize)
+    if figsize is None:
+        figsize = (
+            max(3.35, 2.4 * ncols),
+            max(2.5, 2.3 * nrows),
+        )
 
-    im = ax.imshow(
-        psf_norm / maxi,
-        norm=norm,
-        cmap=cmap,
-        extent=[axis[0], axis[-1], axis[0], axis[-1]],
-        origin=origin,
-    )
+    def _is_sequence(obj):
+        return isinstance(obj, (list, tuple, np.ndarray)) and not isinstance(obj, str)
 
-    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label(cbar_label)
+    def _expand_to_grid(spec, name):
+        """
+        Expand a scalar, row-wise list, or nested list to the psf_groups grid shape.
+        """
+        if isinstance(spec, str) or np.isscalar(spec):
+            return [
+                [spec for _ in range(len(psf_groups[i]))]
+                for i in range(nrows)
+            ]
 
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
+        if not _is_sequence(spec):
+            raise TypeError(
+                f"{name} must be a scalar, a string, a row-wise list, "
+                f"or a nested list matching psf_groups."
+            )
 
-    if title is not None:
-        ax.set_title(title)
+        if len(spec) != nrows:
+            raise ValueError(
+                f"{name} must have length nrows={nrows} when provided as a list."
+            )
 
-    fig.tight_layout()
+        # Row-wise case:
+        # e.g. vmin=[1e-4, -1e-2]
+        # e.g. norm_mode=["log", "symlog"]
+        if all((not _is_sequence(x)) or isinstance(x, str) for x in spec):
+            return [
+                [spec[i] for _ in range(len(psf_groups[i]))]
+                for i in range(nrows)
+            ]
 
-    # Sauvegarde optionnelle
-    if save:
-        path = Path(savepath)
+        # Per-PSF nested case:
+        # e.g. vmin=[[1e-4, 1e-4], [-1e-2, -1e-3]]
+        grid = []
 
-        if saveformat is None:
-            if path.suffix:
-                saveformat = path.suffix.lower().lstrip(".")
-            else:
-                saveformat = "pdf"
-                path = path.with_suffix(".pdf")
+        for i in range(nrows):
+            row_spec = spec[i]
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        def _save_one(fmt):
-            fmt = fmt.lower().lstrip(".")
-
-            if fmt == "fig":
-                fig_path = path.with_suffix(".fig")
-                with open(fig_path, "wb") as f:
-                    pickle.dump(fig, f)
-
-            elif fmt in {"pdf", "eps", "svg"}:
-                out = path.with_suffix(f".{fmt}")
-                fig.savefig(
-                    out,
-                    format=fmt,
-                    bbox_inches="tight",
-                    pad_inches=0.02,
-                    transparent=False,
+            if not _is_sequence(row_spec) or isinstance(row_spec, str):
+                raise TypeError(
+                    f"{name}[{i}] must be a sequence matching psf_groups[{i}]."
                 )
 
-            elif fmt in {"png", "tif", "tiff", "jpg", "jpeg"}:
-                out = path.with_suffix(f".{fmt}")
-                fig.savefig(
-                    out,
-                    format=fmt,
-                    dpi=max(dpi, 300),
-                    bbox_inches="tight",
-                    pad_inches=0.02,
-                    transparent=False,
-                )
-
-            else:
+            if len(row_spec) != len(psf_groups[i]):
                 raise ValueError(
-                    f"Unsupported save format '{fmt}'. "
-                    "Use pdf, eps, png, tiff, jpg, jpeg, svg, fig, or all."
+                    f"{name}[{i}] must have length {len(psf_groups[i])} "
+                    f"to match psf_groups[{i}]."
                 )
 
-        if saveformat.lower() == "all":
-            for fmt in ("png", "pdf", "fig"):
-                _save_one(fmt)
-        else:
-            _save_one(saveformat)
+            grid.append(list(row_spec))
 
-    return fig, ax
+        return grid
+
+    norm_mode_grid = _expand_to_grid(norm_mode, "norm_mode")
+    vmin_grid = _expand_to_grid(vmin, "vmin")
+    vmax_grid = _expand_to_grid(vmax, "vmax")
+    linthresh_grid = _expand_to_grid(linthresh, "linthresh")
+    linscale_grid = _expand_to_grid(linscale, "linscale")
+    cbar_label_grid = _expand_to_grid(cbar_label, "cbar_label")
+
+    def _build_norm(i, j):
+        mode = str(norm_mode_grid[i][j]).lower()
+
+        vmin_ij = vmin_grid[i][j]
+        vmax_ij = vmax_grid[i][j]
+        linthresh_ij = linthresh_grid[i][j]
+        linscale_ij = linscale_grid[i][j]
+
+        if mode in {"linear", "lin"}:
+            return Normalize(
+                vmin=vmin_ij,
+                vmax=vmax_ij,
+                clip=norm_clip,
+            )
+
+        if mode == "log":
+            if vmin_ij is None or vmax_ij is None:
+                raise ValueError(
+                    f"vmin and vmax must be provided for log normalization at ({i}, {j})."
+                )
+
+            if vmin_ij <= 0 or vmax_ij <= 0:
+                raise ValueError(
+                    f"vmin and vmax must be strictly positive for log normalization at ({i}, {j})."
+                )
+
+            return LogNorm(
+                vmin=vmin_ij,
+                vmax=vmax_ij,
+                clip=norm_clip,
+            )
+
+        if mode == "symlog":
+            if linthresh_ij is None or linthresh_ij <= 0:
+                raise ValueError(
+                    f"linthresh must be strictly positive for symlog normalization at ({i}, {j})."
+                )
+
+            return SymLogNorm(
+                linthresh=linthresh_ij,
+                linscale=linscale_ij,
+                vmin=vmin_ij,
+                vmax=vmax_ij,
+                clip=norm_clip,
+                base=10,
+            )
+
+        raise ValueError(
+            f"Unsupported norm_mode='{mode}' at ({i}, {j}). "
+            "Use 'linear', 'log', or 'symlog'."
+        )
+
+    def _center_crop(arr, crop_size, i, j):
+        ny0, nx0 = arr.shape
+
+        if crop_size > ny0 or crop_size > nx0:
+            raise ValueError(
+                f"nx={crop_size} is too large for the PSF at position ({i}, {j}) "
+                f"with shape {arr.shape}."
+            )
+
+        cy, cx = ny0 // 2, nx0 // 2
+        half = crop_size // 2
+
+        y_start = cy - half
+        x_start = cx - half
+        y_end = y_start + crop_size
+        x_end = x_start + crop_size
+
+        return arr[y_start:y_end, x_start:x_end]
+
+    def _prepare_image(psf, i, j):
+        psf = np.asarray(psf, dtype=float)
+
+        if psf.ndim != 2:
+            raise ValueError(
+                f"The PSF at position ({i}, {j}) must be a 2D array."
+            )
+
+        if not np.any(np.isfinite(psf)):
+            raise ValueError(
+                f"The PSF at position ({i}, {j}) does not contain any finite value."
+            )
+
+        psf = np.nan_to_num(
+            psf,
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
+
+        if nx is not None:
+            psf = _center_crop(psf, nx, i, j)
+
+        if normalize_each:
+            psf_sum = np.sum(psf)
+
+            if psf_sum <= 0:
+                raise ValueError(
+                    f"The PSF at position ({i}, {j}) has a zero or negative sum. "
+                    "Use normalize_each=False for residuals or difference maps."
+                )
+
+            image = psf / psf_sum
+
+            peak = np.max(image)
+
+            if peak <= 0:
+                raise ValueError(
+                    f"The PSF at position ({i}, {j}) has a zero or negative maximum."
+                )
+
+            image = image / peak
+
+        else:
+            image = psf.copy()
+
+        mode = str(norm_mode_grid[i][j]).lower()
+        vmin_ij = vmin_grid[i][j]
+
+        # LogNorm cannot handle values <= 0.
+        # We avoid NaNs by clipping values below vmin to vmin.
+        if mode == "log":
+            if vmin_ij is None or vmin_ij <= 0:
+                raise ValueError(
+                    f"vmin must be strictly positive for log normalization at ({i}, {j})."
+                )
+
+            image = np.clip(image, vmin_ij, None)
+
+        ny, nx_img = image.shape
+
+        x_axis = (np.arange(nx_img) - (nx_img - 1) / 2) * pix_scale_arcsec
+        y_axis = (np.arange(ny) - (ny - 1) / 2) * pix_scale_arcsec
+
+        extent = [
+            x_axis[0],
+            x_axis[-1],
+            y_axis[0],
+            y_axis[-1],
+        ]
+
+        return image, extent
+
+    with plt.rc_context(rc_params):
+        fig, axes = plt.subplots(
+            nrows,
+            ncols,
+            figsize=figsize,
+            squeeze=False,
+        )
+
+        images = []
+        image_axes = []
+
+        row_images = [[] for _ in range(nrows)]
+        row_axes = [[] for _ in range(nrows)]
+
+        for i in range(nrows):
+            row = psf_groups[i]
+
+            for j in range(ncols):
+                ax = axes[i, j]
+
+                if j >= len(row) or row[j] is None:
+                    ax.set_visible(False)
+                    continue
+
+                image, extent = _prepare_image(row[j], i, j)
+                norm_ij = _build_norm(i, j)
+
+                im = ax.imshow(
+                    image,
+                    norm=norm_ij,
+                    cmap=cmap,
+                    extent=extent,
+                    origin=origin,
+                )
+
+                images.append(im)
+                image_axes.append(ax)
+
+                row_images[i].append(im)
+                row_axes[i].append(ax)
+
+                title_set = False
+
+                if titles is not None:
+                    if i < len(titles) and j < len(titles[i]):
+                        if titles[i][j] is not None:
+                            ax.set_title(titles[i][j])
+                            title_set = True
+
+                if not title_set and col_labels is not None:
+                    if i == 0 and j < len(col_labels):
+                        ax.set_title(col_labels[j])
+
+                if hide_inner_labels:
+                    if i == nrows - 1:
+                        ax.set_xlabel(xlabel)
+                    else:
+                        ax.set_xlabel("")
+                        ax.set_xticklabels([])
+
+                    if j == 0:
+                        if row_labels is not None and i < len(row_labels):
+                            ax.set_ylabel(row_labels[i])
+                        else:
+                            ax.set_ylabel(ylabel)
+                    else:
+                        ax.set_ylabel("")
+                        ax.set_yticklabels([])
+
+                else:
+                    ax.set_xlabel(xlabel)
+
+                    if row_labels is not None and j == 0 and i < len(row_labels):
+                        ax.set_ylabel(row_labels[i])
+                    else:
+                        ax.set_ylabel(ylabel)
+
+        if len(images) == 0:
+            raise ValueError("No valid image has been plotted.")
+
+        if share_colorbar:
+            fig.tight_layout(rect=layout_rect)
+            fig.subplots_adjust(wspace=wspace, hspace=hspace)
+
+            cax = fig.add_axes(cbar_position)
+
+            cbar = fig.colorbar(
+                images[0],
+                cax=cax,
+                orientation="horizontal",
+            )
+            cbar.set_label(cbar_label_grid[0][0])
+            cbar.ax.tick_params(direction="in", pad=2, labelsize=7)
+
+        else:
+            fig.tight_layout()
+            fig.subplots_adjust(wspace=wspace, hspace=hspace)
+
+            if individual_colorbars:
+                for im, ax in zip(images, image_axes):
+                    cbar = fig.colorbar(
+                        im,
+                        ax=ax,
+                        fraction=0.046,
+                        pad=0.04,
+                    )
+                    cbar.set_label(cbar_label_grid[0][0])
+                    cbar.ax.tick_params(direction="in", pad=2, labelsize=7)
+
+            elif row_colorbars:
+                if row_cbar_orientation == "vertical":
+                    fig.subplots_adjust(right=row_cbar_right)
+
+                for i in range(nrows):
+                    if len(row_images[i]) == 0:
+                        continue
+
+                    cbar = fig.colorbar(
+                        row_images[i][0],
+                        ax=row_axes[i],
+                        orientation=row_cbar_orientation,
+                        fraction=row_cbar_fraction,
+                        pad=row_cbar_pad,
+                    )
+
+                    # Use the label of the first valid PSF in the row.
+                    first_valid_j = None
+                    for j in range(len(psf_groups[i])):
+                        if psf_groups[i][j] is not None:
+                            first_valid_j = j
+                            break
+
+                    if first_valid_j is not None:
+                        cbar.set_label(cbar_label_grid[i][first_valid_j])
+                    else:
+                        cbar.set_label(cbar_label)
+
+                    if row_cbar_orientation == "vertical":
+                        cbar.ax.tick_params(
+                            axis="y",
+                            direction="in",
+                            pad=2,
+                            labelsize=7,
+                        )
+                    else:
+                        cbar.ax.tick_params(
+                            axis="x",
+                            direction="in",
+                            pad=2,
+                            labelsize=7,
+                        )
+
+        if save:
+            path = Path(savepath)
+
+            if saveformat is None:
+                if path.suffix:
+                    saveformat = path.suffix.lower().lstrip(".")
+                else:
+                    saveformat = "pdf"
+                    path = path.with_suffix(".pdf")
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            def _save_one(fmt):
+                fmt = fmt.lower().lstrip(".")
+
+                if fmt == "fig":
+                    fig_path = path.with_suffix(".fig")
+                    with open(fig_path, "wb") as f:
+                        pickle.dump(fig, f)
+
+                elif fmt in {"pdf", "eps", "svg"}:
+                    out = path.with_suffix(f".{fmt}")
+                    fig.savefig(
+                        out,
+                        format=fmt,
+                        bbox_inches="tight",
+                        pad_inches=0.02,
+                        transparent=False,
+                    )
+
+                elif fmt in {"png", "tif", "tiff", "jpg", "jpeg"}:
+                    out = path.with_suffix(f".{fmt}")
+                    fig.savefig(
+                        out,
+                        format=fmt,
+                        dpi=max(dpi, 300),
+                        bbox_inches="tight",
+                        pad_inches=0.02,
+                        transparent=False,
+                    )
+
+                else:
+                    raise ValueError(
+                        f"Unsupported save format '{fmt}'. "
+                        "Use pdf, eps, png, tiff, jpg, jpeg, svg, fig, or all."
+                    )
+
+            if saveformat.lower() == "all":
+                for fmt in ("png", "pdf", "fig"):
+                    _save_one(fmt)
+            else:
+                _save_one(saveformat)
+
+    return fig, axes
+# def plot_psf_grid_aa(
+#     psf_groups,
+#     wvl,
+#     telescope_diameter,
+#     sampling,
+#     vmin=1e-6,
+#     vmax=1,
+#     cmap="inferno",
+#     xlabel=r"[arcsec]",
+#     ylabel=r"[arcsec]",
+#     cbar_label="Normalized intensity",
+#     nx=None,
+#     titles=None,
+#     row_labels=None,
+#     col_labels=None,
+#     figsize=None,
+#     dpi=1200,
+#     origin="lower",
+#     save=False,
+#     savepath="psf_grid.pdf",
+#     saveformat=None,
+#     share_colorbar=True,
+#     individual_colorbars=False,
+#     row_colorbars=False,
+#     row_cbar_orientation="vertical",
+#     row_cbar_fraction=0.046,
+#     row_cbar_pad=0.04,
+#     hide_inner_labels=True,
+#     normalize_each=True,
+#     use_log_norm=True,
+#     cbar_position=(0.18, 0.085, 0.64, 0.025),
+#     layout_rect=(0.0, 0.13, 1.0, 1.0),
+#     wspace=0.25,
+#     hspace=0.32,
+# ):
+#     """
+#     Plot several PSFs as a grid with a style adapted to Astronomy & Astrophysics.
+
+#     Parameters
+#     ----------
+#     psf_groups : list[list[np.ndarray or None]]
+#         List of rows. Each row contains 2D PSFs or None.
+#         A None entry creates an empty hidden cell.
+
+#     wvl : float
+#         Wavelength in meters.
+
+#     telescope_diameter : float
+#         Telescope diameter in meters.
+
+#     sampling : float
+#         Sampling factor.
+
+#     vmin, vmax : float
+#         Display normalization limits.
+
+#     cmap : str
+#         Matplotlib colormap.
+
+#     xlabel, ylabel : str
+#         Axis labels.
+
+#     cbar_label : str
+#         Colorbar label.
+
+#     nx : int or None
+#         Central square crop size. If None, each image is kept at full size.
+
+#     titles : list[list[str or None]] or None
+#         Individual subplot titles, with the same structure as psf_groups.
+
+#     row_labels : list[str] or None
+#         Labels displayed on the first column, one per row.
+
+#     col_labels : list[str] or None
+#         Labels displayed above columns.
+#         Ignored for a cell if titles[i][j] is already defined.
+
+#     figsize : tuple or None
+#         Figure size in inches.
+
+#     dpi : int
+#         DPI used when saving raster formats.
+
+#     origin : str
+#         Origin passed to imshow.
+
+#     save : bool
+#         If True, save the figure.
+
+#     savepath : str
+#         Output path.
+
+#     saveformat : str or None
+#         Save format. If None, inferred from savepath.
+#         Can be "png", "pdf", "fig", "svg", "eps", "jpg", "jpeg", "tif", "tiff", or "all".
+
+#     share_colorbar : bool
+#         If True, use one common horizontal colorbar at the bottom.
+
+#     individual_colorbars : bool
+#         If True and share_colorbar=False, add one colorbar per subplot.
+
+#     row_colorbars : bool
+#         If True and share_colorbar=False, add one colorbar per row.
+
+#     row_cbar_orientation : {"vertical", "horizontal"}
+#         Orientation of row colorbars.
+
+#     row_cbar_fraction : float
+#         Fraction parameter passed to fig.colorbar for row colorbars.
+
+#     row_cbar_pad : float
+#         Padding parameter passed to fig.colorbar for row colorbars.
+
+#     hide_inner_labels : bool
+#         If True, only outer axes keep their labels.
+
+#     normalize_each : bool
+#         If True, each PSF is normalized by its sum and then by its maximum.
+#         This reproduces the behavior of the original plot_psf_aa function.
+
+#         If False, images are displayed as provided.
+
+#     use_log_norm : bool
+#         If True, use LogNorm(vmin, vmax).
+#         If False, use linear normalization with vmin/vmax.
+
+#     cbar_position : tuple
+#         Position of the shared bottom colorbar:
+#         (left, bottom, width, height), in figure-relative coordinates.
+
+#     layout_rect : tuple
+#         Rectangle reserved for subplots in tight_layout:
+#         (left, bottom, right, top).
+#         The bottom value should be above the shared colorbar vertical position.
+
+#     wspace, hspace : float
+#         Horizontal and vertical spacing between subplots.
+
+#     Returns
+#     -------
+#     fig, axes
+#         Matplotlib figure and 2D axes array.
+#     """
+
+#     if not isinstance(psf_groups, (list, tuple)) or len(psf_groups) == 0:
+#         raise ValueError("psf_groups must be a non-empty list of rows.")
+
+#     nrows = len(psf_groups)
+#     ncols = max(len(row) for row in psf_groups)
+
+#     if ncols == 0:
+#         raise ValueError("psf_groups does not contain any column.")
+
+#     n_colorbar_modes = sum(
+#         [
+#             bool(share_colorbar),
+#             bool(individual_colorbars),
+#             bool(row_colorbars),
+#         ]
+#     )
+
+#     if n_colorbar_modes > 1:
+#         raise ValueError(
+#             "share_colorbar, individual_colorbars, and row_colorbars are mutually exclusive. "
+#             "Choose only one colorbar mode."
+#         )
+
+#     if row_cbar_orientation not in {"vertical", "horizontal"}:
+#         raise ValueError(
+#             "row_cbar_orientation must be either 'vertical' or 'horizontal'."
+#         )
+
+#     valid_psfs = [
+#         psf
+#         for row in psf_groups
+#         for psf in row
+#         if psf is not None
+#     ]
+
+#     if len(valid_psfs) == 0:
+#         raise ValueError("No valid PSF to plot: all entries are None.")
+
+#     rc_params = {
+#         "font.size": 8,
+#         "axes.labelsize": 8,
+#         "axes.titlesize": 8,
+#         "xtick.labelsize": 7,
+#         "ytick.labelsize": 7,
+#         "legend.fontsize": 7,
+#         "font.family": "serif",
+#         "mathtext.fontset": "cm",
+#         "axes.linewidth": 0.8,
+#         "xtick.direction": "in",
+#         "ytick.direction": "in",
+#         "xtick.top": True,
+#         "ytick.right": True,
+#     }
+
+#     pix_scale = wvl / telescope_diameter / sampling
+#     rad2arcsec = 180 / np.pi * 3600
+#     pix_scale_arcsec = pix_scale * rad2arcsec
+
+   
+
+#     if figsize is None:
+#         figsize = (
+#             max(3.35, 2.4 * ncols),
+#             max(2.5, 2.3 * nrows),
+#         )
+#     def _as_row_values(value, name):
+#         """
+#         Convert a scalar or a row-wise list/tuple/array into a list of length nrows.
+#         """
+#         if np.isscalar(value):
+#             return [value] * nrows
+    
+#         if isinstance(value, (list, tuple, np.ndarray)):
+#             if len(value) != nrows:
+#                 raise ValueError(
+#                     f"{name} must be either a scalar or a list/tuple/array "
+#                     f"with length nrows={nrows}."
+#                 )
+#             return list(value)
+    
+#         raise TypeError(
+#             f"{name} must be either a scalar or a list/tuple/array."
+#         )
+    
+    
+#     vmin_rows = _as_row_values(vmin, "vmin")
+#     vmax_rows = _as_row_values(vmax, "vmax")
+
+#     def _center_crop(arr, crop_size, i, j):
+#         ny0, nx0 = arr.shape
+
+#         if crop_size > ny0 or crop_size > nx0:
+#             raise ValueError(
+#                 f"nx={crop_size} is too large for the PSF at position ({i}, {j}) "
+#                 f"with shape {arr.shape}."
+#             )
+
+#         cy, cx = ny0 // 2, nx0 // 2
+#         half = crop_size // 2
+
+#         y_start = cy - half
+#         x_start = cx - half
+#         y_end = y_start + crop_size
+#         x_end = x_start + crop_size
+
+#         return arr[y_start:y_end, x_start:x_end]
+
+#     def _prepare_image(psf, i, j, vmin_row=None):
+#         psf = np.asarray(psf, dtype=float)
+
+#         if psf.ndim != 2:
+#             raise ValueError(
+#                 f"The PSF at position ({i}, {j}) must be a 2D array."
+#             )
+
+#         if not np.any(np.isfinite(psf)):
+#             raise ValueError(
+#                 f"The PSF at position ({i}, {j}) does not contain any finite value."
+#             )
+
+#         psf = np.nan_to_num(psf, nan=0.0, posinf=0.0, neginf=0.0)
+
+#         if nx is not None:
+#             psf = _center_crop(psf, nx, i, j)
+
+#         if normalize_each:
+#             psf_sum = np.nansum(psf)
+
+#             if psf_sum <= 0:
+#                 raise ValueError(
+#                     f"The PSF at position ({i}, {j}) has a zero or negative sum."
+#                 )
+
+#             image = psf / psf_sum
+
+#             peak = np.nanmax(image)
+#             if peak <= 0:
+#                 raise ValueError(
+#                     f"The PSF at position ({i}, {j}) has a zero or negative maximum."
+#                 )
+
+#             image = image / peak
+
+#         else:
+#             image = psf.copy()
+
+#         if use_log_norm:
+#             # LogNorm does not support values <= 0.
+#             # Instead of replacing non-positive values by NaN, clip them to vmin.
+#             if vmin_row is None:
+#                 raise ValueError("vmin_row must be provided when use_log_norm=True.")
+        
+#             if vmin_row <= 0:
+#                 raise ValueError("vmin must be strictly positive when use_log_norm=True.")
+        
+#             image = np.clip(image, vmin_row, None)
+
+#         ny, nx_img = image.shape
+
+#         x_axis = (np.arange(nx_img) - (nx_img - 1) / 2) * pix_scale_arcsec
+#         y_axis = (np.arange(ny) - (ny - 1) / 2) * pix_scale_arcsec
+
+#         extent = [
+#             x_axis[0],
+#             x_axis[-1],
+#             y_axis[0],
+#             y_axis[-1],
+#         ]
+
+#         return image, extent
+
+#     with plt.rc_context(rc_params):
+#         fig, axes = plt.subplots(
+#             nrows,
+#             ncols,
+#             figsize=figsize,
+#             squeeze=False,
+#         )
+
+#         images = []
+#         image_axes = []
+
+#         row_images = [[] for _ in range(nrows)]
+#         row_axes = [[] for _ in range(nrows)]
+
+#         for i in range(nrows):
+#             row = psf_groups[i]
+
+#             for j in range(ncols):
+#                 ax = axes[i, j]
+
+#                 if j >= len(row) or row[j] is None:
+#                     ax.set_visible(False)
+#                     continue
+
+#                 image, extent = _prepare_image(row[j], i, j, vmin_row=vmin_rows[i])
+
+#                 if use_log_norm:
+#                     norm = LogNorm(vmin=vmin_rows[i], vmax=vmax_rows[i])
+#                 else:
+#                     norm = plt.Normalize(vmin=vmin_rows[i], vmax=vmax_rows[i])
+                
+#                 im = ax.imshow(
+#                     image,
+#                     norm=norm,
+#                     cmap=cmap,
+#                     extent=extent,
+#                     origin=origin,
+#                 )
+
+#                 images.append(im)
+#                 image_axes.append(ax)
+
+#                 row_images[i].append(im)
+#                 row_axes[i].append(ax)
+
+#                 title_set = False
+
+#                 if titles is not None:
+#                     if i < len(titles) and j < len(titles[i]):
+#                         if titles[i][j] is not None:
+#                             ax.set_title(titles[i][j])
+#                             title_set = True
+
+#                 if not title_set and col_labels is not None:
+#                     if i == 0 and j < len(col_labels):
+#                         ax.set_title(col_labels[j])
+
+#                 if hide_inner_labels:
+#                     if i == nrows - 1:
+#                         ax.set_xlabel(xlabel)
+#                     else:
+#                         ax.set_xlabel("")
+#                         ax.set_xticklabels([])
+
+#                     if j == 0:
+#                         if row_labels is not None and i < len(row_labels):
+#                             ax.set_ylabel(row_labels[i])
+#                         else:
+#                             ax.set_ylabel(ylabel)
+#                     else:
+#                         ax.set_ylabel("")
+#                         ax.set_yticklabels([])
+
+#                 else:
+#                     ax.set_xlabel(xlabel)
+
+#                     if row_labels is not None and j == 0 and i < len(row_labels):
+#                         ax.set_ylabel(row_labels[i])
+#                     else:
+#                         ax.set_ylabel(ylabel)
+
+#         if len(images) == 0:
+#             raise ValueError("No valid image has been plotted.")
+
+#         if share_colorbar:
+#             fig.tight_layout(rect=layout_rect)
+#             fig.subplots_adjust(wspace=wspace, hspace=hspace)
+
+#             cax = fig.add_axes(cbar_position)
+
+#             cbar = fig.colorbar(
+#                 images[0],
+#                 cax=cax,
+#                 orientation="horizontal",
+#             )
+#             cbar.set_label(cbar_label)
+
+#         else:
+#             fig.tight_layout()
+#             fig.subplots_adjust(wspace=wspace, hspace=hspace)
+
+#             if individual_colorbars:
+#                 for im, ax in zip(images, image_axes):
+#                     cbar = fig.colorbar(
+#                         im,
+#                         ax=ax,
+#                         fraction=0.046,
+#                         pad=0.04,
+#                     )
+#                     cbar.set_label(cbar_label)
+
+#             elif row_colorbars:
+#                 if row_cbar_orientation == "vertical":
+#                     fig.subplots_adjust(right=0.88)
+            
+#                 for i in range(nrows):
+#                     if len(row_images[i]) == 0:
+#                         continue
+            
+#                     cbar = fig.colorbar(
+#                         row_images[i][0],
+#                         ax=row_axes[i],
+#                         orientation=row_cbar_orientation,
+#                         fraction=row_cbar_fraction,
+#                         pad=row_cbar_pad,
+#                     )
+#                     cbar.set_label(cbar_label)
+            
+#                     if row_cbar_orientation == "vertical":
+#                         cbar.ax.tick_params(
+#                             axis="y",
+#                             direction="in",
+#                             pad=2,
+#                             labelsize=7,
+#                         )
+            
+#                     else:
+#                         cbar.ax.tick_params(
+#                             axis="x",
+#                             direction="in",
+#                             pad=2,
+#                             labelsize=7,
+#                         )
+
+#         if save:
+#             path = Path(savepath)
+
+#             if saveformat is None:
+#                 if path.suffix:
+#                     saveformat = path.suffix.lower().lstrip(".")
+#                 else:
+#                     saveformat = "pdf"
+#                     path = path.with_suffix(".pdf")
+
+#             path.parent.mkdir(parents=True, exist_ok=True)
+
+#             def _save_one(fmt):
+#                 fmt = fmt.lower().lstrip(".")
+
+#                 if fmt == "fig":
+#                     fig_path = path.with_suffix(".fig")
+#                     with open(fig_path, "wb") as f:
+#                         pickle.dump(fig, f)
+
+#                 elif fmt in {"pdf", "eps", "svg"}:
+#                     out = path.with_suffix(f".{fmt}")
+#                     fig.savefig(
+#                         out,
+#                         format=fmt,
+#                         bbox_inches="tight",
+#                         pad_inches=0.02,
+#                         transparent=False,
+#                     )
+
+#                 elif fmt in {"png", "tif", "tiff", "jpg", "jpeg"}:
+#                     out = path.with_suffix(f".{fmt}")
+#                     fig.savefig(
+#                         out,
+#                         format=fmt,
+#                         dpi=max(dpi, 300),
+#                         bbox_inches="tight",
+#                         pad_inches=0.02,
+#                         transparent=False,
+#                     )
+
+#                 else:
+#                     raise ValueError(
+#                         f"Unsupported save format '{fmt}'. "
+#                         "Use pdf, eps, png, tiff, jpg, jpeg, svg, fig, or all."
+#                     )
+
+#             if saveformat.lower() == "all":
+#                 for fmt in ("png", "pdf", "fig"):
+#                     _save_one(fmt)
+#             else:
+#                 _save_one(saveformat)
+
+#     return fig, axes
+#%%
+# def plot_psf_aa(
+#     psf,
+#     wvl,
+#     telescope_diameter,
+#     sampling,
+#     vmin=1e-6,
+#     vmax=1,
+#     cmap="inferno",
+#     xlabel=r"[arcsec]",
+#     ylabel=r"[arcsec]",
+#     cbar_label="Normalized intensity",
+#     nx = None,
+#     title=None,
+#     figsize=(3.35, 3.1),   # ~ largeur colonne A&A en pouces
+#     dpi=1200,
+#     origin="lower",
+#     save=False,
+#     savepath="psf.pdf",
+#     saveformat=None,
+#     normalise = True,
+# ):
+    
+
+#     # Style adapté à A&A
+#     plt.rcParams.update({
+#         "font.size": 8,
+#         "axes.labelsize": 8,
+#         "axes.titlesize": 8,
+#         "xtick.labelsize": 7,
+#         "ytick.labelsize": 7,
+#         "legend.fontsize": 7,
+#         "font.family": "serif",
+#         "mathtext.fontset": "cm",
+#         "axes.linewidth": 0.8,
+#         "xtick.direction": "in",
+#         "ytick.direction": "in",
+#         "xtick.top": True,
+#         "ytick.right": True,
+#     })
+
+#     # Échelle en arcsec
+#     pix_scale = wvl / telescope_diameter / sampling
+    
+#     rad2arcsec = 180/(2*np.pi)*3600
+#     if normalise:
+#         psf_norm = psf/psf.sum()
+#     else:
+#         psf_norm = psf.copy()
+
+#     if nx is None:
+#         nx = psf.shape[0]
+#     else:
+#         ctr = psf_norm.shape[0]//2
+#         psf_norm = psf_norm[ctr-nx//2:ctr+nx//2,ctr-nx//2:ctr+nx//2]
+#     axis = np.linspace(-nx // 2, nx // 2, nx) * pix_scale * rad2arcsec
+#     # Normalisation
+#     maxi = np.max(psf_norm)
+#     norm = LogNorm(vmin=vmin, vmax=vmax)
+
+#     # Figure
+#     fig, ax = plt.subplots(figsize=figsize)
+
+#     im = ax.imshow(
+#         psf_norm / maxi,
+#         norm=norm,
+#         cmap=cmap,
+#         extent=[axis[0], axis[-1], axis[0], axis[-1]],
+#         origin=origin,
+#     )
+
+#     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+#     cbar.set_label(cbar_label)
+
+#     ax.set_xlabel(xlabel)
+#     ax.set_ylabel(ylabel)
+
+#     if title is not None:
+#         ax.set_title(title)
+
+#     fig.tight_layout()
+
+#     # Sauvegarde optionnelle
+#     if save:
+#         path = Path(savepath)
+
+#         if saveformat is None:
+#             if path.suffix:
+#                 saveformat = path.suffix.lower().lstrip(".")
+#             else:
+#                 saveformat = "pdf"
+#                 path = path.with_suffix(".pdf")
+
+#         path.parent.mkdir(parents=True, exist_ok=True)
+
+#         def _save_one(fmt):
+#             fmt = fmt.lower().lstrip(".")
+
+#             if fmt == "fig":
+#                 fig_path = path.with_suffix(".fig")
+#                 with open(fig_path, "wb") as f:
+#                     pickle.dump(fig, f)
+
+#             elif fmt in {"pdf", "eps", "svg"}:
+#                 out = path.with_suffix(f".{fmt}")
+#                 fig.savefig(
+#                     out,
+#                     format=fmt,
+#                     bbox_inches="tight",
+#                     pad_inches=0.02,
+#                     transparent=False,
+#                 )
+
+#             elif fmt in {"png", "tif", "tiff", "jpg", "jpeg"}:
+#                 out = path.with_suffix(f".{fmt}")
+#                 fig.savefig(
+#                     out,
+#                     format=fmt,
+#                     dpi=max(dpi, 300),
+#                     bbox_inches="tight",
+#                     pad_inches=0.02,
+#                     transparent=False,
+#                 )
+
+#             else:
+#                 raise ValueError(
+#                     f"Unsupported save format '{fmt}'. "
+#                     "Use pdf, eps, png, tiff, jpg, jpeg, svg, fig, or all."
+#                 )
+
+#         if saveformat.lower() == "all":
+#             for fmt in ("png", "pdf", "fig"):
+#                 _save_one(fmt)
+#         else:
+#             _save_one(saveformat)
+
+#     return fig, ax
 
 #%%
 
@@ -2850,410 +4013,410 @@ def plot_n_psd_aa(
 #%%
 
 
-def plot_psf_grid_aa(
-    psf_groups,
-    wvl,
-    telescope_diameter,
-    sampling,
-    vmin=1e-6,
-    vmax=1,
-    cmap="inferno",
-    xlabel=r"[arcsec]",
-    ylabel=r"[arcsec]",
-    cbar_label="Normalized intensity",
-    nx=None,
-    titles=None,
-    row_labels=None,
-    col_labels=None,
-    figsize=None,
-    dpi=1200,
-    origin="lower",
-    save=False,
-    savepath="psf_grid.pdf",
-    saveformat=None,
-    share_colorbar=True,
-    individual_colorbars=False,
-    hide_inner_labels=True,
-    normalize_each=True,
-    use_log_norm=True,
-    cbar_position=(0.18, 0.085, 0.64, 0.025),
-    layout_rect=(0.0, 0.13, 1.0, 1.0),
-    wspace=0.25,
-    hspace=0.32,
-):
-    """
-    Trace plusieurs PSF sous forme de grille avec un style adapté à Astronomy & Astrophysics.
-
-    Parameters
-    ----------
-    psf_groups : list[list[np.ndarray or None]]
-        Liste de lignes. Chaque ligne contient des PSF 2D ou None.
-        Une entrée None produit une cellule vide sans axe visible.
-
-    wvl : float
-        Longueur d'onde en mètres.
-
-    telescope_diameter : float
-        Diamètre du télescope en mètres.
-
-    sampling : float
-        Facteur d'échantillonnage.
-
-    vmin, vmax : float
-        Bornes de normalisation de l'image affichée.
-
-    cmap : str
-        Colormap Matplotlib.
-
-    xlabel, ylabel : str
-        Labels des axes.
-
-    cbar_label : str
-        Label de la colorbar.
-
-    nx : int or None
-        Taille du crop central carré. Si None, chaque image est gardée entière.
-
-    titles : list[list[str or None]] or None
-        Titres individuels, même structure que psf_groups.
-
-    row_labels : list[str] or None
-        Labels affichés sur la première colonne, un par ligne.
-
-    col_labels : list[str] or None
-        Labels affichés au-dessus des colonnes.
-        Ignorés pour une case si titles[i][j] existe déjà.
-
-    figsize : tuple or None
-        Taille de figure en pouces.
-
-    share_colorbar : bool
-        Si True, utilise une colorbar commune horizontale en bas.
-
-    individual_colorbars : bool
-        Si True et share_colorbar=False, ajoute une colorbar par axe.
-
-    hide_inner_labels : bool
-        Si True, seuls les axes extérieurs gardent les labels.
-
-    normalize_each : bool
-        Si True :
-            chaque image est normalisée par sa somme puis par son maximum.
-            C'est le comportement de ta fonction plot_psf_aa originale.
-
-        Si False :
-            les images sont affichées telles quelles.
-            À utiliser pour des PSF ou résidus déjà normalisés.
-
-    use_log_norm : bool
-        Si True, utilise LogNorm(vmin, vmax).
-        Si False, utilise une normalisation linéaire avec vmin/vmax.
-
-    cbar_position : tuple
-        Position de la colorbar commune :
-        (left, bottom, width, height), en coordonnées relatives à la figure.
-
-    layout_rect : tuple
-        Rectangle réservé aux subplots dans tight_layout :
-        (left, bottom, right, top).
-        Le bottom doit être supérieur à la position verticale de la colorbar.
-
-    wspace, hspace : float
-        Espacement horizontal et vertical entre les subplots.
-
-    Returns
-    -------
-    fig, axes
-        Figure Matplotlib et tableau 2D d'axes.
-    """
-
-    if not isinstance(psf_groups, (list, tuple)) or len(psf_groups) == 0:
-        raise ValueError("psf_groups doit être une liste non vide de lignes.")
-
-    nrows = len(psf_groups)
-    ncols = max(len(row) for row in psf_groups)
-
-    if ncols == 0:
-        raise ValueError("psf_groups ne contient aucune colonne.")
-
-    if share_colorbar and individual_colorbars:
-        raise ValueError(
-            "share_colorbar=True et individual_colorbars=True sont incompatibles. "
-            "Une colorbar commune ou des colorbars individuelles, pas les deux."
-        )
-
-    valid_psfs = [
-        psf
-        for row in psf_groups
-        for psf in row
-        if psf is not None
-    ]
-
-    if len(valid_psfs) == 0:
-        raise ValueError("Aucune PSF valide à tracer : toutes les entrées sont None.")
-
-    rc_params = {
-        "font.size": 8,
-        "axes.labelsize": 8,
-        "axes.titlesize": 8,
-        "xtick.labelsize": 7,
-        "ytick.labelsize": 7,
-        "legend.fontsize": 7,
-        "font.family": "serif",
-        "mathtext.fontset": "cm",
-        "axes.linewidth": 0.8,
-        "xtick.direction": "in",
-        "ytick.direction": "in",
-        "xtick.top": True,
-        "ytick.right": True,
-    }
-
-    pix_scale = wvl / telescope_diameter / sampling
-    rad2arcsec = 180 / np.pi * 3600
-    pix_scale_arcsec = pix_scale * rad2arcsec
-
-    if use_log_norm:
-        norm = LogNorm(vmin=vmin, vmax=vmax)
-    else:
-        norm = plt.Normalize(vmin=vmin, vmax=vmax)
-
-    if figsize is None:
-        figsize = (
-            max(3.35, 2.4 * ncols),
-            max(2.5, 2.3 * nrows),
-        )
-
-    def _center_crop(arr, crop_size, i, j):
-        ny0, nx0 = arr.shape
-
-        if crop_size > ny0 or crop_size > nx0:
-            raise ValueError(
-                f"nx={crop_size} est trop grand pour la PSF en position ({i}, {j}) "
-                f"de taille {arr.shape}."
-            )
-
-        cy, cx = ny0 // 2, nx0 // 2
-        half = crop_size // 2
-
-        y_start = cy - half
-        x_start = cx - half
-        y_end = y_start + crop_size
-        x_end = x_start + crop_size
-
-        return arr[y_start:y_end, x_start:x_end]
-
-    def _prepare_image(psf, i, j):
-        psf = np.asarray(psf, dtype=float)
-
-        if psf.ndim != 2:
-            raise ValueError(
-                f"La PSF en position ({i}, {j}) doit être un array 2D."
-            )
-
-        if not np.any(np.isfinite(psf)):
-            raise ValueError(
-                f"La PSF en position ({i}, {j}) ne contient aucune valeur finie."
-            )
-
-        psf = np.nan_to_num(psf, nan=0.0, posinf=0.0, neginf=0.0)
-
-        if nx is not None:
-            psf = _center_crop(psf, nx, i, j)
-
-        if normalize_each:
-            psf_sum = np.sum(psf)
-
-            if psf_sum <= 0:
-                raise ValueError(
-                    f"La PSF en position ({i}, {j}) a une somme nulle ou négative."
-                )
-
-            image = psf / psf_sum
-
-            peak = np.max(image)
-            if peak <= 0:
-                raise ValueError(
-                    f"La PSF en position ({i}, {j}) a un maximum nul ou négatif."
-                )
-
-            image = image / peak
-
-        else:
-            image = psf.copy()
-
-        if use_log_norm:
-            # LogNorm ne supporte pas les valeurs <= 0.
-            image = np.where(image > 0, image, np.nan)
-
-        ny, nx_img = image.shape
-
-        x_axis = (np.arange(nx_img) - (nx_img - 1) / 2) * pix_scale_arcsec
-        y_axis = (np.arange(ny) - (ny - 1) / 2) * pix_scale_arcsec
-
-        extent = [
-            x_axis[0],
-            x_axis[-1],
-            y_axis[0],
-            y_axis[-1],
-        ]
-
-        return image, extent
-
-    with plt.rc_context(rc_params):
-        fig, axes = plt.subplots(
-            nrows,
-            ncols,
-            figsize=figsize,
-            squeeze=False,
-        )
-
-        images = []
-        image_axes = []
-
-        for i in range(nrows):
-            row = psf_groups[i]
-
-            for j in range(ncols):
-                ax = axes[i, j]
-
-                if j >= len(row) or row[j] is None:
-                    ax.set_visible(False)
-                    continue
-
-                image, extent = _prepare_image(row[j], i, j)
-
-                im = ax.imshow(
-                    image,
-                    norm=norm,
-                    cmap=cmap,
-                    extent=extent,
-                    origin=origin,
-                )
-
-                images.append(im)
-                image_axes.append(ax)
-
-                # Titre individuel prioritaire
-                title_set = False
-                if titles is not None:
-                    if i < len(titles) and j < len(titles[i]):
-                        if titles[i][j] is not None:
-                            ax.set_title(titles[i][j])
-                            title_set = True
-
-                # Label de colonne si pas déjà un titre individuel
-                if not title_set and col_labels is not None:
-                    if i == 0 and j < len(col_labels):
-                        ax.set_title(col_labels[j])
-
-                # Labels d'axes
-                if hide_inner_labels:
-                    if i == nrows - 1:
-                        ax.set_xlabel(xlabel)
-                    else:
-                        ax.set_xlabel("")
-                        ax.set_xticklabels([])
-
-                    if j == 0:
-                        if row_labels is not None and i < len(row_labels):
-                            ax.set_ylabel(row_labels[i])
-                        else:
-                            ax.set_ylabel(ylabel)
-                    else:
-                        ax.set_ylabel("")
-                        ax.set_yticklabels([])
-                else:
-                    ax.set_xlabel(xlabel)
-
-                    if row_labels is not None and j == 0 and i < len(row_labels):
-                        ax.set_ylabel(row_labels[i])
-                    else:
-                        ax.set_ylabel(ylabel)
-
-        if len(images) == 0:
-            raise ValueError("Aucune image valide n'a été tracée.")
-
-        if share_colorbar:
-            fig.tight_layout(rect=layout_rect)
-            fig.subplots_adjust(wspace=wspace, hspace=hspace)
-
-            cax = fig.add_axes(cbar_position)
-
-            cbar = fig.colorbar(
-                images[0],
-                cax=cax,
-                orientation="horizontal",
-            )
-            cbar.set_label(cbar_label)
-
-        else:
-            fig.tight_layout()
-            fig.subplots_adjust(wspace=wspace, hspace=hspace)
-
-            if individual_colorbars:
-                for im, ax in zip(images, image_axes):
-                    cbar = fig.colorbar(
-                        im,
-                        ax=ax,
-                        fraction=0.046,
-                        pad=0.04,
-                    )
-                    cbar.set_label(cbar_label)
-
-        if save:
-            path = Path(savepath)
-
-            if saveformat is None:
-                if path.suffix:
-                    saveformat = path.suffix.lower().lstrip(".")
-                else:
-                    saveformat = "pdf"
-                    path = path.with_suffix(".pdf")
-
-            path.parent.mkdir(parents=True, exist_ok=True)
-
-            def _save_one(fmt):
-                fmt = fmt.lower().lstrip(".")
-
-                if fmt == "fig":
-                    fig_path = path.with_suffix(".fig")
-                    with open(fig_path, "wb") as f:
-                        pickle.dump(fig, f)
-
-                elif fmt in {"pdf", "eps", "svg"}:
-                    out = path.with_suffix(f".{fmt}")
-                    fig.savefig(
-                        out,
-                        format=fmt,
-                        bbox_inches="tight",
-                        pad_inches=0.02,
-                        transparent=False,
-                    )
-
-                elif fmt in {"png", "tif", "tiff", "jpg", "jpeg"}:
-                    out = path.with_suffix(f".{fmt}")
-                    fig.savefig(
-                        out,
-                        format=fmt,
-                        dpi=max(dpi, 300),
-                        bbox_inches="tight",
-                        pad_inches=0.02,
-                        transparent=False,
-                    )
-
-                else:
-                    raise ValueError(
-                        f"Unsupported save format '{fmt}'. "
-                        "Use pdf, eps, png, tiff, jpg, jpeg, svg, fig, or all."
-                    )
-
-            if saveformat.lower() == "all":
-                for fmt in ("png", "pdf", "fig"):
-                    _save_one(fmt)
-            else:
-                _save_one(saveformat)
-
-    return fig, axes
+# def plot_psf_grid_aa(
+#     psf_groups,
+#     wvl,
+#     telescope_diameter,
+#     sampling,
+#     vmin=1e-6,
+#     vmax=1,
+#     cmap="inferno",
+#     xlabel=r"[arcsec]",
+#     ylabel=r"[arcsec]",
+#     cbar_label="Normalized intensity",
+#     nx=None,
+#     titles=None,
+#     row_labels=None,
+#     col_labels=None,
+#     figsize=None,
+#     dpi=1200,
+#     origin="lower",
+#     save=False,
+#     savepath="psf_grid.pdf",
+#     saveformat=None,
+#     share_colorbar=True,
+#     individual_colorbars=False,
+#     hide_inner_labels=True,
+#     normalize_each=True,
+#     use_log_norm=True,
+#     cbar_position=(0.18, 0.085, 0.64, 0.025),
+#     layout_rect=(0.0, 0.13, 1.0, 1.0),
+#     wspace=0.25,
+#     hspace=0.32,
+# ):
+#     """
+#     Trace plusieurs PSF sous forme de grille avec un style adapté à Astronomy & Astrophysics.
+
+#     Parameters
+#     ----------
+#     psf_groups : list[list[np.ndarray or None]]
+#         Liste de lignes. Chaque ligne contient des PSF 2D ou None.
+#         Une entrée None produit une cellule vide sans axe visible.
+
+#     wvl : float
+#         Longueur d'onde en mètres.
+
+#     telescope_diameter : float
+#         Diamètre du télescope en mètres.
+
+#     sampling : float
+#         Facteur d'échantillonnage.
+
+#     vmin, vmax : float
+#         Bornes de normalisation de l'image affichée.
+
+#     cmap : str
+#         Colormap Matplotlib.
+
+#     xlabel, ylabel : str
+#         Labels des axes.
+
+#     cbar_label : str
+#         Label de la colorbar.
+
+#     nx : int or None
+#         Taille du crop central carré. Si None, chaque image est gardée entière.
+
+#     titles : list[list[str or None]] or None
+#         Titres individuels, même structure que psf_groups.
+
+#     row_labels : list[str] or None
+#         Labels affichés sur la première colonne, un par ligne.
+
+#     col_labels : list[str] or None
+#         Labels affichés au-dessus des colonnes.
+#         Ignorés pour une case si titles[i][j] existe déjà.
+
+#     figsize : tuple or None
+#         Taille de figure en pouces.
+
+#     share_colorbar : bool
+#         Si True, utilise une colorbar commune horizontale en bas.
+
+#     individual_colorbars : bool
+#         Si True et share_colorbar=False, ajoute une colorbar par axe.
+
+#     hide_inner_labels : bool
+#         Si True, seuls les axes extérieurs gardent les labels.
+
+#     normalize_each : bool
+#         Si True :
+#             chaque image est normalisée par sa somme puis par son maximum.
+#             C'est le comportement de ta fonction plot_psf_aa originale.
+
+#         Si False :
+#             les images sont affichées telles quelles.
+#             À utiliser pour des PSF ou résidus déjà normalisés.
+
+#     use_log_norm : bool
+#         Si True, utilise LogNorm(vmin, vmax).
+#         Si False, utilise une normalisation linéaire avec vmin/vmax.
+
+#     cbar_position : tuple
+#         Position de la colorbar commune :
+#         (left, bottom, width, height), en coordonnées relatives à la figure.
+
+#     layout_rect : tuple
+#         Rectangle réservé aux subplots dans tight_layout :
+#         (left, bottom, right, top).
+#         Le bottom doit être supérieur à la position verticale de la colorbar.
+
+#     wspace, hspace : float
+#         Espacement horizontal et vertical entre les subplots.
+
+#     Returns
+#     -------
+#     fig, axes
+#         Figure Matplotlib et tableau 2D d'axes.
+#     """
+
+#     if not isinstance(psf_groups, (list, tuple)) or len(psf_groups) == 0:
+#         raise ValueError("psf_groups doit être une liste non vide de lignes.")
+
+#     nrows = len(psf_groups)
+#     ncols = max(len(row) for row in psf_groups)
+
+#     if ncols == 0:
+#         raise ValueError("psf_groups ne contient aucune colonne.")
+
+#     if share_colorbar and individual_colorbars:
+#         raise ValueError(
+#             "share_colorbar=True et individual_colorbars=True sont incompatibles. "
+#             "Une colorbar commune ou des colorbars individuelles, pas les deux."
+#         )
+
+#     valid_psfs = [
+#         psf
+#         for row in psf_groups
+#         for psf in row
+#         if psf is not None
+#     ]
+
+#     if len(valid_psfs) == 0:
+#         raise ValueError("Aucune PSF valide à tracer : toutes les entrées sont None.")
+
+#     rc_params = {
+#         "font.size": 8,
+#         "axes.labelsize": 8,
+#         "axes.titlesize": 8,
+#         "xtick.labelsize": 7,
+#         "ytick.labelsize": 7,
+#         "legend.fontsize": 7,
+#         "font.family": "serif",
+#         "mathtext.fontset": "cm",
+#         "axes.linewidth": 0.8,
+#         "xtick.direction": "in",
+#         "ytick.direction": "in",
+#         "xtick.top": True,
+#         "ytick.right": True,
+#     }
+
+#     pix_scale = wvl / telescope_diameter / sampling
+#     rad2arcsec = 180 / np.pi * 3600
+#     pix_scale_arcsec = pix_scale * rad2arcsec
+
+#     if use_log_norm:
+#         norm = LogNorm(vmin=vmin, vmax=vmax)
+#     else:
+#         norm = plt.Normalize(vmin=vmin, vmax=vmax)
+
+#     if figsize is None:
+#         figsize = (
+#             max(3.35, 2.4 * ncols),
+#             max(2.5, 2.3 * nrows),
+#         )
+
+#     def _center_crop(arr, crop_size, i, j):
+#         ny0, nx0 = arr.shape
+
+#         if crop_size > ny0 or crop_size > nx0:
+#             raise ValueError(
+#                 f"nx={crop_size} est trop grand pour la PSF en position ({i}, {j}) "
+#                 f"de taille {arr.shape}."
+#             )
+
+#         cy, cx = ny0 // 2, nx0 // 2
+#         half = crop_size // 2
+
+#         y_start = cy - half
+#         x_start = cx - half
+#         y_end = y_start + crop_size
+#         x_end = x_start + crop_size
+
+#         return arr[y_start:y_end, x_start:x_end]
+
+#     def _prepare_image(psf, i, j):
+#         psf = np.asarray(psf, dtype=float)
+
+#         if psf.ndim != 2:
+#             raise ValueError(
+#                 f"La PSF en position ({i}, {j}) doit être un array 2D."
+#             )
+
+#         if not np.any(np.isfinite(psf)):
+#             raise ValueError(
+#                 f"La PSF en position ({i}, {j}) ne contient aucune valeur finie."
+#             )
+
+#         psf = np.nan_to_num(psf, nan=0.0, posinf=0.0, neginf=0.0)
+
+#         if nx is not None:
+#             psf = _center_crop(psf, nx, i, j)
+
+#         if normalize_each:
+#             psf_sum = np.sum(psf)
+
+#             if psf_sum <= 0:
+#                 raise ValueError(
+#                     f"La PSF en position ({i}, {j}) a une somme nulle ou négative."
+#                 )
+
+#             image = psf / psf_sum
+
+#             peak = np.max(image)
+#             if peak <= 0:
+#                 raise ValueError(
+#                     f"La PSF en position ({i}, {j}) a un maximum nul ou négatif."
+#                 )
+
+#             image = image / peak
+
+#         else:
+#             image = psf.copy()
+
+#         if use_log_norm:
+#             # LogNorm ne supporte pas les valeurs <= 0.
+#             image = np.where(image > 0, image, np.nan)
+
+#         ny, nx_img = image.shape
+
+#         x_axis = (np.arange(nx_img) - (nx_img - 1) / 2) * pix_scale_arcsec
+#         y_axis = (np.arange(ny) - (ny - 1) / 2) * pix_scale_arcsec
+
+#         extent = [
+#             x_axis[0],
+#             x_axis[-1],
+#             y_axis[0],
+#             y_axis[-1],
+#         ]
+
+#         return image, extent
+
+#     with plt.rc_context(rc_params):
+#         fig, axes = plt.subplots(
+#             nrows,
+#             ncols,
+#             figsize=figsize,
+#             squeeze=False,
+#         )
+
+#         images = []
+#         image_axes = []
+
+#         for i in range(nrows):
+#             row = psf_groups[i]
+
+#             for j in range(ncols):
+#                 ax = axes[i, j]
+
+#                 if j >= len(row) or row[j] is None:
+#                     ax.set_visible(False)
+#                     continue
+
+#                 image, extent = _prepare_image(row[j], i, j)
+
+#                 im = ax.imshow(
+#                     image,
+#                     norm=norm,
+#                     cmap=cmap,
+#                     extent=extent,
+#                     origin=origin,
+#                 )
+
+#                 images.append(im)
+#                 image_axes.append(ax)
+
+#                 # Titre individuel prioritaire
+#                 title_set = False
+#                 if titles is not None:
+#                     if i < len(titles) and j < len(titles[i]):
+#                         if titles[i][j] is not None:
+#                             ax.set_title(titles[i][j])
+#                             title_set = True
+
+#                 # Label de colonne si pas déjà un titre individuel
+#                 if not title_set and col_labels is not None:
+#                     if i == 0 and j < len(col_labels):
+#                         ax.set_title(col_labels[j])
+
+#                 # Labels d'axes
+#                 if hide_inner_labels:
+#                     if i == nrows - 1:
+#                         ax.set_xlabel(xlabel)
+#                     else:
+#                         ax.set_xlabel("")
+#                         ax.set_xticklabels([])
+
+#                     if j == 0:
+#                         if row_labels is not None and i < len(row_labels):
+#                             ax.set_ylabel(row_labels[i])
+#                         else:
+#                             ax.set_ylabel(ylabel)
+#                     else:
+#                         ax.set_ylabel("")
+#                         ax.set_yticklabels([])
+#                 else:
+#                     ax.set_xlabel(xlabel)
+
+#                     if row_labels is not None and j == 0 and i < len(row_labels):
+#                         ax.set_ylabel(row_labels[i])
+#                     else:
+#                         ax.set_ylabel(ylabel)
+
+#         if len(images) == 0:
+#             raise ValueError("Aucune image valide n'a été tracée.")
+
+#         if share_colorbar:
+#             fig.tight_layout(rect=layout_rect)
+#             fig.subplots_adjust(wspace=wspace, hspace=hspace)
+
+#             cax = fig.add_axes(cbar_position)
+
+#             cbar = fig.colorbar(
+#                 images[0],
+#                 cax=cax,
+#                 orientation="horizontal",
+#             )
+#             cbar.set_label(cbar_label)
+
+#         else:
+#             fig.tight_layout()
+#             fig.subplots_adjust(wspace=wspace, hspace=hspace)
+
+#             if individual_colorbars:
+#                 for im, ax in zip(images, image_axes):
+#                     cbar = fig.colorbar(
+#                         im,
+#                         ax=ax,
+#                         fraction=0.046,
+#                         pad=0.04,
+#                     )
+#                     cbar.set_label(cbar_label)
+
+#         if save:
+#             path = Path(savepath)
+
+#             if saveformat is None:
+#                 if path.suffix:
+#                     saveformat = path.suffix.lower().lstrip(".")
+#                 else:
+#                     saveformat = "pdf"
+#                     path = path.with_suffix(".pdf")
+
+#             path.parent.mkdir(parents=True, exist_ok=True)
+
+#             def _save_one(fmt):
+#                 fmt = fmt.lower().lstrip(".")
+
+#                 if fmt == "fig":
+#                     fig_path = path.with_suffix(".fig")
+#                     with open(fig_path, "wb") as f:
+#                         pickle.dump(fig, f)
+
+#                 elif fmt in {"pdf", "eps", "svg"}:
+#                     out = path.with_suffix(f".{fmt}")
+#                     fig.savefig(
+#                         out,
+#                         format=fmt,
+#                         bbox_inches="tight",
+#                         pad_inches=0.02,
+#                         transparent=False,
+#                     )
+
+#                 elif fmt in {"png", "tif", "tiff", "jpg", "jpeg"}:
+#                     out = path.with_suffix(f".{fmt}")
+#                     fig.savefig(
+#                         out,
+#                         format=fmt,
+#                         dpi=max(dpi, 300),
+#                         bbox_inches="tight",
+#                         pad_inches=0.02,
+#                         transparent=False,
+#                     )
+
+#                 else:
+#                     raise ValueError(
+#                         f"Unsupported save format '{fmt}'. "
+#                         "Use pdf, eps, png, tiff, jpg, jpeg, svg, fig, or all."
+#                     )
+
+#             if saveformat.lower() == "all":
+#                 for fmt in ("png", "pdf", "fig"):
+#                     _save_one(fmt)
+#             else:
+#                 _save_one(saveformat)
+
+#     return fig, axes
 #%%
 def plot_curves_aa(
     x_list,
@@ -3938,3 +5101,1381 @@ def plot_curves_aa(
             _save_one(saveformat)
 
     return fig, ax
+
+#%%
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import colors
+from matplotlib.ticker import MaxNLocator
+from pathlib import Path
+import pickle
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import colors
+from matplotlib.ticker import MaxNLocator
+from pathlib import Path
+import pickle
+
+
+def plot_opd_grid_aa(
+    opd_groups,
+    titles=None,
+    row_labels=None,
+    col_labels=None,
+    telescope_diameter=1.52,
+    unit_factor=1e9,
+    unit_label="nm",
+    cmap="seismic",
+    nan_color="0.85",
+    vmin=None,
+    vmax=None,
+    symmetric=True,
+    same_color_scale=True,
+    xlabel=r"$x$ [m]",
+    ylabel=r"$y$ [m]",
+    cbar_label=None,
+    figsize=None,
+    dpi=300,
+    origin="lower",
+    interpolation="none",
+    hide_inner_labels=True,
+    share_colorbar=True,
+    individual_colorbars=False,
+    cbar_position=(0.18, 0.09, 0.64, 0.025),
+    layout_rect=(0.0, 0.13, 1.0, 1.0),
+    wspace=0.25,
+    hspace=0.28,
+    journal_style=True,
+    save=False,
+    savepath="opd_grid_aa.pdf",
+    saveformat=None,
+):
+    """
+    Plot several OPD maps as a grid with an A&A-like style.
+
+    Parameters
+    ----------
+    opd_groups : list[list[np.ndarray or None]]
+        List of rows. Each row contains 2D OPD maps or None.
+        A None entry creates an empty hidden cell.
+
+    titles : list[list[str or None]] or None
+        Individual subplot titles with the same structure as opd_groups.
+
+    row_labels : list[str] or None
+        Labels displayed on the first column, one per row.
+
+    col_labels : list[str] or None
+        Labels displayed above the columns if no individual title is set.
+
+    telescope_diameter : float
+        Telescope diameter in meters.
+
+    unit_factor : float
+        Multiplicative factor applied before plotting.
+        Example: 1e9 converts OPD from meters to nanometers.
+
+    unit_label : str
+        Display unit after applying unit_factor.
+
+    cmap : str
+        Matplotlib colormap.
+
+    nan_color : color
+        Color used for NaN pixels.
+
+    vmin, vmax : float or None
+        Display color scale limits.
+        If same_color_scale=True, they apply to the common scale.
+        If same_color_scale=False, they are used independently per map.
+
+    symmetric : bool
+        If True, enforce a symmetric color scale around zero.
+
+    same_color_scale : bool
+        If True, all maps share the same color scale.
+
+    xlabel, ylabel : str
+        Axis labels.
+
+    cbar_label : str or None
+        Colorbar label.
+
+    figsize : tuple or None
+        Figure size in inches.
+
+    dpi : int
+        Figure dpi.
+
+    origin : {"lower", "upper"}
+        Image origin.
+
+    interpolation : str
+        Interpolation passed to imshow.
+
+    hide_inner_labels : bool
+        If True, only outer axes keep their labels.
+
+    share_colorbar : bool
+        If True, use one common horizontal colorbar.
+
+    individual_colorbars : bool
+        If True and share_colorbar=False, use one colorbar per subplot.
+
+    cbar_position : tuple
+        Position of the shared colorbar:
+        (left, bottom, width, height).
+
+    layout_rect : tuple
+        Rectangle reserved for subplots in tight_layout.
+
+    wspace, hspace : float
+        Horizontal and vertical spacing.
+
+    journal_style : bool
+        If True, no background grid.
+
+    save : bool
+        If True, save the figure.
+
+    savepath : str
+        Output path.
+
+    saveformat : str or None
+        Output format.
+
+    Returns
+    -------
+    fig, axes
+    """
+
+    if not isinstance(opd_groups, (list, tuple)) or len(opd_groups) == 0:
+        raise ValueError("opd_groups must be a non-empty list of rows.")
+
+    nrows = len(opd_groups)
+    ncols = max(len(row) for row in opd_groups)
+
+    if ncols == 0:
+        raise ValueError("opd_groups does not contain any column.")
+
+    if share_colorbar and individual_colorbars:
+        raise ValueError(
+            "share_colorbar=True and individual_colorbars=True are mutually exclusive."
+        )
+
+    valid_opds = [
+        np.asarray(opd, dtype=float)
+        for row in opd_groups
+        for opd in row
+        if opd is not None
+    ]
+
+    if len(valid_opds) == 0:
+        raise ValueError("No valid OPD map to plot: all entries are None.")
+
+    shapes = [opd.shape for opd in valid_opds]
+    if any(len(shape) != 2 for shape in shapes):
+        raise ValueError("All OPD maps must be 2D arrays.")
+
+    if len(set(shapes)) != 1:
+        raise ValueError(f"All OPD maps must have the same shape. Got {shapes}.")
+
+    ny, nx = valid_opds[0].shape
+
+    if cbar_label is None:
+        cbar_label = rf"OPD [{unit_label}]"
+
+    rc_params = {
+        "font.size": 8,
+        "axes.labelsize": 8,
+        "axes.titlesize": 8,
+        "xtick.labelsize": 7,
+        "ytick.labelsize": 7,
+        "legend.fontsize": 7,
+        "font.family": "serif",
+        "mathtext.fontset": "cm",
+        "axes.linewidth": 0.8,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        "xtick.top": True,
+        "ytick.right": True,
+    }
+
+    if figsize is None:
+        figsize = (
+            max(3.35, 2.5 * ncols),
+            max(2.5, 2.4 * nrows),
+        )
+
+    D = float(telescope_diameter)
+    if D <= 0:
+        raise ValueError("telescope_diameter must be > 0.")
+
+    dx = D / nx
+    dy = D / ny
+
+    extent = [
+        -D / 2 + dx / 2,
+        +D / 2 - dx / 2,
+        -D / 2 + dy / 2,
+        +D / 2 - dy / 2,
+    ]
+
+    def _make_norm(data, vmin_in, vmax_in, symmetric_in):
+        data = np.asarray(data, dtype=float)
+        finite = data[np.isfinite(data)]
+
+        if finite.size == 0:
+            raise ValueError("Cannot define color scale from an all-NaN OPD map.")
+
+        if vmin_in is None or vmax_in is None:
+            if symmetric_in:
+                vmax_auto = np.nanmax(np.abs(finite))
+                vmin_auto = -vmax_auto
+            else:
+                vmin_auto = np.nanmin(finite)
+                vmax_auto = np.nanmax(finite)
+
+            if vmin_in is None:
+                vmin_in = vmin_auto
+            if vmax_in is None:
+                vmax_in = vmax_auto
+
+        if symmetric_in:
+            vmax_abs = max(abs(vmin_in), abs(vmax_in))
+            if vmax_abs == 0:
+                vmax_abs = 1.0
+
+            vmin_in = -vmax_abs
+            vmax_in = +vmax_abs
+
+            return colors.TwoSlopeNorm(
+                vmin=vmin_in,
+                vcenter=0.0,
+                vmax=vmax_in,
+            )
+
+        if vmax_in == vmin_in:
+            vmax_in = vmin_in + 1.0
+
+        return colors.Normalize(vmin=vmin_in, vmax=vmax_in)
+
+    finite_all = np.concatenate(
+        [
+            (np.asarray(opd, dtype=float) * unit_factor)[
+                np.isfinite(np.asarray(opd, dtype=float) * unit_factor)
+            ].ravel()
+            for row in opd_groups
+            for opd in row
+            if opd is not None
+        ]
+    )
+
+    if same_color_scale:
+        common_norm = _make_norm(finite_all, vmin, vmax, symmetric)
+
+    cmap_obj = plt.get_cmap(cmap).copy()
+    cmap_obj.set_bad(color=nan_color)
+
+    with plt.rc_context(rc_params):
+        fig, axes = plt.subplots(
+            nrows,
+            ncols,
+            figsize=figsize,
+            dpi=dpi,
+            squeeze=False,
+        )
+
+        images = []
+        image_axes = []
+
+        for i in range(nrows):
+            row = opd_groups[i]
+
+            for j in range(ncols):
+                ax = axes[i, j]
+
+                if j >= len(row) or row[j] is None:
+                    ax.set_visible(False)
+                    continue
+
+                opd = np.asarray(row[j], dtype=float) * unit_factor
+                opd_ma = np.ma.masked_invalid(opd)
+
+                if opd_ma.count() == 0:
+                    raise ValueError(f"OPD map at position ({i}, {j}) contains only NaNs.")
+
+                if same_color_scale:
+                    norm = common_norm
+                else:
+                    norm = _make_norm(opd, vmin, vmax, symmetric)
+
+                im = ax.imshow(
+                    opd_ma,
+                    cmap=cmap_obj,
+                    norm=norm,
+                    origin=origin,
+                    extent=extent,
+                    interpolation=interpolation,
+                    aspect="equal",
+                )
+
+                images.append(im)
+                image_axes.append(ax)
+
+                title_set = False
+                if titles is not None:
+                    if i < len(titles) and j < len(titles[i]):
+                        if titles[i][j] is not None:
+                            ax.set_title(titles[i][j])
+                            title_set = True
+
+                if not title_set and col_labels is not None:
+                    if i == 0 and j < len(col_labels):
+                        ax.set_title(col_labels[j])
+
+                if hide_inner_labels:
+                    if i == nrows - 1:
+                        ax.set_xlabel(xlabel)
+                    else:
+                        ax.set_xlabel("")
+                        ax.set_xticklabels([])
+
+                    if j == 0:
+                        if row_labels is not None and i < len(row_labels):
+                            ax.set_ylabel(row_labels[i])
+                        else:
+                            ax.set_ylabel(ylabel)
+                    else:
+                        ax.set_ylabel("")
+                        ax.set_yticklabels([])
+                else:
+                    ax.set_xlabel(xlabel)
+
+                    if row_labels is not None and j == 0 and i < len(row_labels):
+                        ax.set_ylabel(row_labels[i])
+                    else:
+                        ax.set_ylabel(ylabel)
+
+                for spine in ax.spines.values():
+                    spine.set_linewidth(1.0)
+
+                ax.tick_params(
+                    which="major",
+                    direction="in",
+                    length=5,
+                    width=1.0,
+                    labelsize=7,
+                    pad=4,
+                    top=True,
+                    right=True,
+                )
+
+                ax.tick_params(
+                    which="minor",
+                    direction="in",
+                    length=3,
+                    width=0.8,
+                    top=True,
+                    right=True,
+                )
+
+                if journal_style:
+                    ax.grid(False)
+                else:
+                    ax.grid(True, which="major", color="0.88", lw=0.6)
+                    ax.grid(True, which="minor", color="0.93", lw=0.4)
+
+        if len(images) == 0:
+            raise ValueError("No valid OPD image has been plotted.")
+
+        if share_colorbar:
+            fig.tight_layout(rect=layout_rect)
+            fig.subplots_adjust(wspace=wspace, hspace=hspace)
+
+            cax = fig.add_axes(cbar_position)
+            cbar = fig.colorbar(
+                images[0],
+                cax=cax,
+                orientation="horizontal",
+            )
+            cbar.set_label(cbar_label)
+            cbar.ax.tick_params(direction="in", pad=2, labelsize=7)
+            cbar.locator = MaxNLocator(nbins=5)
+            cbar.update_ticks()
+
+        else:
+            fig.tight_layout()
+            fig.subplots_adjust(wspace=wspace, hspace=hspace)
+
+            if individual_colorbars:
+                for im, ax in zip(images, image_axes):
+                    cbar = fig.colorbar(
+                        im,
+                        ax=ax,
+                        fraction=0.046,
+                        pad=0.04,
+                    )
+                    cbar.set_label(cbar_label)
+                    cbar.ax.tick_params(direction="in", pad=2, labelsize=7)
+                    cbar.locator = MaxNLocator(nbins=5)
+                    cbar.update_ticks()
+
+        if save:
+            path = Path(savepath)
+
+            if saveformat is None:
+                if path.suffix:
+                    saveformat = path.suffix.lower().lstrip(".")
+                else:
+                    saveformat = "pdf"
+                    path = path.with_suffix(".pdf")
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            def _save_one(fmt):
+                fmt = fmt.lower().lstrip(".")
+
+                if fmt == "fig":
+                    fig_path = path.with_suffix(".fig")
+                    with open(fig_path, "wb") as f:
+                        pickle.dump(fig, f)
+
+                elif fmt in {"pdf", "eps", "svg"}:
+                    out = path.with_suffix(f".{fmt}")
+                    fig.savefig(
+                        out,
+                        format=fmt,
+                        bbox_inches="tight",
+                        pad_inches=0.02,
+                        transparent=False,
+                    )
+
+                elif fmt in {"png", "tif", "tiff", "jpg", "jpeg"}:
+                    out = path.with_suffix(f".{fmt}")
+                    fig.savefig(
+                        out,
+                        format=fmt,
+                        dpi=max(dpi, 300),
+                        bbox_inches="tight",
+                        pad_inches=0.02,
+                        transparent=False,
+                    )
+
+                else:
+                    raise ValueError(
+                        f"Unsupported save format '{fmt}'. "
+                        "Use pdf, eps, png, tiff, jpg, jpeg, svg, fig, or all."
+                    )
+
+            if saveformat.lower() == "all":
+                for fmt in ("pdf", "png", "fig"):
+                    _save_one(fmt)
+            else:
+                _save_one(saveformat)
+
+    return fig, axes
+
+
+#%%
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
+from pathlib import Path
+import pickle
+
+
+def plot_lq_depth_aa(
+    depth33,
+    depth76,
+    lq_phase33,
+    lq_int33,
+    lq_phase76,
+    lq_int76,
+    method=np.nanmedian,
+    mode_index=None,
+    stroke_index=None,
+    normalise_to_min=True,
+    x_abs=True,
+    yscale="linear",
+    xlabel=r"Phase-shift depth [$\pi$ rad]",
+    phase_ylabel="Phase LQ / min",
+    intensity_ylabel="Intensity LQ / min",
+    titles=(r"(a) ZWFS33", r"(b) ZWFS76"),
+    one_column=False,
+    dpi=300,
+    journal_style=True,
+    show_legend=True,
+    legend_loc="best",
+    save=False,
+    savepath="lq_vs_depth_aa.pdf",
+    saveformat=None,
+):
+    """
+    Plot phase and intensity LQ criteria as a function of mask phase-shift depth.
+
+    Parameters
+    ----------
+    depth33, depth76 : array-like
+        Depth vectors for ZWFS33 and ZWFS76.
+
+    lq_phase33, lq_int33, lq_phase76, lq_int76 : ndarray
+        LQ arrays with shape (n_depth, n_modes, n_stroke).
+
+    method : callable
+        Reduction method used over modes and/or strokes.
+        Typical choices: np.nanmedian, np.nanmean, np.nanmin.
+
+    mode_index : int or None
+        If not None, only this mode is plotted.
+
+    stroke_index : int or None
+        If not None, only this stroke index is plotted.
+
+    normalise_to_min : bool
+        If True, each curve is divided by its own finite positive minimum.
+
+    x_abs : bool
+        If True, plot abs(depth). Useful because ZWFS76 depth is negative.
+
+    yscale : {"linear", "log"}
+        Y scale for both left and right y axes.
+
+    one_column : bool
+        If True, use 88 mm width. If False, use 180 mm width.
+
+    save : bool
+        If True, save the figure.
+
+    savepath : str
+        Output path.
+
+    saveformat : str or None
+        "pdf", "png", "fig", "eps", "svg", "all", or None.
+    """
+
+    # -------------------------------------------------------------------------
+    # Input conversion
+    # -------------------------------------------------------------------------
+    depth33 = np.asarray(depth33).ravel()
+    depth76 = np.asarray(depth76).ravel()
+
+    lq_phase33 = np.asarray(lq_phase33, dtype=float)
+    lq_int33 = np.asarray(lq_int33, dtype=float)
+    lq_phase76 = np.asarray(lq_phase76, dtype=float)
+    lq_int76 = np.asarray(lq_int76, dtype=float)
+
+    expected_ndim = 3
+    for name, arr in [
+        ("lq_phase33", lq_phase33),
+        ("lq_int33", lq_int33),
+        ("lq_phase76", lq_phase76),
+        ("lq_int76", lq_int76),
+    ]:
+        if arr.ndim != expected_ndim:
+            raise ValueError(
+                f"{name} must have shape (n_depth, n_modes, n_stroke). "
+                f"Got shape {arr.shape}."
+            )
+
+    if lq_phase33.shape[0] != depth33.size:
+        raise ValueError(
+            "depth33 length must match lq_phase33.shape[0]."
+        )
+
+    if lq_phase76.shape[0] != depth76.size:
+        raise ValueError(
+            "depth76 length must match lq_phase76.shape[0]."
+        )
+
+    if yscale not in {"linear", "log"}:
+        raise ValueError("yscale must be either 'linear' or 'log'.")
+
+    # -------------------------------------------------------------------------
+    # Reduction helper
+    # -------------------------------------------------------------------------
+    def _reduce_lq(arr):
+        """
+        Reduce a LQ cube into one curve versus depth.
+        """
+
+        data = arr
+
+        if mode_index is not None:
+            data = data[:, mode_index, :]
+        else:
+            # keep all modes
+            pass
+
+        if stroke_index is not None:
+            if mode_index is not None:
+                data = data[:, stroke_index]
+            else:
+                data = data[:, :, stroke_index]
+
+        # Now reduce whatever is left except depth axis.
+        if data.ndim == 1:
+            curve = data
+        else:
+            axes = tuple(range(1, data.ndim))
+            curve = method(data, axis=axes)
+
+        return np.asarray(curve, dtype=float).ravel()
+
+    def _normalise(y):
+        """
+        Normalise by finite positive minimum.
+        """
+
+        y = np.asarray(y, dtype=float)
+        y_norm = y.copy()
+
+        if not normalise_to_min:
+            return y_norm
+
+        valid = np.isfinite(y_norm)
+
+        if yscale == "log":
+            valid &= y_norm > 0
+
+        if not np.any(valid):
+            raise ValueError(
+                "Cannot normalise: no valid finite value found."
+            )
+
+        ymin = np.nanmin(y_norm[valid])
+
+        if ymin == 0:
+            valid_nonzero = valid & (y_norm != 0)
+            if not np.any(valid_nonzero):
+                raise ValueError(
+                    "Cannot normalise to minimum: all valid values are zero."
+                )
+            ymin = np.nanmin(np.abs(y_norm[valid_nonzero]))
+
+        y_norm = y_norm / ymin
+
+        return y_norm
+
+    def _prepare_xy(depth, y):
+        """
+        Prepare x and y arrays, removing invalid values.
+        """
+
+        x = np.abs(depth) if x_abs else depth.copy()
+        y = np.asarray(y, dtype=float)
+
+        valid = np.isfinite(x) & np.isfinite(y)
+
+        if yscale == "log":
+            valid &= y > 0
+
+        x = x[valid]
+        y = y[valid]
+
+        order = np.argsort(x)
+
+        return x[order], y[order]
+
+    # -------------------------------------------------------------------------
+    # Build curves
+    # -------------------------------------------------------------------------
+    phase33 = _normalise(_reduce_lq(lq_phase33))
+    inten33 = _normalise(_reduce_lq(lq_int33))
+    phase76 = _normalise(_reduce_lq(lq_phase76))
+    inten76 = _normalise(_reduce_lq(lq_int76))
+
+    x33_phase, phase33 = _prepare_xy(depth33, phase33)
+    x33_int, inten33 = _prepare_xy(depth33, inten33)
+
+    x76_phase, phase76 = _prepare_xy(depth76, phase76)
+    x76_int, inten76 = _prepare_xy(depth76, inten76)
+
+    # -------------------------------------------------------------------------
+    # A&A style
+    # -------------------------------------------------------------------------
+    label_fs = 9
+    tick_fs = 8
+    legend_fs = 8
+    title_fs = 9
+
+    width_in = 88 / 25.4 if one_column else 180 / 25.4
+    height_in = width_in * 0.42
+
+    rc_params = {
+        "font.size": 8,
+        "axes.labelsize": 8,
+        "axes.titlesize": 8,
+        "xtick.labelsize": 7,
+        "ytick.labelsize": 7,
+        "legend.fontsize": 7,
+        "font.family": "serif",
+        "mathtext.fontset": "cm",
+        "axes.linewidth": 0.8,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        "xtick.top": True,
+        "ytick.right": True,
+    }
+
+    col_phase = "black"
+    col_int = "#355C9A"
+
+    with plt.rc_context(rc_params):
+
+        fig, axes = plt.subplots(
+            1,
+            2,
+            figsize=(width_in, height_in),
+            dpi=dpi,
+            constrained_layout=True,
+        )
+
+        ax33, ax76 = axes
+        ax33_r = ax33.twinx()
+        ax76_r = ax76.twinx()
+
+        # ---------------------------------------------------------------------
+        # ZWFS33
+        # ---------------------------------------------------------------------
+        line33_phase, = ax33.plot(
+            x33_phase,
+            phase33,
+            color=col_phase,
+            lw=1.5,
+            ls="-",
+            label="Phase LQ",
+            zorder=3,
+            solid_capstyle="round",
+        )
+
+        line33_int, = ax33_r.plot(
+            x33_int,
+            inten33,
+            color=col_int,
+            lw=1.5,
+            ls=(0, (7, 3)),
+            label="Intensity LQ",
+            zorder=3,
+            dash_capstyle="butt",
+        )
+
+        ax33.set_title(titles[0], fontsize=title_fs)
+
+        # ---------------------------------------------------------------------
+        # ZWFS76
+        # ---------------------------------------------------------------------
+        line76_phase, = ax76.plot(
+            x76_phase,
+            phase76,
+            color=col_phase,
+            lw=1.5,
+            ls="-",
+            label="Phase LQ",
+            zorder=3,
+            solid_capstyle="round",
+        )
+
+        line76_int, = ax76_r.plot(
+            x76_int,
+            inten76,
+            color=col_int,
+            lw=1.5,
+            ls=(0, (7, 3)),
+            label="Intensity LQ",
+            zorder=3,
+            dash_capstyle="butt",
+        )
+
+        ax76.set_title(titles[1], fontsize=title_fs)
+
+        # ---------------------------------------------------------------------
+        # Axes formatting
+        # ---------------------------------------------------------------------
+        for ax, ax_r in [(ax33, ax33_r), (ax76, ax76_r)]:
+
+            ax.set_xlabel(xlabel, fontsize=label_fs)
+            ax.set_ylabel(phase_ylabel, fontsize=label_fs)
+            ax_r.set_ylabel(intensity_ylabel, fontsize=label_fs, labelpad=8)
+
+            ax.set_yscale(yscale)
+            ax_r.set_yscale(yscale)
+
+            for a in [ax, ax_r]:
+                for spine in a.spines.values():
+                    spine.set_linewidth(1.0)
+
+                a.tick_params(
+                    which="major",
+                    direction="in",
+                    length=5,
+                    width=1.0,
+                    labelsize=tick_fs,
+                    pad=4,
+                    top=True,
+                    right=True,
+                )
+
+                a.tick_params(
+                    which="minor",
+                    direction="in",
+                    length=3,
+                    width=0.8,
+                    top=True,
+                    right=True,
+                )
+
+                if journal_style:
+                    a.grid(False)
+                else:
+                    a.grid(True, which="major", color="0.88", lw=0.6)
+                    a.grid(True, which="minor", color="0.93", lw=0.4)
+
+            ax.xaxis.set_major_locator(MaxNLocator(nbins=5))
+            if yscale == "linear":
+                ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
+                ax_r.yaxis.set_major_locator(MaxNLocator(nbins=5))
+
+        # Hide duplicated y labels in the middle if desired:
+        # ax76.set_ylabel("")
+
+        # ---------------------------------------------------------------------
+        # Legends
+        # ---------------------------------------------------------------------
+        if show_legend:
+            ax33.legend(
+                [line33_phase, line33_int],
+                ["Phase LQ", "Intensity LQ"],
+                frameon=False,
+                fontsize=legend_fs,
+                loc=legend_loc,
+                handlelength=3.0,
+                borderaxespad=0.4,
+            )
+
+            ax76.legend(
+                [line76_phase, line76_int],
+                ["Phase LQ", "Intensity LQ"],
+                frameon=False,
+                fontsize=legend_fs,
+                loc=legend_loc,
+                handlelength=3.0,
+                borderaxespad=0.4,
+            )
+
+        # ---------------------------------------------------------------------
+        # Save
+        # ---------------------------------------------------------------------
+        if save:
+            path = Path(savepath)
+
+            if saveformat is None:
+                if path.suffix:
+                    saveformat = path.suffix.lower().lstrip(".")
+                else:
+                    saveformat = "pdf"
+                    path = path.with_suffix(".pdf")
+
+            saveformat = str(saveformat).lower().lstrip(".")
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            def _save_one(fmt):
+                fmt = fmt.lower().lstrip(".")
+
+                if fmt == "fig":
+                    fig_path = path.with_suffix(".fig")
+                    with open(fig_path, "wb") as f:
+                        pickle.dump(fig, f)
+
+                elif fmt in {"pdf", "eps", "svg"}:
+                    out = path.with_suffix(f".{fmt}")
+                    fig.savefig(
+                        out,
+                        format=fmt,
+                        bbox_inches="tight",
+                        pad_inches=0.02,
+                        transparent=False,
+                    )
+
+                elif fmt in {"png", "tif", "tiff", "jpg", "jpeg"}:
+                    out = path.with_suffix(f".{fmt}")
+                    fig.savefig(
+                        out,
+                        format=fmt,
+                        dpi=max(dpi, 300),
+                        bbox_inches="tight",
+                        pad_inches=0.02,
+                        transparent=False,
+                    )
+
+                else:
+                    raise ValueError(
+                        f"Unsupported save format '{fmt}'. "
+                        "Use pdf, eps, svg, png, tif, tiff, jpg, jpeg, fig, or all."
+                    )
+
+            if saveformat == "all":
+                for fmt in ("pdf", "png", "fig"):
+                    _save_one(fmt)
+            else:
+                _save_one(saveformat)
+
+    return fig, (ax33, ax33_r, ax76, ax76_r)
+#%%
+def plot_image_row_aa(
+    image_groups,
+    titles=None,
+    cmap="inferno",
+    cbar_label="Intensity",
+    vmin=None,
+    vmax=None,
+    norm_mode="linear",
+    origin="lower",
+    interpolation="none",
+    aspect="equal",
+    hide_ticks=True,
+    show_axes_frame=True,
+    figure_width="full_page",
+    figsize=None,
+    dpi=300,
+    journal_style=True,
+    save=False,
+    savepath="image_row_aa.pdf",
+    saveformat=None,
+    left=0.025,
+    right=0.985,
+    bottom=0.08,
+    top=0.86,
+    image_cbar_gap=0.001,
+    panel_gap=0.018,
+    cbar_width=0.008,
+    title_fs=8,
+    tick_fs=7,
+    label_fs=8,
+    single_colorbar=False,
+    single_cbar_gap=0.008,
+):
+    """
+    Plot one row of rectangular images with either independent colorbars
+    or one shared colorbar.
+
+    Parameters
+    ----------
+    single_colorbar : bool
+        If False, each image has its own compact colorbar.
+        If True, all images share the same normalization and one colorbar
+        is placed to the right of the last panel.
+
+    single_cbar_gap : float
+        Gap between the last image and the shared colorbar in figure coordinates.
+    """
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import Normalize, LogNorm
+    from matplotlib.ticker import FuncFormatter, MaxNLocator
+    from pathlib import Path
+    import pickle
+
+    if not isinstance(image_groups, (list, tuple)) or len(image_groups) != 1:
+        raise ValueError("image_groups must contain exactly one row: [[img1, img2, ...]].")
+
+    images_in = image_groups[0]
+    ncols = len(images_in)
+
+    if ncols == 0:
+        raise ValueError("image_groups[0] must contain at least one image.")
+
+    images = []
+    for j, img in enumerate(images_in):
+        arr = np.asarray(img, dtype=float)
+
+        if arr.ndim != 2:
+            raise ValueError(f"Image {j} must be a 2D array. Got shape {arr.shape}.")
+
+        if not np.any(np.isfinite(arr)):
+            raise ValueError(f"Image {j} contains no finite value.")
+
+        images.append(arr)
+
+    if norm_mode not in {"linear", "log"}:
+        raise ValueError("norm_mode must be either 'linear' or 'log'.")
+
+    def _is_sequence(obj):
+        return isinstance(obj, (list, tuple, np.ndarray)) and not isinstance(obj, str)
+
+    def _expand(values, name):
+        if values is None or np.isscalar(values):
+            return [values] * ncols
+
+        if _is_sequence(values):
+            if len(values) == 1 and _is_sequence(values[0]):
+                values = values[0]
+
+            if len(values) != ncols:
+                raise ValueError(f"{name} must have length {ncols}.")
+
+            return list(values)
+
+        raise TypeError(f"{name} must be None, scalar, list, or nested list.")
+
+    vmin_list = _expand(vmin, "vmin")
+    vmax_list = _expand(vmax, "vmax")
+
+    if titles is None:
+        titles_row = [None] * ncols
+    else:
+        if len(titles) != 1 or len(titles[0]) != ncols:
+            raise ValueError("titles must have the same structure as image_groups.")
+        titles_row = titles[0]
+
+    if isinstance(figure_width, str):
+        width_key = figure_width.strip().lower().replace("-", "_").replace(" ", "_")
+        width_map_mm = {
+            "one_column": 88.0,
+            "single_column": 88.0,
+            "column": 88.0,
+            "intermediate": 120.0,
+            "medium": 120.0,
+            "full_page": 180.0,
+            "full_width": 180.0,
+            "page": 180.0,
+        }
+
+        if width_key not in width_map_mm:
+            raise ValueError(
+                "figure_width must be 'one_column', 'intermediate', "
+                "'full_page', or a custom width in millimetres."
+            )
+
+        width_mm = width_map_mm[width_key]
+    else:
+        width_mm = float(figure_width)
+
+    if width_mm <= 0:
+        raise ValueError("figure_width must be positive.")
+
+    width_in = width_mm / 25.4
+
+    if figsize is None:
+        height_in = width_in * 0.46
+        figsize = (width_in, height_in)
+
+    rc_params = {
+        "font.size": 8,
+        "axes.labelsize": label_fs,
+        "axes.titlesize": title_fs,
+        "xtick.labelsize": tick_fs,
+        "ytick.labelsize": tick_fs,
+        "legend.fontsize": 7,
+        "font.family": "serif",
+        "mathtext.fontset": "cm",
+        "axes.linewidth": 0.8,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        "xtick.top": True,
+        "ytick.right": True,
+    }
+
+    def _compute_scientific_scale(values):
+        finite_abs = np.abs(values[np.isfinite(values)])
+        finite_abs = finite_abs[finite_abs > 0]
+
+        if finite_abs.size == 0:
+            return 0, 1.0
+
+        exponent = int(np.floor(np.log10(np.nanmax(finite_abs))))
+        scale = 10.0 ** exponent
+
+        return exponent, scale
+
+    if single_colorbar:
+        all_finite = np.concatenate([arr[np.isfinite(arr)] for arr in images])
+
+        vmin_common = vmin if np.isscalar(vmin) or vmin is None else np.nanmin([
+            np.nanmin(arr[np.isfinite(arr)]) for arr in images
+        ])
+        vmax_common = vmax if np.isscalar(vmax) or vmax is None else np.nanmax([
+            np.nanmax(arr[np.isfinite(arr)]) for arr in images
+        ])
+
+        if vmin_common is None:
+            if norm_mode == "log":
+                positive = all_finite[all_finite > 0]
+                if positive.size == 0:
+                    raise ValueError("No positive values available for log normalization.")
+                vmin_common = np.nanmin(positive)
+            else:
+                vmin_common = np.nanmin(all_finite)
+
+        if vmax_common is None:
+            vmax_common = np.nanmax(all_finite)
+
+        if vmax_common == vmin_common:
+            vmax_common = vmin_common + 1.0
+
+        vmin_list = [vmin_common] * ncols
+        vmax_list = [vmax_common] * ncols
+
+    with plt.rc_context(rc_params):
+        fig = plt.figure(figsize=figsize, dpi=dpi)
+
+        fig_w, fig_h = figsize
+        panel_height = top - bottom
+
+        if panel_height <= 0:
+            raise ValueError("top must be larger than bottom.")
+
+        image_widths = []
+        for arr in images:
+            ny, nx = arr.shape
+            image_widths.append(panel_height * (nx / ny) * (fig_h / fig_w))
+
+        if single_colorbar:
+            total_width = (
+                sum(image_widths)
+                + (ncols - 1) * panel_gap
+                + single_cbar_gap
+                + cbar_width
+            )
+        else:
+            total_width = (
+                sum(image_widths)
+                + ncols * cbar_width
+                + ncols * image_cbar_gap
+                + (ncols - 1) * panel_gap
+            )
+
+        available_width = right - left
+
+        if total_width > available_width:
+            raise ValueError(
+                "Layout too wide. Reduce top-bottom height, cbar_width, "
+                "image_cbar_gap, panel_gap, single_cbar_gap, or use a wider figure."
+            )
+
+        x0 = left + 0.5 * (available_width - total_width)
+
+        axes = []
+        cbar_axes = []
+        im_last = None
+        formatter_values_last = None
+
+        for j, arr in enumerate(images):
+            image_width = image_widths[j]
+            ax = fig.add_axes([x0, bottom, image_width, panel_height])
+
+            finite = arr[np.isfinite(arr)]
+
+            vmin_j = vmin_list[j]
+            vmax_j = vmax_list[j]
+
+            if vmin_j is None:
+                vmin_j = np.nanmin(finite)
+
+            if vmax_j is None:
+                vmax_j = np.nanmax(finite)
+
+            if vmax_j == vmin_j:
+                vmax_j = vmin_j + 1.0
+
+            if norm_mode == "linear":
+                img_plot = arr
+                norm = Normalize(vmin=vmin_j, vmax=vmax_j)
+                formatter_values = np.array([vmin_j, vmax_j], dtype=float)
+            else:
+                positive = finite[finite > 0]
+
+                if positive.size == 0:
+                    raise ValueError(f"Image {j} has no positive values for log normalization.")
+
+                if vmin_j <= 0:
+                    vmin_j = np.nanmin(positive)
+
+                img_plot = np.clip(arr, vmin_j, None)
+                norm = LogNorm(vmin=vmin_j, vmax=vmax_j)
+                formatter_values = np.array([vmin_j, vmax_j], dtype=float)
+
+            im = ax.imshow(
+                img_plot,
+                cmap=cmap,
+                norm=norm,
+                origin=origin,
+                interpolation=interpolation,
+                aspect=aspect,
+            )
+
+            im_last = im
+            formatter_values_last = formatter_values
+
+            if titles_row[j] is not None:
+                ax.set_title(titles_row[j], fontsize=title_fs, pad=3)
+
+            if hide_ticks:
+                ax.set_xticks([])
+                ax.set_yticks([])
+            else:
+                ax.tick_params(
+                    which="major",
+                    direction="in",
+                    length=4,
+                    width=0.8,
+                    labelsize=tick_fs,
+                    pad=3,
+                    top=True,
+                    right=True,
+                )
+
+            if not show_axes_frame:
+                for spine in ax.spines.values():
+                    spine.set_visible(False)
+            else:
+                for spine in ax.spines.values():
+                    spine.set_linewidth(0.8)
+
+            if journal_style:
+                ax.grid(False)
+
+            axes.append(ax)
+
+            if not single_colorbar:
+                cax = fig.add_axes([
+                    x0 + image_width + image_cbar_gap,
+                    bottom,
+                    cbar_width,
+                    panel_height,
+                ])
+
+                cbar = fig.colorbar(im, cax=cax, orientation="vertical")
+                cbar.set_label(cbar_label, fontsize=label_fs, labelpad=3)
+
+                exponent, scale = _compute_scientific_scale(formatter_values)
+
+                cbar.ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+                cbar.ax.yaxis.set_major_formatter(
+                    FuncFormatter(lambda x, pos, s=scale: f"{x / s:.1f}")
+                )
+
+                cbar.ax.tick_params(
+                    axis="y",
+                    which="major",
+                    direction="in",
+                    length=3.5,
+                    width=0.8,
+                    labelsize=tick_fs,
+                    pad=2,
+                )
+
+                cbar.ax.text(
+                    1.05,
+                    1.01,
+                    rf"$\times 10^{{{exponent}}}$",
+                    transform=cbar.ax.transAxes,
+                    ha="left",
+                    va="bottom",
+                    fontsize=tick_fs,
+                )
+
+                cbar_axes.append(cax)
+
+                x0 += image_width + image_cbar_gap + cbar_width + panel_gap
+            else:
+                x0 += image_width + panel_gap
+
+        if single_colorbar:
+            x_last = axes[-1].get_position().x1
+            cax = fig.add_axes([
+                x_last + single_cbar_gap,
+                bottom,
+                cbar_width,
+                panel_height,
+            ])
+
+            cbar = fig.colorbar(im_last, cax=cax, orientation="vertical")
+            cbar.set_label(cbar_label, fontsize=label_fs, labelpad=3)
+
+            exponent, scale = _compute_scientific_scale(formatter_values_last)
+
+            cbar.ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+            cbar.ax.yaxis.set_major_formatter(
+                FuncFormatter(lambda x, pos, s=scale: f"{x / s:.1f}")
+            )
+
+            cbar.ax.tick_params(
+                axis="y",
+                which="major",
+                direction="in",
+                length=3.5,
+                width=0.8,
+                labelsize=tick_fs,
+                pad=2,
+            )
+
+            cbar.ax.text(
+                1.05,
+                1.01,
+                rf"$\times 10^{{{exponent}}}$",
+                transform=cbar.ax.transAxes,
+                ha="left",
+                va="bottom",
+                fontsize=tick_fs,
+            )
+
+            cbar_axes.append(cax)
+
+        if save:
+            path = Path(savepath)
+
+            if saveformat is None:
+                if path.suffix:
+                    saveformat = path.suffix.lower().lstrip(".")
+                else:
+                    saveformat = "pdf"
+                    path = path.with_suffix(".pdf")
+
+            saveformat = str(saveformat).lower().lstrip(".")
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            def _save_one(fmt):
+                fmt = fmt.lower().lstrip(".")
+
+                if fmt == "fig":
+                    fig_path = path.with_suffix(".fig")
+                    with open(fig_path, "wb") as f:
+                        pickle.dump(fig, f)
+
+                elif fmt in {"pdf", "eps", "svg"}:
+                    out = path.with_suffix(f".{fmt}")
+                    fig.savefig(
+                        out,
+                        format=fmt,
+                        bbox_inches="tight",
+                        pad_inches=0.02,
+                        transparent=False,
+                    )
+
+                elif fmt in {"png", "tif", "tiff", "jpg", "jpeg"}:
+                    out = path.with_suffix(f".{fmt}")
+                    fig.savefig(
+                        out,
+                        format=fmt,
+                        dpi=max(dpi, 300),
+                        bbox_inches="tight",
+                        pad_inches=0.02,
+                        transparent=False,
+                    )
+
+                else:
+                    raise ValueError(
+                        f"Unsupported save format '{fmt}'. "
+                        "Use pdf, eps, svg, png, tif, tiff, jpg, jpeg, fig, or all."
+                    )
+
+            if saveformat == "all":
+                for fmt in ("pdf", "png", "fig"):
+                    _save_one(fmt)
+            else:
+                _save_one(saveformat)
+
+    return fig, axes, cbar_axes

@@ -590,7 +590,7 @@ class OZILin:
         zwfs1 = ZWFS(
             self.tel1,
             diameter=diam,
-            phase_shift=0.3,
+            phase_shift=0.33,
             zpf=30,
             phase_shift_unit="pi",
         )
@@ -598,7 +598,7 @@ class OZILin:
         zwfs2 = ZWFS(
             self.tel2,
             diameter=diam,
-            phase_shift=-0.7,
+            phase_shift=-0.73,
             zpf=30,
             phase_shift_unit="pi",
         )
@@ -606,16 +606,29 @@ class OZILin:
         return ZWFS2(ZWFS1=zwfs1, ZWFS2=zwfs2)
 
     def _export_reconstruction_setup(self):
-        """
-        Données minimales nécessaires à la reconstruction parallèle.
-        """
+        diam = 2.0 if self.is_onsky else 2.14
+    
         return {
             "is_onsky": self.is_onsky,
             "is_nb": self.is_nb,
-            "submask0": self.submasks[0],
-            "submask1": self.submasks[1],
-            "pupil0": self.pupils[0],
-            "pupil1": self.pupils[1],
+    
+            "submask0": self.submasks[0].copy(),
+            "submask1": self.submasks[1].copy(),
+            "pupil0": self.pupils[0].copy(),
+            "pupil1": self.pupils[1].copy(),
+    
+            "diam": diam,
+            "phase_shift_1": 0.33,
+            "phase_shift_2": -0.73,
+            "zpf": 30,
+            "phase_shift_unit": "pi",
+    
+            "src1_optBand": self.src1.optBand if hasattr(self.src1, "optBand") else "H",
+            "src2_optBand": self.src2.optBand if hasattr(self.src2, "optBand") else "H",
+            "src1_wavelength": self.src1.wavelength,
+            "src2_wavelength": self.src2.wavelength,
+            "src1_bandwidth": self.src1.bandwidth,
+            "src2_bandwidth": self.src2.bandwidth,
         }
 
     # ------------------------------------------------------------------
@@ -715,9 +728,9 @@ class OZILin:
         self.rec2 = np.linalg.pinv(self.IM2)
         
     def _reconstruct_cmd(self, reconstructor,signal):
-        reconstructed = np.zeros((self.img.shape[0],self.img.shape[1],self.M2C.shape[-1])).astype(np.float32)
-        for i in range(self.img.shape[0]):
-            for j in range(self.img.shape[1]):
+        reconstructed = np.zeros((signal.shape[0],signal.shape[1],self.M2C.shape[-1])).astype(np.float32)
+        for i in range(signal.shape[0]):
+            for j in range(signal.shape[1]):
                 reconstructed[i,j]= reconstructor@signal[i,j]
         return reconstructed
     def reconstructed_cmd(self):
@@ -749,21 +762,24 @@ class OZILin:
         IM2 = []
         
         for i in range(M2C.shape[-1]):
-            self.dm1.coefs = stroke[i]*M2C[:,i]
-            self.dm2.coefs = stroke[i]*M2C[:,i]
-            self.tel1*self.dm1
-            self.tel1*self.zwfs1
+            coefs = stroke[i]*M2C[:,i]
+            phase_map = (self.dm1.modes@coefs).reshape(self.tel1.pupil.shape)*self.tel1.pupil
+            self.zwfs1.wfs_measure(phase_in = phase_map/self.src1.wavelength*2*np.pi)
+            coefs = stroke[i]*M2C[:,i]
+            phase_map = (self.dm2.modes@coefs).reshape(self.tel2.pupil.shape)*self.tel1.pupil
+            self.zwfs2.wfs_measure(phase_in = phase_map/self.src2.wavelength*2*np.pi)
+            
             img1_pos = self.zwfs1.signal
-            self.tel2*self.dm2
-            self.tel2*self.zwfs2
+            
             img2_pos = self.zwfs2.signal
-            self.dm1.coefs = -stroke[i]*M2C[:,i]
-            self.dm2.coefs = -stroke[i]*M2C[:,i]
-            self.tel1*self.dm1
-            self.tel1*self.zwfs1
+            coefs = -stroke[i]*M2C[:,i]
+            phase_map = (self.dm1.modes@coefs).reshape(self.tel1.pupil.shape)*self.tel1.pupil
+            self.zwfs1.wfs_measure(phase_in = phase_map/self.src1.wavelength*2*np.pi)
+            coefs = -stroke[i]*M2C[:,i]
+            phase_map = (self.dm2.modes@coefs).reshape(self.tel2.pupil.shape)*self.tel1.pupil
+            self.zwfs2.wfs_measure(phase_in = phase_map/self.src2.wavelength*2*np.pi)
             IM1.append((img1_pos - self.zwfs1.signal)/(2*stroke[i]))
-            self.tel2*self.dm2
-            self.tel2*self.zwfs2
+
             IM2.append((img2_pos - self.zwfs2.signal)/(2*stroke[i]))
         self.synth_IM1 = np.array(IM1).T
         self.synth_IM2 = np.array(IM2).T
@@ -797,6 +813,8 @@ class OZILin:
         damping: float = 0.5,
         parallel: bool = True,
         parall_njob: int = 4,
+        img_ZWFS1_flat = None, 
+        img_ZWFS2_flat = None,
     ):
         """
         Reconstruit la phase pour toutes les images de linéarité.
@@ -815,8 +833,11 @@ class OZILin:
                 "Les images ZWFS ne sont pas extraites. "
                 "Appelle extract_Zimages() avant reconstruct_all_phase()."
             )
-
-        n_images = self.img_ZWFS1_flat.shape[0]
+        if img_ZWFS1_flat is None:
+            img_ZWFS1_flat = self.img_ZWFS1_flat
+        if img_ZWFS2_flat is None:
+            img_ZWFS2_flat = self.img_ZWFS1_flat
+        n_images = img_ZWFS1_flat.shape[0]
 
         if parallel:
             setup = self._export_reconstruction_setup()
@@ -827,8 +848,8 @@ class OZILin:
                 return_as="generator",
             )(
                 delayed(_reconstruct_phase_worker)(
-                    self.img_ZWFS1_flat[i],
-                    self.img_ZWFS2_flat[i],
+                    img_ZWFS1_flat[i],
+                    img_ZWFS2_flat[i],
                     setup,
                     method,
                     damping,
@@ -863,8 +884,8 @@ class OZILin:
                 desc=f"Phase reconstruction ({method})",
             ):
                 phase_flat[i] = self.reconstruct_phase(
-                    self.img_ZWFS1_flat[i],
-                    self.img_ZWFS2_flat[i],
+                    img_ZWFS1_flat[i],
+                    img_ZWFS2_flat[i],
                     method=method,
                     damping=damping,
                     iteration=iteration,
@@ -874,7 +895,7 @@ class OZILin:
 
         self.phase = phase_flat.reshape(
             self.n_commands,
-            self.n_strokes,
+            self.stroke.size,
             phase_flat.shape[-2],
             phase_flat.shape[-1],
         )
@@ -898,7 +919,7 @@ class OZILin:
 
         self.OPDs = (phase / (2.0 * np.pi) * self.src1.wavelength).astype(np.float32)
         self.OPDs_flat = self.OPDs.reshape(
-            self.n_commands * self.n_strokes,
+            self.n_commands * self.stroke.size,
             self.OPDs.shape[-2],
             self.OPDs.shape[-1],
         )
@@ -907,7 +928,39 @@ class OZILin:
     # ------------------------------------------------------------------
     # Projections
     # ------------------------------------------------------------------
+    def synthetic_linearity_curves(self, modal = True, iteration = 10, damping = 0.5, parallel_njob = 4):
+        self.img_z1_simu, self.img_z2_simu = self._generate_zwfs_images(self.stroke, modal)
+        self._compute_synth_IM(12)
+        signal1 = (self.img_z1_simu-self.zwfs1.img_ref[None, None, :,:])[:,:,self.tel1.pupil]
+        signal2 = (self.img_z2_simu-self.zwfs2.img_ref[None, None, :,:])[:,:,self.tel2.pupil]
+        self.rec_cmd1_simu = self._reconstruct_cmd(self.synth_rec1,signal1)
+        self.rec_cmd2_simu = self._reconstruct_cmd(self.synth_rec2,signal2)
+        self.reconstruct_all_phase(iteration = iteration, damping=damping, parall_njob=parallel_njob, 
+                                   img_ZWFS1_flat=self.img_z1_simu.reshape(-1,self.img_z1_simu.shape[-2], self.img_z1_simu.shape[-1]),
+                                   img_ZWFS2_flat=self.img_z2_simu.reshape(-1,self.img_z2_simu.shape[-2], self.img_z2_simu.shape[-1]))
 
+        self.project_OPDs()
+        self.rec_atan_simu = self.OPDs_on_modes.copy()
+    def _generate_zwfs_images(self, stroke, modal = True):
+        if modal:
+            img_z1 = np.zeros(( self.n_commands,stroke.size, self.zwfs1.img_ref.shape[0], self.zwfs1.img_ref.shape[1]))
+            img_z2 = np.zeros((self.n_commands,stroke.size, self.zwfs2.img_ref.shape[0], self.zwfs2.img_ref.shape[1]))
+
+            for i in tqdm.tqdm(range(stroke.size)):
+                
+                for j in range(self.n_commands):
+                    coefs = stroke[i]*self.M2C[:,j]
+                    phase_map = (self.dm1.modes@coefs).reshape(self.tel1.pupil.shape)*self.tel1.pupil
+                    self.zwfs1.wfs_measure(phase_in = phase_map/self.src1.wavelength*2*np.pi)
+                    phase_map = (self.dm2.modes@coefs).reshape(self.tel2.pupil.shape)*self.tel1.pupil
+                    self.zwfs2.wfs_measure(phase_in = phase_map/self.src2.wavelength*2*np.pi)
+
+                    img_z1[j,i] = self.zwfs1.img_ZWFS.copy()
+                    img_z2[j,i] = self.zwfs2.img_ZWFS.copy()
+        else:
+            raise ValueError('Non modal linearity not implemented for the moment')
+        return img_z1, img_z2
+                    
     def project_OPDs(self):
         """
         Projette les OPD reconstruites sur :
@@ -1107,7 +1160,6 @@ class OZILin:
     def _choose_file(self):
         from qtpy.QtWidgets import QApplication, QFileDialog
     
-        app = QApplication.instance()
         if app is None:
             app = QApplication([])
     

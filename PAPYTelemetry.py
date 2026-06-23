@@ -36,7 +36,7 @@ from parallel_utils import _import_oopao_symbols
 class PAPYtele:
     """Analyze PAPYRUS telemetry commands and project first-stage telemetry products."""
 
-    def __init__(self, tele_path: str=None, is_onsky = True, OG: float | np.ndarray=None, temporal_crop=None):
+    def __init__(self, tele_path: str=None, is_onsky = True, OG: float | np.ndarray=None, temporal_crop=None, extract_values = True):
         """
         Initialize the telemetry analysis object from a saved telemetry file.
 
@@ -70,7 +70,9 @@ class PAPYtele:
         self.dmCL = self.data.item()['dmCLCube'].astype(np.float32)[self.temporal_crop][...,0]
         self.dmFlat = self.data.item()['dmFlat'].astype(np.float32)[self.temporal_crop][...,0]
         self.dmOffset = self.data.item()['dmOffset'].astype(np.float32)[self.temporal_crop][...,0]
-        self.rec_cmd = self.data.item()['modeCube'].astype(np.float32)[self.temporal_crop][..., 0] / self.OG
+        self.rec_cmd = self.data.item()['modeCube'].astype(np.float32)[self.temporal_crop][..., 0]
+        self.rec_cmd_with_og = self.data.item()['modeCube'].astype(np.float32)[self.temporal_crop][..., 0]/self.OG 
+
         self.ts = self.data.item()['timeStampOcamCube'][self.temporal_crop]
         self.loop_gain = self.data.item()['lpGain'][0][0]
         self.loop_leak = self.data.item()['lpLeak'][0][0]
@@ -88,11 +90,12 @@ class PAPYtele:
         self.M2phase = self.IF[self.pupil_mask, :] @ self.M2C
         self.modes_std = self.M2phase.std(axis=0)
         self.IF_std = self.IF[self.pupil_mask, :].std(axis=0)
-        self.initialise_OOPAO_objects()
-        self.compute_projectors()
-        self.OPDs_map_from_cmd()
-        self.psf_sampling = 2.55
-        # self.project_OPDs()
+        if extract_values:
+            self.initialise_OOPAO_objects()
+            self.compute_projectors()
+            self.OPDs_map_from_cmd()
+            self.psf_sampling = 2.55
+            # self.project_OPDs()
     def initialise_OOPAO_objects(self):
         """Initialise OOPAO objects needed to project PAPYRUS telemetry onto OZIRIIS modes."""
         Source, Telescope, _, _, DeformableMirror, MisRegistration, _ = _import_oopao_symbols()
@@ -201,9 +204,14 @@ class PAPYtele:
         self.Zer_modes = Zer_basis.modesFullRes.copy()
         self.proj_Zer = self._compute_proj_OPDs(self.Zer_modes, self.tel)
 
-    def OPDs_map_from_cmd(self):
+    def OPDs_map_from_cmd(self, OG:float|np.ndarray = None):
         """Reconstruct OPD maps from PAPYRUS modal commands."""
-        OPD_map = (self.dm.modes @ (self.M2C @ self.rec_cmd.T))*self.tel.pupil.reshape(-1,1)
+        if OG is None:
+            rec_cmd = self.rec_cmd_with_og.copy()
+        else:
+            rec_cmd = self.rec_cmd/OG
+
+        OPD_map = (self.dm.modes @ (self.M2C @ rec_cmd.T))*self.tel.pupil.reshape(-1,1)
         self.OPDs_from_cmd = OPD_map.T.reshape(-1, self.tel.pupil.shape[0], self.tel.pupil.shape[0])
         return self.OPDs_from_cmd
     
@@ -221,9 +229,9 @@ class PAPYtele:
         """Project first-stage commands onto an OZIRIIS modal basis."""
         if proj is None:
             proj, modes = self._compute_proj_dm(modes, self.tel_ozi, self.dm_ozi, return_modes=True)
-        rec_modes = np.zeros((self.rec_cmd.shape[0], modes.shape[-1]))
-        for i in tqdm.tqdm(range(self.rec_cmd.shape[0])):
-            opds = self.dm.modes @ (self.M2C @ self.rec_cmd[i])
+        rec_modes = np.zeros((self.rec_cmd_with_og.shape[0], modes.shape[-1]))
+        for i in tqdm.tqdm(range(self.rec_cmd_with_og.shape[0])):
+            opds = self.dm.modes @ (self.M2C @ self.rec_cmd_with_og[i])
             opds_ = np.zeros_like(self.tel_ozi.pupil).astype(np.float32)
             opds_[self.tel_ozi.pupil] = opds[self.tel.pupil.ravel()]
             rec_modes[i] = proj @ opds_.ravel()
