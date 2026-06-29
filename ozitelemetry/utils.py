@@ -7,371 +7,7 @@ from OOPAO.Source import Source
 import time
 
 
-def run_ao_loop_2nd_stage(
-    OZItwin,
-    residuals_opds_1rst,
-    nLoop,
-    nmodes,
-    calib_CL_2nd,
-    gainCL=0.0,
-    leak=0.98,
-    frame_delay=2,
-    verbose=True,
-):
-    """
-    Run the second-stage AO loop using residual OPDs from the first stage.
 
-    Parameters
-    ----------
-    OZItwin : object
-        Object containing atm, tel, dm, src, vzwfs, M2C.
-    residuals_opds_1rst : np.ndarray
-        Residual OPDs from the first AO stage.
-        Shape typically: (nLoop, tel.resolution, tel.resolution).
-    nLoop : int
-        Number of loop iterations.
-    nmodes : int
-        Number of modes kept in OZItwin.M2C[:, :nmodes].
-    calib_CL_2nd : np.ndarray
-        Calibration/reconstruction matrix for the second-stage WFS.
-    gainCL : float
-        Closed-loop gain.
-    leak : float
-        DM leak factor.
-    frame_delay : int
-        Frame delay. Currently supports frame_delay = 1 or 2.
-    verbose : bool
-        If True, print loop progress.
-
-    Returns
-    -------
-    results : dict
-        Dictionary containing loop outputs.
-    """
-
-    # Allocate memory
-    SR_NGS = np.zeros(nLoop)
-    SR_SRC = np.zeros(nLoop)
-
-    total = np.zeros(nLoop)
-    residual_SRC = np.zeros(nLoop)
-    residual_NGS = np.zeros(nLoop)
-
-    dm_commands = np.zeros((nLoop, OZItwin.dm.nValidAct))
-
-    # Initial WFS signal
-    wfsSignal = np.zeros(OZItwin.vzwfs.zwfs1.nSignal)
-
-    # Reconstructor
-    reconstructor = OZItwin.M2C[:, :nmodes] @ calib_CL_2nd
-
-    n_cmd = reconstructor.shape[0]
-    reconstructed_cmd = np.zeros((nLoop, n_cmd))
-
-    # OPD storage
-    opds = np.zeros_like(residuals_opds_1rst)
-
-    OPD_NGS_all = np.zeros_like(residuals_opds_1rst)
-    OPD_SRC_all = np.zeros_like(residuals_opds_1rst)
-
-    # Initialization
-    OZItwin.dm.coefs = 0
-    OZItwin.atm.initializeAtmosphere(OZItwin.tel)
-
-    pupil_mask = np.where(OZItwin.tel.pupil > 0)
-
-    for i in range(nLoop):
-
-        # Update phase screen from first-stage residual OPD
-        OZItwin.atm.update(residuals_opds_1rst[i])
-
-        # Save input phase variance
-        total[i] = np.std(OZItwin.tel.OPD[pupil_mask]) * 1e9
-
-        # Propagate source through atmosphere, telescope and DM
-        OZItwin.atm * OZItwin.src * OZItwin.tel * OZItwin.dm
-
-        # Propagate to vector ZWFS
-        OZItwin.tel * OZItwin.vzwfs
-
-        # Save NGS residual
-        residual_NGS[i] = np.std(OZItwin.tel.OPD[pupil_mask]) * 1e9
-        OPD_NGS_all[i] = OZItwin.tel.mean_removed_OPD.copy()
-        opds[i] = OZItwin.tel.OPD.copy()
-
-        # Propagate SRC through atmosphere, telescope and DM
-        OZItwin.atm * OZItwin.src * OZItwin.tel * OZItwin.dm
-
-        # Save DM commands
-        dm_commands[i, :] = OZItwin.dm.coefs.copy()
-
-        # Save SRC residual
-        residual_SRC[i] = np.std(OZItwin.tel.OPD[pupil_mask]) * 1e9
-        OPD_SRC_all[i] = OZItwin.tel.mean_removed_OPD.copy()
-
-        # Frame delay = 1:
-        # use the current WFS signal before computing the command
-        if frame_delay == 1:
-            wfsSignal = OZItwin.vzwfs.zwfs1.signal.copy()
-
-        # Reconstruct command
-        reconstructed_cmd[i] = reconstructor @ wfsSignal
-
-        # Apply command on DM
-        OZItwin.dm.coefs = (
-            leak * OZItwin.dm.coefs
-            - gainCL * reconstructed_cmd[i]
-        )
-
-        # Frame delay = 2:
-        # update WFS signal after computing the command
-        if frame_delay == 2:
-            wfsSignal = OZItwin.vzwfs.zwfs1.signal.copy()
-
-        if verbose:
-            print(
-                f"\rLoop {i+1}/{nLoop} "
-                f"NGS: {residual_NGS[i]:.3f} "
-                f"-- SRC: {residual_SRC[i]:.3f}",
-                end="",
-                flush=True,
-            )
-
-    if verbose:
-        print()
-
-    results = {
-        "SR_NGS": SR_NGS,
-        "SR_SRC": SR_SRC,
-        "total": total,
-        "residual_SRC": residual_SRC,
-        "residual_NGS": residual_NGS,
-        "dm_commands": dm_commands,
-        "wfsSignal_last": wfsSignal,
-        "reconstructor": reconstructor,
-        "reconstructed_cmd": reconstructed_cmd,
-        "opds": opds,
-        "OPD_NGS_all": OPD_NGS_all,
-        "OPD_SRC_all": OPD_SRC_all,
-        "gainCL": gainCL,
-        "leak": leak,
-        "frame_delay": frame_delay,
-        "nmodes": nmodes,
-    }
-
-    return results
-
-def run_ao_loop_from_opds(
-    atm,
-    tel,
-    dm,
-    wfs,
-    ngs,
-    calib,
-    M2C_CL,
-    atm_OPDs_1rst,
-    nLoop,
-    OZItwin=None,
-    src_band="IR1310",
-    src_mag=0,
-    gainCL=0.0,
-    leak=0.995,
-    frame_delay=0,
-    photonNoise=False,
-    display=False,
-    verbose=True,
-):
-    """
-    Run an AO loop using precomputed atmospheric OPDs.
-
-    Parameters
-    ----------
-    atm : OOPAO Atmosphere
-        Atmosphere object.
-    tel : OOPAO Telescope
-        Telescope object.
-    dm : OOPAO DeformableMirror
-        Deformable mirror object.
-    wfs : OOPAO WFS
-        Wavefront sensor object.
-    ngs : OOPAO Source
-        Natural guide star source.
-    calib : object
-        Calibration object containing calib.M.
-    M2C_CL : np.ndarray
-        Modal-to-command or control matrix used before calib.M.
-    atm_OPDs_1rst : np.ndarray
-        Array of atmospheric OPDs, shape typically:
-        (nLoop, tel.resolution, tel.resolution).
-    nLoop : int
-        Number of loop iterations.
-    OZItwin : object, optional
-        Object containing OZItwin.tel.samplingTime.
-        If None, ratio_samp is set to 1.
-    src_band : str
-        Scientific source band.
-    src_mag : float
-        Scientific source magnitude.
-    gainCL : float
-        Closed-loop gain.
-    leak : float
-        Leak factor. Currently kept as parameter, but not applied in the original code.
-    frame_delay : int
-        Frame delay applied to the WFS signal buffer.
-    photonNoise : bool
-        Whether photon noise is enabled for the WFS camera.
-    display : bool
-        Display flag. Currently kept for compatibility with the original script.
-    verbose : bool
-        If True, print loop progress.
-
-    Returns
-    -------
-    results : dict
-        Dictionary containing all saved outputs from the loop.
-    """
-
-    # Initialize atmosphere on telescope
-    atm.initializeAtmosphere(tel)
-
-    # Create scientific source
-    src = Source(src_band, src_mag)
-    src * tel
-
-    # Initialize telescope and DM commands
-    tel.resetOPD()
-    dm.coefs = 0
-
-    ngs * tel * dm * wfs
-    wfs * wfs.focal_plane_camera
-
-    # Initialize atmosphere propagation
-    atm * ngs * tel
-    atm * src * tel
-
-    # Sampling ratio
-    if OZItwin is None:
-        ratio_samp = 1
-    else:
-        ratio_samp = 1 / OZItwin.tel.samplingTime / (1 / tel.samplingTime)
-
-    ratio_samp = int(ratio_samp)
-
-    if ratio_samp < 1:
-        raise ValueError("ratio_samp must be >= 1.")
-
-    n_wfs_samples = int(nLoop / ratio_samp)
-
-    # Allocate memory
-    SR_NGS = np.zeros(nLoop)
-    SR_SRC = np.zeros(nLoop)
-
-    total = np.zeros(nLoop)
-    residual_SRC = np.zeros(nLoop)
-    residual_NGS = np.zeros(nLoop)
-
-    dm_commands = np.zeros((nLoop, dm.nValidAct))
-
-    wfsSignal = np.zeros(
-        (n_wfs_samples + frame_delay, wfs.nSignal)
-    )
-
-    reconstructor = M2C_CL @ calib.M
-
-    n_cmd = reconstructor.shape[0]
-    reconstructed_cmd = np.zeros((n_wfs_samples, n_cmd))
-
-    opds = np.zeros(
-        (nLoop, tel.pupil.shape[0], tel.pupil.shape[1])
-    )
-    opds_res = np.zeros(
-        (nLoop, tel.pupil.shape[0], tel.pupil.shape[1])
-    )
-
-    OPD_SRC_all = np.zeros(
-        (nLoop, tel.pupil.shape[0], tel.pupil.shape[1])
-    )
-
-    # Loop parameters
-    wfs.cam.photonNoise = photonNoise
-
-    k = 0
-    pupil_mask = np.where(tel.pupil > 0)
-
-    for i in range(nLoop):
-
-        # Update phase screen
-        atm.update(atm_OPDs_1rst[i] * tel.pupil)
-
-        # Save phase variance before correction
-        total[i] = np.std(tel.OPD[pupil_mask]) * 1e9
-
-        # Propagate NGS through atmosphere, telescope, DM, WFS
-        atm * ngs * tel * dm * wfs
-
-        opds[i] = dm.OPD.copy()
-        opds_res[i] = tel.OPD.copy()
-
-        wfs * wfs.focal_plane_camera
-
-        # Save residuals on NGS
-        residual_NGS[i] = np.std(tel.OPD[pupil_mask]) * 1e9
-
-        # WFS sampling
-        if i % ratio_samp == 0 and k < n_wfs_samples:
-
-            wfsSignal[k + frame_delay] = wfs.signal.copy()
-
-            reconstructed_cmd[k] = reconstructor @ wfsSignal[k]
-
-            # Apply DM command
-            dm.coefs = dm.coefs - gainCL * reconstructed_cmd[k]
-
-            k += 1
-
-        # Propagate SRC through atmosphere, telescope and DM
-        atm * src * tel * dm
-
-        dm_commands[i, :] = dm.coefs.copy()
-
-        # Save residuals on SRC
-        residual_SRC[i] = np.std(tel.OPD[pupil_mask]) * 1e9
-
-        OPD_SRC_all[i] = tel.mean_removed_OPD.copy()
-
-        if verbose:
-            print(
-                f"\rLoop {i+1}/{nLoop} "
-                f"NGS: {residual_NGS[i]:.3f} "
-                f"-- SRC: {residual_SRC[i]:.3f}",
-                end="",
-                flush=True,
-            )
-
-    if verbose:
-        print()
-
-    results = {
-        "SR_NGS": SR_NGS,
-        "SR_SRC": SR_SRC,
-        "total": total,
-        "residual_SRC": residual_SRC,
-        "residual_NGS": residual_NGS,
-        "dm_commands": dm_commands,
-        "wfsSignal": wfsSignal,
-        "reconstructor": reconstructor,
-        "reconstructed_cmd": reconstructed_cmd,
-        "opds": opds,
-        "opds_res": opds_res,
-        "OPD_SRC_all": OPD_SRC_all,
-        "src": src,
-        "ratio_samp": ratio_samp,
-        "gainCL": gainCL,
-        "leak": leak,
-        "frame_delay": frame_delay,
-    }
-
-    return results
 def compute_etf(
     f1,
     psd1,
@@ -471,3 +107,494 @@ def compute_etf(
         m2_interp = m2_interp[keep]
 
     return f_etf, etf, m1_ratio, m2_interp
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+from matplotlib.colors import LogNorm, SymLogNorm
+from matplotlib.patches import Circle
+from numpy.fft import fft2, fftshift
+from maoppy.utils import circavg
+
+def plot_simulated_psf_analysis_from_tele(
+    tele,
+    psf_obj=None,
+    papyrus=None,
+    nx=None,
+    wvl=None,
+    WVL_0=1550e-9,
+    rad2arcsec=180 / np.pi * 3600,
+    hfov=3,
+    lw=2,
+    log_vmin=1e-4,
+    log_vmax=1,
+    sym_linthresh=1e-3,
+    save_path=None,
+):
+    """
+    Trace les diagnostics PSF à partir d'un objet OZITele après `tele * psf`.
+
+    Version auto-contenue : fonctionne si sampling et wvl sont des scalaires
+    ou des arrays.
+    """
+
+    def compute_otf_local(img):
+        return fftshift(fft2(fftshift(img)))
+
+    def get_from_tele(name, default=None, required=True):
+        if hasattr(tele, "psf_analysis_results") and name in tele.psf_analysis_results:
+            return tele.psf_analysis_results[name]
+
+        if hasattr(tele, name):
+            return getattr(tele, name)
+
+        if required:
+            raise AttributeError(
+                f"Impossible de trouver '{name}' dans tele.psf_analysis_results "
+                f"ou dans les attributs de tele. Avez-vous bien exécuté `cl_tele * psf` ?"
+            )
+
+        return default
+
+    def as_1d_array(x):
+        if x is None:
+            return None
+
+        x = np.asarray(x)
+
+        if x.ndim == 0:
+            return x.reshape(1)
+
+        return x.ravel()
+
+    def first_scalar(x, default=np.nan):
+        if x is None:
+            return default
+
+        try:
+            arr = np.asarray(x).ravel()
+            if arr.size == 0:
+                return default
+            return float(arr[0])
+        except Exception:
+            return default
+
+    def format_scalar_or_array(x, precision=4, unit=""):
+        if x is None:
+            return "None"
+
+        arr = np.asarray(x)
+
+        if arr.ndim == 0:
+            return f"{float(arr):.{precision}f}{unit}"
+
+        arr = arr.ravel()
+
+        if arr.size == 1:
+            return f"{float(arr[0]):.{precision}f}{unit}"
+
+        return (
+            f"[{np.nanmin(arr):.{precision}f}, "
+            f"{np.nanmax(arr):.{precision}f}]{unit} "
+            f"({arr.size} values)"
+        )
+
+    def get_sampling():
+        sampling_local = get_from_tele(
+            "sampling",
+            default=None,
+            required=False,
+        )
+
+        if sampling_local is None:
+            sampling_local = get_from_tele(
+                "psf_sampling",
+                default=None,
+                required=False,
+            )
+
+        if sampling_local is None and psf_obj is not None:
+            if hasattr(psf_obj, "sampling"):
+                sampling_local = psf_obj.sampling
+            elif hasattr(psf_obj, "psf_sampling"):
+                sampling_local = psf_obj.psf_sampling
+
+        if sampling_local is None:
+            raise AttributeError(
+                "Impossible de trouver le sampling. "
+                "Vérifiez que `cl_tele * psf` a bien été exécuté, "
+                "ou passez explicitement `psf_obj=psf`."
+            )
+
+        return sampling_local
+
+    def get_wavelength(default=None):
+        if wvl is not None:
+            return wvl
+
+        if hasattr(tele, "wvl_psf"):
+            return np.asarray(tele.wvl_psf)
+
+        if hasattr(tele, "wavelength"):
+            return np.asarray(tele.wavelength)
+
+        if hasattr(tele, "wvl"):
+            return np.asarray(tele.wvl)
+
+        if psf_obj is not None:
+            if hasattr(psf_obj, "wvl_psf"):
+                return np.asarray(psf_obj.wvl_psf)
+            if hasattr(psf_obj, "wvl"):
+                return np.asarray(psf_obj.wvl)
+
+        return default
+
+    # ------------------------------------------------------------------
+    # 1. Récupération des données
+    # ------------------------------------------------------------------
+    out = get_from_tele("out")
+    img_norm = get_from_tele("psf")
+    psf_fit = get_from_tele("psf_fit")
+
+    sampling = get_sampling()
+    sampling_arr = as_1d_array(sampling)
+    sampling_ref = first_scalar(sampling_arr)
+
+    wvl_used = get_wavelength(default=WVL_0)
+    wvl_arr = as_1d_array(wvl_used)
+    wvl_ref = first_scalar(wvl_arr, default=WVL_0)
+
+    otf_diff = get_from_tele(
+        "otf_diff",
+        default=None,
+        required=False,
+    )
+
+    SR_otf = get_from_tele(
+        "SR_otf",
+        default=np.nan,
+        required=False,
+    )
+
+    seeing_550 = get_from_tele(
+        "seeing_550",
+        default=np.nan,
+        required=False,
+    )
+
+    if nx is None:
+        nx = img_norm.shape[0]
+
+    # ------------------------------------------------------------------
+    # 2. PSF de diffraction
+    # ------------------------------------------------------------------
+    psf_diff = None
+    psfmodel = None
+
+    if hasattr(out, "psfmodel"):
+        psfmodel = out.psfmodel
+    elif psf_obj is not None and hasattr(psf_obj, "psfmodel"):
+        psfmodel = psf_obj.psfmodel
+
+    if psfmodel is not None and hasattr(psfmodel, "psfDiffraction"):
+        psf_diff = psfmodel.psfDiffraction
+
+    if psf_diff is None and hasattr(tele, "simulated_psf_diff"):
+        if tele.simulated_psf_diff.ndim == 4:
+            psf_diff = tele.simulated_psf_diff.mean(axis=(0, 1))
+        elif tele.simulated_psf_diff.ndim == 3:
+            psf_diff = tele.simulated_psf_diff.mean(axis=0)
+        elif tele.simulated_psf_diff.ndim == 2:
+            psf_diff = tele.simulated_psf_diff
+
+    if psf_diff is None:
+        psf_diff = np.zeros_like(img_norm)
+        psf_diff[nx // 2, nx // 2] = 1.0
+
+    # ------------------------------------------------------------------
+    # 3. MTF / OTF
+    # ------------------------------------------------------------------
+    mtf_avg = circavg(
+        np.abs(compute_otf_local(img_norm)),
+        center=(nx // 2, nx // 2),
+    )
+
+    mtf_fit_avg = circavg(
+        np.abs(compute_otf_local(psf_fit)),
+        center=(nx // 2, nx // 2),
+    )
+
+    if otf_diff is not None:
+        mtf_diff_avg = circavg(
+            np.abs(otf_diff),
+            center=(nx // 2, nx // 2),
+        )
+        otf_diff_for_sr = otf_diff
+    else:
+        otf_diff_for_sr = compute_otf_local(psf_diff)
+        mtf_diff_avg = circavg(
+            np.abs(otf_diff_for_sr),
+            center=(nx // 2, nx // 2),
+        )
+
+    denom = np.abs(otf_diff_for_sr).sum()
+
+    if denom > 0:
+        sr_otf_sum = np.abs(compute_otf_local(psf_fit)).sum() / denom * 100
+    else:
+        sr_otf_sum = np.nan
+
+    # ------------------------------------------------------------------
+    # 4. Axes
+    # ------------------------------------------------------------------
+    use_arcsec = papyrus is not None and hasattr(papyrus, "pixel_mas")
+
+    if use_arcsec:
+        axis = np.linspace(-nx // 2, nx // 2, nx) * papyrus.pixel_mas * 1e-3
+        x_label = "[arcsec]"
+    else:
+        axis = np.arange(nx) - nx // 2
+        x_label = "[pix]"
+
+    dxdy = getattr(out, "dxdy", np.array([0.0, 0.0]))
+    dxdy = np.asarray(dxdy).ravel()
+
+    if dxdy.size < 2:
+        dxdy = np.array([0.0, 0.0])
+
+    if use_arcsec:
+        dx, dy = dxdy[:2] * papyrus.pixel_mas * 1e-3
+    else:
+        dx, dy = dxdy[:2]
+
+    cxcy = (nx // 2 + dxdy[1], nx // 2 + dxdy[0])
+
+    maxi_data = np.nanmax(img_norm)
+    maxi_diff = np.nanmax(psf_diff)
+
+    if not np.isfinite(maxi_data) or maxi_data <= 0:
+        maxi_data = 1.0
+
+    if not np.isfinite(maxi_diff) or maxi_diff <= 0:
+        maxi_diff = 1.0
+
+    # ------------------------------------------------------------------
+    # 5. Figure
+    # ------------------------------------------------------------------
+    fig, axes = plt.subplots(2, 3, figsize=(14, 8))
+    axes = axes.ravel()
+
+    def set_img_panel(ax, tab, title, cmap="Spectral_r", norm=None):
+        if norm is None:
+            norm = LogNorm(vmin=log_vmin, vmax=log_vmax)
+
+        im = ax.imshow(
+            tab / maxi_data,
+            norm=norm,
+            cmap=cmap,
+            extent=[axis[0], axis[-1], axis[0], axis[-1]],
+            origin="lower",
+        )
+
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+        if (
+            use_arcsec
+            and hasattr(papyrus, "D")
+            and hasattr(papyrus, "Nact")
+            and np.isfinite(wvl_ref)
+        ):
+            corr_radius = rad2arcsec * (wvl_ref / papyrus.D * papyrus.Nact / 2)
+
+            corr_zone = Circle(
+                [dx, -dy],
+                corr_radius,
+                fc="none",
+                ec="k",
+                ls=":",
+            )
+
+            ax.add_artist(corr_zone)
+
+        ax.set_title(title)
+        ax.set_xlabel(x_label)
+
+        if use_arcsec:
+            ax.set_xlim(-hfov + dx, hfov + dx)
+            ax.set_ylim(-hfov - dy, hfov - dy)
+
+    # Images
+    set_img_panel(axes[0], img_norm, "data")
+    set_img_panel(axes[1], psf_fit, "fit")
+
+    set_img_panel(
+        axes[2],
+        psf_fit - img_norm,
+        "fit - data",
+        cmap="RdBu",
+        norm=SymLogNorm(
+            linthresh=sym_linthresh,
+            vmin=-1,
+            vmax=1,
+        ),
+    )
+
+    # Profils PSF
+    axes[3].set_title("PSF")
+
+    axes[3].semilogy(
+        circavg(psf_diff / maxi_diff, center=(nx // 2, nx // 2)),
+        lw=lw,
+        label="diffrac.",
+        c="grey",
+    )
+
+    axes[3].semilogy(
+        circavg(img_norm / maxi_diff, center=cxcy),
+        lw=lw,
+        label="data",
+    )
+
+    axes[3].semilogy(
+        circavg(psf_fit / maxi_diff, center=cxcy),
+        lw=lw,
+        label="fit",
+    )
+
+    if hasattr(out, "flux_bck"):
+        flux_bck = np.asarray(out.flux_bck).ravel()
+
+        if flux_bck.size >= 2 and flux_bck[0] != 0:
+            axes[3].axhline(
+                flux_bck[1] / flux_bck[0],
+                c="C1",
+                ls="--",
+                label="bck fit",
+            )
+
+    # Coupure AO pour sampling scalaire ou vectoriel
+    if papyrus is not None and hasattr(papyrus, "Nact"):
+        if sampling_arr.size == 1:
+            axes[3].axvline(
+                papyrus.Nact / 2 * float(sampling_arr[0]),
+                c="k",
+                ls=":",
+                label="AO",
+            )
+        else:
+            for k, samp_k in enumerate(sampling_arr):
+                axes[3].axvline(
+                    papyrus.Nact / 2 * float(samp_k),
+                    c="k",
+                    ls=":",
+                    alpha=0.25,
+                    label="AO" if k == 0 else None,
+                )
+
+    axes[3].grid()
+    axes[3].set_xlim(0, nx // 2)
+    axes[3].set_ylim(1e-5, 1)
+    axes[3].set_xlabel("Position [pix]")
+    axes[3].legend()
+
+    # MTF / OTF
+    axes[4].set_title("OTF")
+
+    axes[4].loglog(
+        mtf_diff_avg,
+        lw=lw,
+        label="diffrac.",
+        c="grey",
+    )
+
+    axes[4].loglog(
+        mtf_avg,
+        lw=lw,
+        label="data",
+    )
+
+    axes[4].loglog(
+        mtf_fit_avg,
+        lw=lw,
+        label="fit",
+    )
+
+    axes[4].set_xlabel("Frequency [1/pix]")
+    axes[4].set_ylim(1e-3, 1.5)
+    axes[4].set_xlim(right=nx // 2)
+    axes[4].grid()
+    axes[4].legend()
+
+    # Texte
+    axes[5].axis("off")
+
+    SR_otf_scalar = np.nanmean(SR_otf)
+    seeing_550_scalar = first_scalar(seeing_550, default=np.nan)
+
+    sampling_txt = format_scalar_or_array(
+        sampling_arr.mean(),
+        precision=4,
+        unit=" pix/?D",
+    )
+
+    wvl_txt = format_scalar_or_array(
+        wvl_arr.mean() * 1e9,
+        precision=1,
+        unit=" nm",
+    )
+
+
+    text = (
+        f"Sampling : {sampling_txt}\n"
+        f"Wavelength : {wvl_txt}\n\n"
+    )
+
+    if np.isfinite(SR_otf_scalar):
+        text += f"Strehl OTF : {100 * SR_otf_scalar:.1f} %\n"
+    else:
+        text += "Strehl OTF stored : nan\n"
+
+    if np.isfinite(sr_otf_sum):
+        text += f"Strehl OTF sum : {sr_otf_sum:.1f} %\n\n"
+    else:
+        text += "Strehl OTF sum : nan\n\n"
+
+    if np.isfinite(seeing_550_scalar):
+        text += f"Seeing : {seeing_550_scalar:.2f} \" @ 550 nm\n"
+
+    axes[5].text(
+        -0.05,
+        0.1,
+        text,
+        size=14,
+        va="bottom",
+    )
+
+    fig.tight_layout()
+
+    if save_path is not None:
+        fig.savefig(
+            save_path,
+            format=save_path.split(".")[-1],
+            bbox_inches="tight",
+            pad_inches=0.1,
+        )
+
+    diagnostics = {
+        "img_norm": img_norm,
+        "psf_fit": psf_fit,
+        "psf_diff": psf_diff,
+        "mtf_avg": mtf_avg,
+        "mtf_fit_avg": mtf_fit_avg,
+        "mtf_diff_avg": mtf_diff_avg,
+        "sampling": sampling,
+        "sampling_arr": sampling_arr,
+        "wvl": wvl_used,
+        "wvl_arr": wvl_arr,
+        "SR_otf": SR_otf,
+        "SR_otf_sum_percent": sr_otf_sum,
+        "seeing_550": seeing_550,
+        "out": out,
+    }
+
+    return fig, axes, diagnostics

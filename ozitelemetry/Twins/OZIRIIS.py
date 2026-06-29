@@ -68,7 +68,7 @@ class OZIRIIS:
         self.M2C = np.load(str(HERE) +'/M2C_2nd.npy')
         self.psf_sampling = 2.56
         self.initialise_OOPAO_objects()
-        self.compute_projectors()
+        # self.compute_projectors()
 
     
         

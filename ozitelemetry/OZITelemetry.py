@@ -23,7 +23,7 @@ import os
 import sys
 global HERE
 from pathlib import Path
-
+from maoppy.utils import circavg, compute_otf
 from pathlib import Path
 import sys
 
@@ -79,6 +79,7 @@ class OZITele:
         self.dark = data.item()['credDark'].astype(np.float32)
         self.dmshape = data.item()['dmCmdCube'].astype(np.float32)[self.temporal_crop][...,0]
         self.dmCL = data.item()['dmCLCube'].astype(np.float32)[self.temporal_crop][...,0]
+        self.dmoffset = data.item()['dmOffset'].astype(np.float32)[self.temporal_crop][...,0]
         self.reconstructed_cube = data.item()['slavedreconsCube'].astype(np.float32)[self.temporal_crop]
         self.full_reconstructed_cube = data.item()['FullreconsCube'].astype(np.float32)[self.temporal_crop]
         try:
@@ -118,8 +119,7 @@ class OZITele:
             self.rec_cmd = self.full_reconstructed_cube.copy()
         self.rec_cmd = self.rec_cmd.reshape(self.rec_cmd.shape[0], 97)
         self.rec_cmd_modal = np.zeros((self.rec_cmd.shape[0], self.C2M.shape[0]))
-        for i in range(self.rec_cmd.shape[0]):
-            self.rec_cmd_modal[i, :] = self.C2M @ self.rec_cmd[i]
+        self.rec_cmd_modal = (self.C2M @ self.rec_cmd.T).T
         self.ts_dm = data.item()['timeStampcredCube'][self.temporal_crop]
         self.img = self.img_raw - self.dark
         self.extract_values = extract_values
@@ -128,6 +128,7 @@ class OZITele:
         self.ts = data.item()['timeStampcredCube'][self.temporal_crop]
         self.t0 = self.ts[0]
         self.time = np.array([(t - self.t0).total_seconds() for t in self.ts], dtype=float)
+        self.avg_freq = 1/np.diff(self.time).mean()
         if threshold_for_pupil_selection is None:
             use_tuner = True
             threshold_for_pupil_selection = 0.25
@@ -139,11 +140,21 @@ class OZITele:
                 self.positions_calib = [np.array([35, 20, 125, 110]), np.array([127, 19, 216, 109])]
                 self.initial_positions, self.initial_pupils, self.initial_submasks, self.global_masks = reference_intensities(self.off_mask, crop = threshold_for_pupil_selection, use_tuner=use_tuner )
                 minr, minc, maxr, maxc = self.positions_calib[0]
-                self.initial_submasks[0] = self.global_masks[0][minr:maxr, minc:maxc]
+                minr1, minc1, maxr1, maxc1 = self.initial_positions[0]
+                
+                self.initial_submasks[0] = self.global_masks[0][min(minr, minr1):max(maxr,maxr1),
+                                                              min(minc1, minc1):max(maxc, maxc1)]
+                
                 minr, minc, maxr, maxc = self.positions_calib[1]
-                self.initial_submasks[1] = self.global_masks[1][minr:maxr, minc:maxc]
+                minr1, minc1, maxr1, maxc1 = self.initial_positions[1]
+                self.initial_submasks[1] = self.global_masks[1][min(minr, minr1):max(maxr,maxr1),
+                                                              min(minc1, minc1):max(maxc, maxc1)]
+                
+                
                 self.initial_pupils[0] = np.zeros_like(self.initial_submasks[0]).astype(np.float32)
                 self.initial_pupils[1] = np.zeros_like(self.initial_submasks[1]).astype(np.float32)
+                
+                
                 self.initial_pupils[0][self.initial_submasks[0]] = self.off_mask[self.global_masks[0]]
                 self.initial_pupils[1][self.initial_submasks[1]] = self.off_mask[self.global_masks[1]]
                 self.submasks = [None, None]
@@ -169,6 +180,7 @@ class OZITele:
             self.has_recontructed_phase = False
             self.has_projected_phase = False
             self.has_recompute_rec_cmd = False
+            self.has_simulated_psf = False
 
     def _initialise_OOPAO_objects(self):
         """Initialise the OOPAO optical objects used by reconstruction and simulation."""
@@ -219,7 +231,7 @@ class OZITele:
         else:
             diam = 2.14
         zwfs1 = ZWFS(self.tel1, diameter=diam, phase_shift=0.33, zpf=30, phase_shift_unit='pi')
-        zwfs2 = ZWFS(self.tel2, diameter=diam, phase_shift=-0.74, zpf=30, phase_shift_unit='pi')
+        zwfs2 = ZWFS(self.tel2, diameter=diam, phase_shift=-0.73, zpf=30, phase_shift_unit='pi')
         return ZWFS2(ZWFS1=zwfs1, ZWFS2=zwfs2)
 
     def _export_reconstruction_setup(self):
@@ -240,10 +252,10 @@ class OZITele:
             "pupil1": self.pupils[1].copy(),
     
             "diam": diam,
-            "phase_shift_1": 0.33,
-            "phase_shift_2": -0.74,
+            "phase_shift_1": self.zwfs1.phase_shift,
+            "phase_shift_2": self.zwfs2.phase_shift,
             "zpf": 30,
-            "phase_shift_unit": "pi",
+            "phase_shift_unit": "radian",
     
             # copie explicite de ce que contient réellement le non-parallèle
             "src1_optBand": self.src1.optBand if hasattr(self.src1, "optBand") else "H",
@@ -298,7 +310,7 @@ class OZITele:
         """
         self._projector_keep_pupil_status = keep_pupil_only
         self.proj_M2C = self._compute_proj_dm(self.M2C, self.tel1, self.dm1,keep_pupil_only)
-        self.proj_IF = self._compute_proj_dm(np.identity(self.dm1.modes.shape[-1]), self.tel1, self.dm1,keep_pupil_only, filtering=1/30)
+        self.proj_IF = self._compute_proj_dm(np.identity(self.dm1.modes.shape[-1]), self.tel1, self.dm1)
     def _compute_proj_dm(self, modal_basis, tel, dm, keep_pupil_only = False, filtering = None):
         """
         Calcule un projecteur à partir des modes DM générés dans OOPAO.
@@ -419,17 +431,26 @@ class OZITele:
             IM1.append((img1_pos - self.zwfs1.img_ZWFS) / (2 * stroke[i]))
         return np.array(IM1)[:, self.submasks[0]].T
 
-    def compute_SR(self, wavelength=None, ncpa=None):
+    def compute_SR(self, opd_ncpa=None, psf = None):
         """Estimate Strehl ratio statistics from reconstructed phase variance."""
-        opd_ncpa = self._compute_ncpa_opd(ncpa)
-        if wavelength is None:
-            wavelength = self.src1.wavelength
-        phase_var = (self.phase[:, self.tel1.pupil == 1] + opd_ncpa[self.tel1.pupil == 1] * 2 * np.pi / self.src1.wavelength).var(axis=1) * (self.src1.wavelength / wavelength) ** 2
-        SR = np.exp(-phase_var)
-        SR_mean = np.exp(-phase_var.mean())
-        print(f'At {wavelength * 1000000000.0:.0f} nm, the average SR is about {SR_mean * 100:.1f}%')
-        return (SR, SR_mean)
-
+        if self.has_simulated_psf:
+            if opd_ncpa is None:
+                opd_ncpa = np.zeros_like(self.tel1.pupil).astype(np.float32)
+            if psf is None:
+                psf=self.long_exp_psf
+            phase_var = (self.OPDs[:, self.tel1.pupil == 1] + opd_ncpa[self.tel1.pupil == 1]).var(axis=1) 
+            print(np.mean(phase_var))
+            self.SR_marechal = 0
+            for i in range(self.wvl_psf.size):
+                self.SR_marechal += np.exp(-phase_var/(self.wvl_psf[i]**2)*4*np.pi**2).mean()/self.wvl_psf.size
+            self.SR_max = psf.max()/self.long_exp_psf_diff.max()
+            self.SR_otf = np.abs(compute_otf(psf)).sum() / np.abs(compute_otf(self.long_exp_psf_diff)).sum() 
+            print(f'The average SR using marechal is about {self.SR_marechal * 100:.1f}\n')
+            print(f'The average SR using max is about {self.SR_max * 100:.1f}\n')
+            print(f'The average SR using otf is about {self.SR_otf * 100:.1f}\n')
+        else:
+            logger.warning('The psf has not been simulated only computing SR through Marechal')
+            self.SR_marechal += np.exp(-phase_var/(self.src_imaging.wavelength)*4*np.pi**2).mean()/self.wvl_psf.size
     def reconstruct_phase(self, im1, im2, method='atan', damping=0.5, iteration=10, modes_filtering=False, modal_basis=None, nmodes=None):
         """
         Reconstruct a single phase map from a pair of ZWFS images.
@@ -548,7 +569,7 @@ class OZITele:
     def OPDs_map_from_cmd(self):
         """Reconstruct OPD maps from PAPYRUS modal commands."""
         OPD_map = self.dm1.modes @ self.rec_cmd.T
-        self.OPDs_from_cmd = OPD_map.T.reshape(-1, self.tel1.pupil.shape[0], self.tel1.pupil.shape[0])
+        self.OPDs_from_cmd = OPD_map.T.reshape(-1, self.tel1.pupil.shape[0], self.tel1.pupil.shape[0])*self.tel1.pupil
         return self.OPDs_from_cmd
 
     def filter_OPDs(self, OPD=None, nmodes=None, modal_basis='KL'):
@@ -573,8 +594,15 @@ class OZITele:
             IF_inv = np.linalg.pinv(self.dm1.modes)
             filtered_OPD = (self.dm1.modes @ (IF_inv @ OPD.reshape(self.OPDs.shape[0], -1).T)).T.reshape(OPD.shape[0], OPD.shape[1], OPD.shape[2])
         elif modal_basis == 'Zer':
+            self.compute_Zernike_basis(nmodes)
             opd_on_zer = self._project_phase(self.proj_Zer, OPD)
-            filtered_OPD = (opd_on_zer[:, None, None, :nmodes] * self.Zer_modes[None, :, :, :nmodes]).sum(axis=-1)
+            modes= self.Zer_modes.reshape(-1,nmodes)
+            filtered_OPD = np.zeros_like(OPD)
+
+            filtered_OPD = np.empty_like(OPD)
+            n_frames, ny, nx = OPD.shape
+            filtered_OPD = (opd_on_zer @ modes.T).reshape(OPD.shape)
+            
         return filtered_OPD * (self.tel1.pupil == 1)
 
     def project_OPDs(self, remove_mean = False, only_ctrl_modes = False):
@@ -688,18 +716,19 @@ class OZITele:
 
     
 
-    def simulate_PSF(self, OPDs = None, polychromatic = True, band = [1000e-9,1550e-9],  imaging_wvl=True, sampling=None, ncpa=None, parallel=True, parall_njob=4, chunk_size=100, img_size=100):
+    def simulate_PSF(self, OPDs = None, polychromatic = True, band = [1000e-9,1550e-9],  imaging_wvl=True, sampling=None, ncpa_OPD=None, parallel=True, parall_njob=4, chunk_size=100, img_size=100, filter_tt = True,central_obs = None):
         """Simulate PSF images from reconstructed OPD maps."""
-        if ncpa is not None:
-            if ncpa.size != self.M2C.shape[-1]:
-                raise ValueError('ncpa must be an array of the size of the number of modes in the M2C')
         
-        opd_ncpa = self._compute_ncpa_opd(ncpa)
+        
         if sampling is None:
             sampling = np.copy(self.psf_sampling)
         if polychromatic:
             self.wvl_psf = np.array(band)
-            self.sampling = sampling * 37.5 / 35.5 * self.wvl_psf / 1550e-6
+            if self.is_onsky:
+                D = 35.5
+            else:
+                D = 37.5
+            self.sampling = sampling * 37.5 / D * self.wvl_psf / 1550e-9
         else:
             if imaging_wvl:
                 self.wvl_psf = np.array([self.src_imaging.wavelength])
@@ -708,22 +737,38 @@ class OZITele:
         if OPDs is None:
             if not self.has_recontructed_phase:
                 raise RuntimeError('Must compute phase before projection')
-            OPDs = self.OPDs 
-        pupil, OPDs = self._crop_opd(OPDs)
-        _, opd_ncpa = self._crop_opd(opd_ncpa)
+            OPDs = self.OPDs.copy()
+        if filter_tt:
+            OPDs -= self.filter_OPDs(OPDs, nmodes = 2, modal_basis='Zer')
+        _, OPDs = self._crop_opd(OPDs)
+        _, pupil = self._crop_opd(self.tel1.pupilReflectivity)
+        if central_obs is not None:
+            m, n = pupil.shape
+            center = ((m - 1) / 2, (n - 1) / 2)
+            cy, cx = center
+            radius = (central_obs/2 ) * ((m + n) / 2)
+            y, x = np.ogrid[:m, :n]
+            dist2 = (x - cx)**2 + (y - cy)**2
+            mask = dist2 >= radius**2
+            pupil = pupil*mask
+            OPDs*=mask
+        if ncpa_OPD is None:
+            ncpa_OPD = np.zeros_like(self.tel1.pupil).astype(np.float32)
+        _, ncpa_OPD = self._crop_opd(ncpa_OPD)
         self.psfs_chroma = []
         self.psf_diff = []
-        for i in range(np.size(self.wvl_psf)):
+        self.pupil_psf = pupil
+        for k in range(np.size(self.wvl_psf)):
             if parallel:
-                wvl = self.wvl_psf[i]
+                wvl = self.wvl_psf[k]
                 n_frames = OPDs.shape[0]
-                opd_ncpa *= 2 * np.pi / wvl
+                opd_ncpa = 2 *ncpa_OPD* np.pi / wvl
                 chunks = [OPDs[i:i + chunk_size]* 2 * np.pi / wvl for i in range(0, n_frames, chunk_size)]
                 chunks_diff = [np.zeros_like(OPDs[i:i + chunk_size])* 2 * np.pi / wvl for i in range(0, n_frames, chunk_size)]
-                gen = Parallel(n_jobs=parall_njob, prefer='processes', return_as='generator')((delayed(_simulate_psf_chunk_worker)(chunk, pupil, sampling, img_size, opd_ncpa) for chunk in chunks))
+                gen = Parallel(n_jobs=parall_njob, prefer='processes', return_as='generator')((delayed(_simulate_psf_chunk_worker)(chunk, pupil, self.sampling[k], img_size, opd_ncpa) for chunk in chunks))
                 psf_chunks = list(tqdm.tqdm(gen, total=len(chunks), desc='PSF simulation'))
                 self.psfs_chroma.append( np.concatenate(psf_chunks, axis=0).astype(np.float32))
-                gen_diff = Parallel(n_jobs=parall_njob, prefer='processes', return_as='generator')((delayed(_simulate_psf_chunk_worker)(chunk, pupil, sampling, img_size, np.zeros_like(opd_ncpa)) for chunk in chunks_diff))
+                gen_diff = Parallel(n_jobs=parall_njob, prefer='processes', return_as='generator')((delayed(_simulate_psf_chunk_worker)(chunk, pupil, self.sampling[k], img_size, np.zeros_like(opd_ncpa)) for chunk in chunks_diff))
                 psf_chunks_diff = list(tqdm.tqdm(gen_diff, total=len(chunks_diff), desc='Diffracted PSF simulation'))
                 self.psf_diff.append( np.concatenate(psf_chunks_diff, axis=0).astype(np.float32))
             else:
@@ -743,6 +788,9 @@ class OZITele:
         self.psf_diff = np.array(self.psf_diff)
         self.simulated_psf = self.psfs_chroma.mean(axis=0)
         self.simulated_psf_diff = self.psf_diff.mean(axis=0)
+        self.long_exp_psf = self.simulated_psf.mean(axis=0)
+        self.long_exp_psf_diff = self.simulated_psf_diff.mean(axis=0)
+        self.has_simulated_psf = True
     def PSD_IFs(self, npsg=None):
         """
         Compute PSDs of reconstructed OPDs projected onto influence functions.
@@ -800,7 +848,7 @@ class OZITele:
             npsg = self.time.size
         OPDs = self.OPDs_map_from_cmd()
         if self._projector_keep_pupil_status:
-            self.psd_cmd_IFs = self.psd(self.time, self._project_phase(self.proj_IF, OPDs[:,self.tel1.pupil==1]), nperseg=npsg)
+            self.psd_cmd_IFs = self.psd(self.time, self._project_phase(self.proj_IF, OPDs), nperseg=npsg)
         else:
             self.psd_cmd_IFs = self.psd(self.time, self._project_phase(self.proj_IF, OPDs), nperseg=npsg)
     def PSD_cmd_modal(self, npsg=None):
@@ -817,7 +865,7 @@ class OZITele:
         logger.info('Computing modal PSD from cmd')
         OPDs = self.OPDs_map_from_cmd()
         if self._projector_keep_pupil_status:
-            self.psd_cmd_modal = self.psd(self.time, self._project_phase(self.proj_M2C, OPDs[:,self.tel1.pupil==1]), nperseg=npsg)
+            self.psd_cmd_modal = self.psd(self.time, self._project_phase(self.proj_M2C, OPDs), nperseg=npsg)
         else:
             self.psd_cmd_modal = self.psd(self.time, self._project_phase(self.proj_M2C, OPDs), nperseg=npsg)
 
@@ -919,9 +967,18 @@ class OZITele:
             Projected coefficients for each input frame.
         """
         projected_phase = np.zeros((phase.shape[0], projector.shape[0])).astype(np.float32)
-        
-        projected_phase = projector @ phase.reshape(phase.shape[0],-1).T
-        return projected_phase.astype(np.float32).T
+        if phase.ndim ==3:
+            if projector.shape[0]>50:
+                for i in tqdm.tqdm(range(phase.shape[0])):
+                    projected_phase[i] = projector @ phase[i].ravel()
+            else:
+                
+                projected_phase = (projector @ phase.reshape(phase.shape[0],-1).T).T
+        elif phase.ndim ==2:
+            projected_phase = (projector @ phase.ravel())
+        elif phase.ndim ==1:
+            projected_phase = projector @ phase
+        return projected_phase.astype(np.float32)
 
     def _rescale_matrix(self, A, j, k, anti_aliasing=True):
         """
@@ -1051,7 +1108,7 @@ class OZITele:
             return self.simulated_psf.mean(axis=0)
     
         if self.simulated_psf.ndim == 2:
-            return self.simulated_psf
+            return self.simulated_psf.copy()
     
         raise ValueError(
             "simulated_psf must be either a 2D image or a 3D temporal cube."
@@ -1068,7 +1125,7 @@ class OZITele:
         if not hasattr(self, name):
             setattr(self, name, value)
         else:
-            safe_name = f"simulated_{name}"
+            safe_name = f"analysed_{name}"
             setattr(self, safe_name, value)
     def _choose_file(self):
         from qtpy.QtWidgets import QApplication, QFileDialog
