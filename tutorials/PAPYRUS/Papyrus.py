@@ -68,12 +68,12 @@ class Papyrus:
                 
                 [x,y] = np.asarray(centroid(I,threshold=0.3))
                 
-                I_ = np.abs(self.wfs.grabFullQuadrant(i+1))
+                I_ = np.abs(self.wfs.grabFullQuadrant(i+1)).astype(float)
                 I_ /= I_.max()
-                
+
                 [x_,y_] = np.asarray(centroid(I_,threshold=0.3))
-        
-                
+
+
                 plt.figure(1)
                 plt.subplot(2,2,i+1)
                 plt.imshow(I-I_)
@@ -98,7 +98,7 @@ class Papyrus:
                     
                     [x,y] = np.asarray(centroid(I,threshold=0.3))
                     
-                    I_ = np.abs(self.wfs.grabFullQuadrant(i+1))
+                    I_ = np.abs(self.wfs.grabFullQuadrant(i+1)).astype(float)
                     I_ /= I_.max()
                     
                     [x_,y_] = np.asarray(centroid(I_,threshold=0.3))

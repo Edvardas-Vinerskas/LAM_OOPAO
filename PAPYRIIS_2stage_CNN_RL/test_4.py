@@ -18,6 +18,8 @@ All tunable parameters live in the Config dataclass at the top of the file.
 Nothing executes on import; the script is safe to use as a module.
 """
 
+#TODO this is OOPAO metrics plotting as rewritten by claude
+
 from __future__ import annotations
 
 import warnings

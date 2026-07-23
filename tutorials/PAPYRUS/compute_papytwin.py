@@ -177,7 +177,7 @@ def compute_papyrus_model(param,loc,source,IFreal=False):
     
     OCAM = Detector(nRes            = wfs.cam.resolution,
                     integrationTime = tel.samplingTime,
-                    bits            = OCAM_param['quantization'],
+                    bits            = 16,
                     FWC             = OCAM_param['FWC'],
                     gain            = 1,
                     sensor          = OCAM_param['sensor'],
@@ -187,6 +187,6 @@ def compute_papyrus_model(param,loc,source,IFreal=False):
                     darkCurrent     = OCAM_param['darkCurrent'],
                     readoutNoise    = OCAM_param['readoutNoise'],
                     photonNoise     = OCAM_param['photonNoise'])
-    OCAM.output_precision = np.uint16
+    #OCAM.output_precision = np.uint16
     wfs.cam = perfect_OCAM
     return tel,ngs,dm,wfs,atm,slow_tt, perfect_OCAM,OCAM
