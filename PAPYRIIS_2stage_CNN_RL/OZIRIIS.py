@@ -23,6 +23,7 @@ import os
 import sys
 global HERE
 from pathlib import Path
+import matplotlib.pyplot as plt
 
 from pathlib import Path
 import sys
@@ -116,7 +117,8 @@ class OZIRIIS:
                        windSpeed     = self.param['windSpeed'],\
                        fractionalR0  = self.param['fractionnalR0'],\
                        windDirection = self.param['windDirection'],\
-                       altitude      = self.param['altitude'])
+                       altitude      = self.param['altitude'],\
+                       t_boiling     = self.param['t_boiling'])
             
         self.M2Phase = (self.dm.modes@ self.M2C)
         self.Phase2Modes = np.linalg.pinv(self.M2Phase)
@@ -139,9 +141,22 @@ class OZIRIIS:
                         diameter            = self.param['diameter'],
                         samplingTime        = self.param['samplingTime_2nd'],
                         pupil = pupil_sky)
+        
+
+        tel_sky_2 = Telescope(resolution      = self.param['resolution_2nd'] ,
+                        diameter            = self.param['diameter'],
+                        samplingTime        = self.param['samplingTime_2nd'],
+                        centralObstruction  = 0)
+        
+        pupil_sky_2 = tel_sky_2.pupil.copy()
+        self.tel_sky_2 = Telescope(resolution      = self.param['resolution_2nd'],
+                        diameter            = self.param['diameter'],
+                        samplingTime        = self.param['samplingTime_2nd'],
+                        pupil = pupil_sky_2)
 
         if self.is_onsky:
-            self.tel = self.tel_sky
+            #self.tel = self.tel_sky
+            self.tel = self.tel_sky_2
         else:
             self.tel = self.tel_calib
 
