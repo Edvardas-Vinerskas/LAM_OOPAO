@@ -56,9 +56,10 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
         self.device = "cpu"#torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
         #--------------------------------------------------- Params ---------------------------------------------------#
-        #TODO maybe first do calibration and later on sky hmm, it will be easier to understand
-        #TODO calibration pupils for 2nd stage are exactly 90 pixels in size (on sky slightly smaller, which could be a problem for the CNN)
-        #TODO check that you have the latest vzwfs and zwfs code innit
+        # src =   Source('IR1310', 0)
+        # src*tel
+        #TODO a big difference in performance is due to using your own interaction matrix vs imported one
+        #       papyrus uses the imported so I will too (EMCCD does not work with synthetic? )
 
         self.modes_1st  = 195
         self.modes_2nd  = 50
@@ -79,31 +80,22 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
         from PAPYRIIS_2stage_CNN_RL.PAPYRUS.parameter_files.OCAM2K  import OCAM_param
         self.OCAM_param = OCAM_param
         self.Papytwin = Papyrus()
-        self.tel_1st    = self.Papytwin.tel #why do we need 2 telescopes?
-        self.ngs_1st    = self.Papytwin.ngs #check the wavelength, magnitude and all that
+        self.tel_1st    = self.Papytwin.tel
+        self.ngs_1st    = self.Papytwin.ngs
         self.dm_1st     = self.Papytwin.dm
-        self.pwfs       = self.Papytwin.wfs #TODO check whether the noise is enabled
+        self.pwfs       = self.Papytwin.wfs
         self.atm_1st    = self.Papytwin.atm     
         self.slow_tt    = self.Papytwin.slow_tt
-        #self.Papytwin.OCAM  = 20
-        self.pwfs.cam   = self.Papytwin.OCAM
-        self.pwfs.cam.gain = self.OCAM_param["gain"]
-        #TODO there appears to be a significant change in performance when you involve quantisation
+        self.pwfs.cam   = self.Papytwin.perfect_OCAM
 
-        self.Papytwin.set_pupil(
-            calibration = True)       
-        #    sky_offset = list(self.FIRST_SKY_OFFSET), 
-        #)
         #---------------------------------------------------2nd stage---------------------------------------------------#
         self.param  = initializeParameterFile()
-        self.OZItwin = OZIRIIS(is_onsky = False,
+        self.OZItwin = OZIRIIS(is_onsky = True,
                                param = self.param, #parameterFile_papyriis
                                controlled_modes = 50,
                                )
 
         self.tel_2nd    = self.OZItwin.tel
-        #there is something wrong with the shape of the source after tel * dm propagation in OZIRIIS line 243 (doing it manually for now)
-        #self.src_2nd    = self.OZItwin.src
         self.src_2nd = Source(optBand='H', magnitude=-2.81)
         self.src_2nd.wavelength = 1.6e-06
         param_misreg = np.load("PAPYRIIS_2stage_CNN_RL/dm_second_stage_misreg_dict.npy", allow_pickle=True).item()
@@ -123,16 +115,16 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
                             zpf = self.param['mask_px_size'])
 
 
-        #TODO ensure proper sampling of critical parameters such as r_0
+
         #--------------------------------------------------- Calibration ---------------------------------------------------#
         #1st stage
-        #TODO implement the cred2 camera for zwfs
+        self.Papytwin.set_pupil(calibration=True)
         self.ngs_1st * self.tel_1st * self.dm_1st * self.pwfs
-        self.M2C_1st = np.load("PAPYRIIS_2stage_CNN_RL/M2C_1rst.npy")
+        self.M2C_1st = - np.load("PAPYRIIS_2stage_CNN_RL/M2C_1rst.npy") #obtained from on-sky data
         self.M2C_1st_CL = self.M2C_1st[:, :self.modes_1st]
-        self.valid_pixels  = np.load("PAPYRIIS_2stage_CNN_RL/validpix_papyrus.npy")
-        #self.im_1st = read_mat('PAPYRIIS_2stage_CNN_RL/intMat_klOOPAO_synthetic_bin=1_F=500_rMod=5_20250604_0307.mat')['matrix_inf']
+        self.im_1st = read_mat('PAPYRIIS_2stage_CNN_RL/intMat_klOOPAO_synthetic_bin=1_F=500_rMod=5_20250604_0307.mat')['matrix_inf']
         self.pwfs.modulation = 5
+        self.pwfs.cam.sensor = "CCD"
         self.calib_1st = InteractionMatrix(  ngs = self.ngs_1st,\
                             atm            = self.atm_1st,\
                             tel            = self.tel_1st,\
@@ -145,42 +137,8 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
                             noise          = 'off',
                             print_time=False,
                             display=True)
-
-      
-        #TODO you should apparently check for pupil mis-match too
-        #TODO you should also calibrate misregistration
-        #TODO don't forget to redo your PSDs with a different nperseg
-        #TODO you should check whether your pupil masks are properly applied innit
-        #TODO still not clear to me why you would manually crop the pupil? you already have a pupil mask (I guess in a general case)
-        #TODO there is a thing with the optical gains camera (check it out when you have time)
-        #TODO you still haven't implemented the cameras innit
-        #TODO you still need to normalise all of your DM in nms, thus, extracting the rms in nm
-        #TODO a question for Mathieu is why does he do the OPD cropping? remind him to average 1st stage signal
-        #TODO to set the wfs noise, you set the camera (detector class) and enable noise
-        #TODO calculate GRAM matrix and see what you get?
-        #TODO you can do an interaction matrix comparison between the synthetic one and the real one
-        self.valid_pixel_binned, self.int_mat_binned = self.Papytwin.bin_bench_data(valid_pixel = self.valid_pixels, full_int_mat = self.calib_1st, ratio = self.param['ratio'])
-
-
-        #Do this later
-        '''var_im = np.var(self.calib_1st,axis=1).reshape(240,240)
-        var_im/=var_im.max()
-        var_im = var_im>0.005
-
-        # in case there is a mis-match set the key-word "correct" to True
-        correct = False
-        self.Papytwin.check_pwfs_pupils(valid_pixel_map = var_im, correct=correct)
-
-
-        # Slow if index_modes is long
-        index_modes = np.arange(10,150,50)
-        calibrate_mis_registration = False
-        if calibrate_mis_registration:
-            Papytwin.calibrate_mis_registration(M2C = M2C,
-                                input_im = self.int_mat_binned,
-                                index_modes = index_modes)'''
-
-        #self.calib_1st = CalibrationVault(self.im_1st[:, :self.modes_1st])
+        self.pwfs.cam.sensor = "EMCCD"
+        # self.calib_1st = CalibrationVault(self.im_1st[:, :self.modes_1st])
         self.calib_1st_M = self.calib_1st.M
         self.reconstructor_1st = self.M2C_1st_CL @ self.calib_1st_M
 
@@ -190,7 +148,7 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
         from Frame_Preprocess import Frame_Preprocess
 
         self.cnn = Papyrus2ndStage().to(device = self.device)
-        checkpoint_path = 'PAPYRIIS_2stage_CNN_RL/OziNewDM2.pth'
+        checkpoint_path = 'PAPYRIIS_2stage_CNN_RL/OziNewDMOnSky.pth'
         checkpoint = torch.load(checkpoint_path, map_location=torch.device(self.device))
         self.cnn.load_state_dict(checkpoint['PhaseEstimator_state_dict'])
 
@@ -208,13 +166,13 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
         self.frame_preprocessor.ProcessReference(self.vzwfs.signal_2D_cam_padded/np.sum(self.vzwfs.signal_2D_cam_padded))
 
 
-        self.M2C_2nd = np.load('PAPYRIIS_2stage_CNN_RL/M2C_KL.npy')
+        self.M2C_2nd = np.load('PAPYRIIS_2stage_CNN_RL/M2C_KL.npy') #obtained from Francisco
         self.M2C_ = self.M2C_2nd
         KL_basis_dm_2nd = (self.dm_2nd.modes @ self.M2C_2nd) * np.tile(self.tel_2nd.pupil.flatten()[:, None], self.M2C_2nd.shape[1])
         self.projector_kl_2nd = np.linalg.pinv(KL_basis_dm_2nd) 
 
         #---------------------------------------------------INITIALIZATION---------------------------------------------------#
-        #TODO do I need a science camera? also where do I find psf sampling?
+
         #science camera would add noise (better way to calculate the strehl?)
         self.atm_2nd.initializeAtmosphere(telescope = self.tel_2nd)
         self.atm_2nd.generateNewPhaseScreen(seed = self.seed)
@@ -313,10 +271,9 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
         self.dm_2nd.coefs = self.SECOND_LEAK * self.dm_2nd_copy - self.vzwfs_delayed_signal[self.mask].detach().cpu().numpy()
         self.dm_2nd_copy = self.dm_2nd.coefs.copy()
 
-        #TODO all of the propagations might need the wfs camera too innit
-        #self.src_2nd ** self.atm_2nd * self.tel_2nd * self.dm_2nd * self.vzwfs
-        self.src_2nd ** self.atm_2nd * self.tel_2nd * self.vzwfs
 
+        self.src_2nd ** self.atm_2nd * self.tel_2nd * self.dm_2nd * self.vzwfs
+        #self.src_2nd ** self.atm_2nd * self.tel_2nd * self.vzwfs
 
 
         cnn_input = self.frame_preprocessor.ProcessFrame(self.vzwfs.signal_2D_cam_padded/np.sum(self.vzwfs.signal_2D_cam_padded))
@@ -379,31 +336,42 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
 
 
     def run_first_stage_loop(
-        self, nLoop, atm_OPD_1st, gainCL = 0.7, leak = 0.995, photon_noise = False
+        self, nLoop, atm_OPD_1st, gainCL = 0.4, leak = 0.995, photon_noise = False
     ):
-        #TODO move initialisation here
+        self.Papytwin.set_pupil(
+            calibration = True)       
+        #     sky_offset = list(self.FIRST_SKY_OFFSET), 
+        # )
         self.atm_1st.initializeAtmosphere(telescope = self.tel_1st)
         self.atm_1st.generateNewPhaseScreen(seed = self.seed)
         self.ngs_1st.reset()
         self.dm_1st.coefs = 0
         self.PWFS_signal_avg = 0
         self.PWFS_signal_avg_norm = 0
-        self.pwfs.cam.gain = self.OCAM_param["gain"]
-        self.pwfs.cam.photonNoise = self.OCAM_param["photonNoise"]
-        self.pwfs.cam.readoutNoise = self.OCAM_param["readoutNoise"]
-        self.pwfs.cam.darkCurrent = self.OCAM_param["darkCurrent"]
+        self.pwfs.cam  = self.Papytwin.OCAM
+        
 
         self.ngs_1st ** self.atm_1st * self.tel_1st * self.dm_1st * self.pwfs
 
+
         dm_commands = np.zeros((nLoop, self.dm_1st.nValidAct))
-        reconstructed_cmd = np.zeros((nLoop, self.dm_1st.nValidAct))
+        reconstructed_cmd = np.zeros((int(nLoop/2), self.dm_1st.nValidAct))
         src_opds = np.zeros((nLoop, self.tel_1st.pupil.shape[0], self.tel_1st.pupil.shape[1]))
         self.pwfssignal_buffer  = [np.zeros(self.pwfs.nSignal)] #2frame delay pwfs
+        strehlers = np.zeros(100)
+
+        #TODO papyrus ngs is R, src is src =   Source('IR1310', 0)
+        #TODO > 1.55 - 1.7 µm goes to 2nd stage wavefront sensing
+        #TODO so we are closing the loop on the ngs and src is I guess if I plan to attach a science camera?
+        #TODO setting for the 2nd stage self.src = Source(optBand='H', magnitude=-2.5)
+            # self.src.wavelength = 1.6e-06
+            # self.src.bandwidth = 2e-07
+        #TODO for now I haven't changed the wavelengths because for OPD it does not matter
+        #TODO if you add cameras later then it will matter (I don't think Mathieu had any cameras?)
 
         for i in range(nLoop):
             self.atm_1st.update(atm_OPD_1st[i])
             
-
             self.PWFS_signal_avg += (self.pwfs.signal_2D + self.pwfs.referenceSignal_2D) * self.pwfs.norma #fullFrameMaps
             self.PWFS_signal_avg_norm += self.pwfs.norma
 
@@ -416,24 +384,27 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
                 self.pwfssignal_buffer.append(self.PWFS_signal_avg)
                 pwfs_delayed_signal = self.pwfssignal_buffer[0]
                 self.pwfssignal_buffer.pop(0)
-                reconstructed_cmd[i] = np.matmul(self.reconstructor_1st, pwfs_delayed_signal)
-                self.dm_1st.coefs = leak * self.dm_1st.coefs - (gainCL * reconstructed_cmd[i])
+                reconstructed_cmd[int((i-1)/2)] = np.matmul(self.reconstructor_1st, pwfs_delayed_signal)
+                self.dm_1st.coefs = leak * self.dm_1st.coefs - (gainCL * reconstructed_cmd[int((i-1)/2)])
 
 
                 self.PWFS_signal_avg = 0
                 self.PWFS_signal_avg_norm = 0
 
 
-            self.ngs_1st ** self.atm_1st * self.tel_1st * self.dm_1st * self.pwfs
+            self.ngs_1st ** self.atm_1st * self.tel_1st * self.dm_1st * self.slow_tt * self.pwfs
             strehl_1st = np.exp(-np.var(self.tel_1st.src.phase[np.where(self.tel_1st.pupil == 1)]))
-
+            strehlers[i%100] = strehl_1st
 
 
             dm_commands[i]  = self.dm_1st.coefs.copy()
             src_opds[i]  = self.ngs_1st.OPD_no_pupil.copy()
             
+            if i % 100 == 99:
+                print(f'First stage strehl ratio: {np.mean(strehlers)}, iteration {i}')
 
-            print(f'First stage strehl ratio: {strehl_1st}')
+
+
         
 
         residuals_opd_1st = self.project_opd_between_pupils(src_opds, input_pupil = self.tel_1st.pupil,
