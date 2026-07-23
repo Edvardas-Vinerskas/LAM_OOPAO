@@ -140,6 +140,8 @@ class ZWFS:
         # WFS detector object (see Detector class)
         self.cam = Detector(nRes            = 90,
                             sensor          = "CCD",
+                            bits            = None,
+                            FWC             = None,
                             integrationTime = 1/400,
                             QE              = 0.8,
                             darkCurrent     = 334,
