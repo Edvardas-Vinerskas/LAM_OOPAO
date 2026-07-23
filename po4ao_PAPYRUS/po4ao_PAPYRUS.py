@@ -131,8 +131,6 @@ def train_dynamics(dynamics: EnsembleDynamicsFast, optimizer: SharedAdam, replay
     """
 
     dynamics.train()
-
-
     for i in range(dyn_iters):
         optimizer.zero_grad()
 

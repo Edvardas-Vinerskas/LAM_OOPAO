@@ -7,12 +7,12 @@ Created on Thu May 16 16:11:13 2024
 
 OCAM_param = {
     'resolution'   : 240,     # [px]
-    'quantization' : None,      # [bit]
+    'quantization' : 16,      # [bit]
     'FWC'          : 270000,  # [e-]
-    'sensor'       : 'CCD',
+    'sensor'       : 'EMCCD',
     'QE'           : 0.92,      
     'darkCurrent'  : 20,      # [e-/px/s]
-    'readoutNoise' : 1,     # [e-/px]
+    'readoutNoise' : 180,     # [e-/px]
     'photonNoise'  : True,
     'gain'         : 1
     }

@@ -78,10 +78,8 @@ def compute_papyrus_model(param,loc,source,IFreal=False):
     from OOPAO.Source import Source
     # create the Source object
 
-    #ngs=Source(optBand   = param['opticalBandCalib'],\
-    #           magnitude = param['magnitude'])
-    ngs=Source(optBand   = 'H',\
-               magnitude = -2)
+    ngs=Source(optBand   = param['opticalBandCalib'],\
+              magnitude = param['magnitude'])
     ngs.wavelength = 1.6e-06
     
     # combine the NGS to the telescope using '*' operator:
@@ -190,5 +188,5 @@ def compute_papyrus_model(param,loc,source,IFreal=False):
                     darkCurrent     = OCAM_param['darkCurrent'],
                     readoutNoise    = OCAM_param['readoutNoise'],
                     photonNoise     = OCAM_param['photonNoise'])
-    OCAM.output_precision = np.uint16
+    wfs.cam = perfect_OCAM
     return tel,ngs,dm,wfs,atm,slow_tt, perfect_OCAM,OCAM

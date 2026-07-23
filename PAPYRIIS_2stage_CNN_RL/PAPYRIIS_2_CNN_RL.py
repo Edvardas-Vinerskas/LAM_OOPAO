@@ -31,7 +31,7 @@ from PAPYRIIS_2stage_CNN_RL.po4ao_util_PAPYRUS import EfficientExperienceReplay,
 
 
 
-#TODO calculate the theoretical errors innit
+#TODO calculate the theoretical errors innit (for the noise, i.e. should be a few percent of the max stroke)
 sample_shape = 97 #pass it as variable
 
 #TODO you will need to do no scaling or different scaling here
@@ -69,7 +69,7 @@ device1              = device
 
 
 
-#why the sign function? not necessary, can just do gaussian
+
 @torch.no_grad()
 def sample_noise(sigma, flt, xvalid, yvalid):
     action_vec = torch.matmul(flt, sigma * torch.sign(torch.randn((sample_shape,)).to(device0)))
@@ -357,7 +357,7 @@ def run_episode_policy(past_obs, past_act, obs, replay, policy, sigma, episode_l
 
         obs = next_obs
 
-    #TODO make this prettier or some shit
+
     #TODO later you might want to include at least some vzwfs frames for SNR calculations
     INFO_list = {
             "2nd_stage_strehl": scnd_stage_strehl,
@@ -438,23 +438,26 @@ def loss_fn(state,action):
 def main():
     env = OOPAO_environment_PAPYRIIS()
 
-    directory_name = f'PAPYRIIS_arcturus_noise_r0_0.025'#{timestamp}
-    savedir = f'PAPYRIIS_2stage_CNN_RL/~2026-06-01/{directory_name}'
-    loaddir = f'PAPYRIIS_2stage_CNN_RL/~2026-06-01/saved'   # copy the models and replay buffers you want use here!!
+    directory_name = f'PAPYRIIS_arcturus_noise_quantisation_pwfs_calibration_pupil_EMCCD'#{timestamp}
+    savedir = f'PAPYRIIS_2stage_CNN_RL/~2026-06-23/{directory_name}'
+    loaddir = f'PAPYRIIS_2stage_CNN_RL/~2026-06-23/saved'   # copy the models and replay buffers you want use here!!
 
     if not os.path.exists(savedir):
         os.makedirs(savedir)
     if not os.path.exists(loaddir):
         os.makedirs(loaddir)
 
-    
-    atm_OPD_1st = np.load(f"PAPYRIIS_2stage_CNN_RL/projected_atm_1st_stage/atm_OPDs_1st_r0_{env.atm_2nd.r0:.3f}_V0_{env.atm_2nd.V0:.3f}.npz")
+    #TODO you can run everything from this file!
+    #TODO calibrate with CCD and control with EMCCD?
+    #TODO for comparison use v10 maybe?
+    atm_OPD_1st = np.load(f"PAPYRIIS_2stage_CNN_RL/projected_atm_1st_stage/atm_OPDs_1st_r0_{env.atm_2nd.r0:.3f}_V0_{env.atm_2nd.V0:.3f}_L0_{env.atm_2nd.L0:.3f}_tboil_{env.atm_2nd.t_boiling[0]:.3f}_multi_layer.npz")
     atm_OPD_1st = atm_OPD_1st["atm_OPDs_1st"]
-    print(f"atm loaded: {env.atm_2nd.r0:.3f}, {env.atm_2nd.V0:.3f}")
+    print(f"PAPYRIIS_2stage_CNN_RL/projected_atm_1st_stage/atm_OPDs_1st_r0_{env.atm_2nd.r0:.3f}_V0_{env.atm_2nd.V0:.3f}_L0_{env.atm_2nd.L0:.3f}_tboil_{env.atm_2nd.t_boiling[0]:.3f}_multi_layer.npz")
     
-
-    first_stage_results = env.run_first_stage_loop(128000, atm_OPD_1st)
-    np.savez(f"{savedir}/results_1st_stage_r0_{env.atm_2nd.r0:.3f}_V0_{env.atm_2nd.V0:.3f}.npz", **{
+    
+    a = time.perf_counter()
+    first_stage_results = env.run_first_stage_loop(90000, atm_OPD_1st)
+    np.savez(f"{savedir}/results_1st_stage_r0_{env.atm_2nd.r0:.3f}_V0_{env.atm_2nd.V0:.3f}_L0_{env.atm_2nd.L0:.3f}_tboil_{env.atm_2nd.t_boiling[0]:.3f}_multi_layer.npz", **{
         k: v for k, v in first_stage_results.items() 
         if k != "config"
     },
@@ -465,14 +468,17 @@ def main():
         frame_delay=first_stage_results["config"].frame_delay,
         photon_noise=first_stage_results["config"].photon_noise,
     )
+    
 
-    #----------------------------------------------------1st stage residual entering to 2nd#----------------------------------------------------
+    #----------------------------------------------------1st stage residual entering to 2nd (PO4AO)#----------------------------------------------------
 
     #PAPYRIIS_2stage_CNN_RL\~2026-06-01\PAPYRIIS_arcturus_nonoise\results_2nd_stage.npz
-    loaddir_test = "PAPYRIIS_2stage_CNN_RL/~2026-06-01/PAPYRIIS_arcturus_nonoise"
+    # loaddir_test = "PAPYRIIS_2stage_CNN_RL/~2026-06-23/PAPYRIIS_arcturus_noise_centralobs_quantisation_pwfs"
     loaddir_test = savedir
-    first_stage_results = np.load(f"{loaddir_test}/results_1st_stage_r0_{env.atm_2nd.r0:.3f}_V0_{env.atm_2nd.V0:.3f}.npz")
-    residuals_opds_1rst = first_stage_results['residuals_opds_1rst']    
+    print(f"{loaddir_test}/results_1st_stage_r0_{env.atm_2nd.r0:.3f}_V0_{env.atm_2nd.V0:.3f}_L0_{env.atm_2nd.L0:.3f}_tboil_{env.atm_2nd.t_boiling[0]:.3f}_multi_layer.npz")
+
+    first_stage_results = np.load(f"{loaddir_test}/results_1st_stage_r0_{env.atm_2nd.r0:.3f}_V0_{env.atm_2nd.V0:.3f}_L0_{env.atm_2nd.L0:.3f}_tboil_{env.atm_2nd.t_boiling[0]:.3f}_multi_layer.npz")
+    residuals_opds_1rst = first_stage_results['residuals_opds_1rst']
 
     #RL start
 
@@ -606,6 +612,7 @@ def main():
         start_time = time.time()
 
         # -----------------------------------dynamics train-----------------------------------#
+        print("start_training")
         dyn_loss, dynamics_loss = train_dynamics(dynamics, dynamics_optimizer1, replay_warmup, replay_warmup,
                                   dyn_iters=config['training']['dynamics_grad_steps_warmup'])
         #todo check synchronisation
@@ -747,7 +754,7 @@ def main():
     time_plot = np.arange(0, iters * episode_length / frequency, 1/frequency)
 
 
-    #TODO fix parameter saving for gain, leak, frame delay, camera noise
+
     np.savez(f"{savedir}/results_2nd_stage.npz",
     # Concatenated across iterations
     all_2nd_stage_strehl    = all_2nd_stage_strehl,
@@ -759,7 +766,7 @@ def main():
     frequency               = frequency,
     time_array              = time_plot,
     )
-    #TODO better naming convention
+
 
 
     #everythin I need is saved here?
@@ -771,7 +778,9 @@ def main():
     torch.save(policy.state_dict(), os.path.join(savedir, f"policy_final.pt"))
 
     print("data saved!")
-
+    
+    b = time.perf_counter()
+    print(b-a)
     plt.show()
 
 

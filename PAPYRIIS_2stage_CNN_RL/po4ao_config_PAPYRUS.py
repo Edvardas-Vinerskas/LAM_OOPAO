@@ -1,6 +1,6 @@
 config = {
     'RL': {
-        'iterations':  100,
+        'iterations':  60,
         'episode_length': 800,
         'warmup_episodes':  50,
         'max_sigma':  0.4, #should be around 1% of max stroke (when in CL, i.e. for papyrus max was around 0.3)? change up if no worky

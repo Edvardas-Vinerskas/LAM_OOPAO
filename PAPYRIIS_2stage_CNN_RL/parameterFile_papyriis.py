@@ -21,25 +21,27 @@ def initializeParameterFile():
 
     
     ###%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% ATMOSPHERE PROPERTIES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    
-    """    param['r0'                   ] = 0.05                                     # value of r0 in the visibile in [m]
+
+    param['r0'                   ] = 0.05                                     # value of r0 in the visibile in [m]
     param['L0'                   ] = 30                                             # value of L0 in the visibile in [m]
     param['fractionnalR0'        ] = np.array([0.45,0.1,0.1,0.25,0.1]).astype(np.float64)
-    param['V0'                   ] = 1.8                       # Cn2 profile
+    #param['V0'                   ] = 1.8                       # Cn2 profile
     #7, 5, 10, 12, 3
-    param['windSpeed'            ] = np.array([4, 3, 5, 5, 2]).astype(np.float64)#* param['V0'        ]/6.15                   # wind speed of the different layers in [m.s-1]
+    param['windSpeed'            ] = np.array([4, 2, 5, 5, 2]).astype(np.float64)#* param['V0'        ]/6.15                   # wind speed of the different layers in [m.s-1]
     param['windDirection'        ] = np.array([0,72,144,216,288]).astype(np.float64)                          # wind direction of the different layers in [degrees]
     param['altitude'             ] = np.array([0, 1000,5000,10000,12000]).astype(np.float64)             # altitude of the different layers in [m]
-    """
+    param['t_boiling'            ] = np.array([5, 5, 5, 5, 5]).astype(np.float64)
 
+    """
     param['r0'                   ] = 0.05                             
-    param['L0'                   ] = 0.1                                    
+    param['L0'                   ] = 30                                    
     param['fractionnalR0'        ] = np.array([1]).astype(np.float64)
     #7, 5, 10, 12, 3
-    param['windSpeed'            ] = np.array([20]).astype(np.float64)
+    param['windSpeed'            ] = np.array([3.8]).astype(np.float64)
     param['windDirection'        ] = np.array([0]).astype(np.float64)                       
-    param['altitude'             ] = np.array([0]).astype(np.float64)          
-               
+    param['altitude'             ] = np.array([0]).astype(np.float64)
+    param['t_boiling'            ] = np.array([2]).astype(np.float64)          
+    """
     # =============================================================================
     #     PAPYRUS
     # =============================================================================
@@ -59,9 +61,9 @@ def initializeParameterFile():
     
     ###%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% NGS PROPERTIES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-    param['magnitude'            ] = -1.03                                          # magnitude of the guide star
+    param['magnitude'            ] = -2.81                                          # magnitude of the guide star
     param['opticalBand'          ] = 'K'                                            # optical band of the guide star
-    param['opticalBandCalib'     ] = 'R'                                            # optical band of calibration laser
+    param['opticalBandCalib'     ] = 'H'                                            # optical band of calibration laser
     
     
     ###%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% DM PROPERTIES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -112,7 +114,7 @@ def initializeParameterFile():
     
     ###%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% M1 PROPERTIES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     param['resolution_2nd'           ] = 90 # resolution of the telescope on calibration
-    param['resolution_2nd_sky'           ] = 80 # resolution of the telescope on calibration
+    param['resolution_2nd_sky'           ] = 80 # resolution of the telescope on sky
     param['pad_sky'           ] = ((6,4),(3,7)) # resolution of the telescope on calibration
     param['sizeSubaperture_2nd'      ] = param['diameter']/param['resolution']      # size of a sub-aperture projected in the M1 space
     param['samplingTime_2nd'         ] = 1/400                                                                        # loop sampling time in [s]
@@ -120,8 +122,8 @@ def initializeParameterFile():
     
     ###%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% NGS PROPERTIES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     
-    param['magnitude_2nd'            ] = -0.04                                          # magnitude of the guide star
-    param['opticalBand_2nd'          ] = 'H'                                            # optical band of the guide star
+    param['magnitude_2nd'            ] = -2.81                                          # magnitude of the guide star
+    param['opticalBand_2nd'          ] = 'K'                                            # optical band of the guide star
     param['opticalBandCalib_2nd'     ] = 'H'                                            # optical band of calibration laser
     
     
