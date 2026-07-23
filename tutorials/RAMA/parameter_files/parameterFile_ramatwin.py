@@ -4,12 +4,14 @@ Created on Tue Sep 17 16:12:28 2024
 
 @author: cheritier
 """
-from OOPAO.tools.tools import createFolder
+from OOPAO.tools.tools import createFolder, warning
 
 def initializeParameterFile():
     # initialize the dictionaries
     param = dict()
-    
+    # location of the calibration data
+    param['path_data'] = 'C:/Users/cheritier/Documents/RAMA/'        
+    warning('Make sure that you downloaded the RAMA data here: https://nuage.osupytheas.fr/s/YRbHrHSQA9ZSiQP')
     ###%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% ATMOSPHERE PROPERTIES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     param['r0'                   ] = 0.1                                            # value of r0 in the visibile in [m]
     param['L0'                   ] = 30                                             # value of L0 in the visibile in [m]
@@ -20,9 +22,9 @@ def initializeParameterFile():
                               
     ###%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% M1 PROPERTIES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     
-    param['nSubaperture'         ] = 48                                                                                 # number of PWFS subaperture along the telescope diameter
-    param['nExtraSubaperture'    ] = 6                                                                                  # extra subaperture on the edges
-    param['diameter'             ] = 1.82                                                                               # diameter in [m]
+    param['nSubaperture'         ] = 36                                                                                 # number of PWFS subaperture along the telescope diameter
+    param['nExtraSubaperture'    ] = 0                                                                                  # extra subaperture on the edges
+    param['diameter'             ] = 0.6                                                                               # diameter in [m]
     param['ratio'                ] = 1                                                                                  # ratio factor for binned case
     param['nPixelPerSubap'       ] = 2                                                                                  # sampling of the PWFS subapertures in pix
     param['resolution'           ] = param['nSubaperture']*param['nPixelPerSubap']                                    # resolution of the telescope driven by the PWFS
@@ -39,49 +41,40 @@ def initializeParameterFile():
     
     
     ###%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% DM PROPERTIES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    param['nActuator'            ] = 24                                          # number of actuators 
+    param['nActuator'            ] = 11                                          # number of actuators 
     param['mechanicalCoupling'   ] = 0.36                                        # Mechanical coupling of the DM influence functions
     param['dm_coordinates'       ] = None                                        # tag for the deformable mirror class
-    param['dm_inf_funct_factor'  ] = 1                                           # factor to account for the influence functions deformation in DM units
-    param['dm_inf_funct_location'] =  'C:/Users/cheritier/Documents/oopao_private/ekarus/EKARUS_DM468/' # files available here: https://drive.google.com/drive/folders/1hbWyCq_AX1r32JB4jyVfZ-Ss3bVuRInE
-    param['dm_pitch'             ] = 1.5e-3 *param['diameter']/33e-3                                         # factor to account for the influence functions deformation in DM units
-
+    param['dm_inf_funct_factor'  ] = -1                                           # factor to account for the influence functions deformation in DM units
+    param['dm_inf_funct_location'] =  param['path_data'] +'IF_97.npy' # files available here: https://drive.google.com/drive/folders/1hbWyCq_AX1r32JB4jyVfZ-Ss3bVuRInE
+    param['dm_pitch'             ] = 1.5e-3 *param['diameter']/13.5e-3                                         # factor to account for the influence functions deformation in DM units
+    param['dm_flip_lr'           ] = False
+    param['dm_flip_ud'           ] = True
     # mis-registrations                                                             
     param['rotationAngle'        ] = 0                                           # rotation angle of the DM in [degrees]    
     param['shiftX'               ] = 0                                           # shift X of the DM in pixel size units ( tel.D/tel.resolution ) 
-    param['shiftY'               ] = - param['diameter']/param['nActuator']/2    # shift Y of the DM in pixel size units ( tel.D/tel.resolution )
+    param['shiftY'               ] = - param['dm_pitch']/3  # shift Y of the DM in pixel size units ( tel.D/tel.resolution )
     param['anamorphosisAngle'    ] = 0                                           # anamorphosis angle of the DM in [degrees]
-    param['tangentialScaling'    ] = 0.05                                        # tangential scaling in percentage of diameter
-    param['radialScaling'        ] = 0.05                                        # radial scaling in percentage of diameter
+    param['tangentialScaling'    ] = 0.12                                        # tangential scaling in percentage of diameter
+    param['radialScaling'        ] = 0.12                                        # radial scaling in percentage of diameter
 
     ###%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% WFS PROPERTIES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    
-    param['modulation'            ] = 3                                             # modulation radius in ratio of wavelength over telescope diameter
-    param['n_pix_separation'      ] = 0                                             # separation between the PWFS pupils in pix
-    param['n_pix_edge'            ] = 0                                             # separation between the PWFS pupils in pix
+    param['size_quadrant_ramatwin'] = 60
+    param['modulation'            ] = 0                                             # modulation radius in ratio of wavelength over telescope diameter
+    param['n_pix_separation'      ] = 16                                             # separation between the PWFS pupils in pix
+    param['n_pix_edge'            ] = param['size_quadrant_ramatwin']-param['n_pix_separation']//2 -   param['nSubaperture'] - param['nExtraSubaperture']                                            # separation between the PWFS pupils in pix
     param['psfCentering'          ] = False                                         # centering of the FFT and of the PWFS mask on the 4 central pixels
-    param['lightThreshold'        ] = 0.3                                           # light threshold to select the valid pixels
+    param['lightThreshold'        ] = 0.1                                           # light threshold to select the valid pixels
     param['postProcessing'        ] = 'fullFrame_sum_flux'                          # post-processing of the PWFS signals 'slopesMaps' ou 'fullFrame'
     param['pwfs_pupils_shift_x'   ] = [0]*4                                         # shift X of the PWFS pupils on the detector
     param['pwfs_pupils_shift_y'   ] = [0]*4                                         # shift Y of the PWFS pupils on the detector
-    param['pwfs_rooftop'          ] = 0                                             # size of the PWFS "rooftop" in lambda/D
+    param['pwfs_rooftop'          ] = 1                                             # size of the PWFS "rooftop" in lambda/D
 
     ###%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% OUTPUT DATA %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
     # name of the system
-    param['name'] = 'EKARUS_' +  param['opticalBand'] +'_band_'+ str(param['nSubaperture'])+'x'+ str(param['nSubaperture'])  
-    
-    # location of the calibration data
-    param['pathInput'            ] = 'data_calibration/' 
-    
-    # location of the output data
-    param['pathOutput'            ] = 'data_cl/'
-    
+    param['name'] = 'RAMA_' +  param['opticalBand'] +'_band_'+ str(param['nSubaperture'])+'x'+ str(param['nSubaperture'])  
 
-    print('Reading/Writting calibration data from ' + param['pathInput'])
-    print('Writting output data in ' + param['pathOutput'])
-
-    createFolder(param['pathOutput'])
+    print('Reading/Writting calibration data from ' + param['path_data'])
     
     return param
 

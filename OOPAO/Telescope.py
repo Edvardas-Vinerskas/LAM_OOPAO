@@ -212,7 +212,7 @@ class Telescope:
                 src.OPD = (src.OPD_no_pupil)*src.mask
             else:
                 src.OPD_no_pupil = np.zeros(self.pupil.shape)
-            if getattr(src, 'scintillation', None) is None:
+            if src.scintillation is None:
                 src.scintillation_no_pupil = np.ones(self.pupil.shape)
                 src.scintillation = (src.scintillation_no_pupil)*src.mask
             elif np.ndim(src.scintillation) == 2:
@@ -306,12 +306,12 @@ class Telescope:
                 raise OopaoError('The asterism contains sources with different wavelengths. Summing up PSFs with different wavelength is not implemented.')
             # check if the source interacted with a spatial filter
             if input_source[i_src].phase_filtered is None:
-                amp_mask = xp.sqrt(input_source[i_src].fluxMap)
+                amp_mask = xp.sqrt(input_source[i_src].intensity)
                 phase = input_source[i_src].phase
             else:
                 amp_mask = input_source[i_src].amplitude_filtered
                 phase = input_source[i_src].phase_filtered
-            amp_mask = amp_mask * xp.sqrt(input_source[i_src].scintillation)
+            # amp_mask = amp_mask * xp.sqrt(input_source[i_src].scintillation)
             # amplitude of the EM field:
             amp = amp_mask*self.pupil*self.pupilReflectivity
             # add a Tip/Tilt for off-axis sources
@@ -458,7 +458,7 @@ class Telescope:
             self.set_pupil()
         return
 
-    def pad(self, padding_values=0, sky_offset=[0, 0]):
+    def pad(self, padding_values=0, sky_offset=None):
         """
         This functions allows to pad the pupil of padding_values pixels on both sides.
         The Telescope properties associated to it are automatically updated.
@@ -470,11 +470,14 @@ class Telescope:
         """
         pupil_padded = np.pad(self.initial_pupil, [padding_values, padding_values])*0
         n_extra_pix = padding_values
-        if max(sky_offset) < n_extra_pix:
-            pupil_padded[n_extra_pix-sky_offset[0]:-n_extra_pix-sky_offset[0],
-                         n_extra_pix-sky_offset[1]:-n_extra_pix-sky_offset[1]] = self.initial_pupil
+        if sky_offset is not None:
+            if max(sky_offset) < n_extra_pix:
+                pupil_padded[n_extra_pix-sky_offset[0]:-n_extra_pix-sky_offset[0],
+                             n_extra_pix-sky_offset[1]:-n_extra_pix-sky_offset[1]] = self.initial_pupil
+            else:
+                raise OopaoError('The sky_offsets are too large for the considered pupil')
         else:
-            raise OopaoError('The sky_offsets are too large for the considered pupil')
+            pupil_padded[n_extra_pix:-n_extra_pix, n_extra_pix:-n_extra_pix] = self.initial_pupil
         self.resolution = pupil_padded.shape[0]
         self.D = self.resolution * self.pixelSize
         self.pupil = pupil_padded.copy()

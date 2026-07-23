@@ -16,9 +16,9 @@ OOPAO is a Python end-to-end Adaptive Optics (AO) simulation framework inspired 
    wfs = Pyramid(20, tel, modulation=3, lightRatio=0.5)
 
    for i in range(nLoop):
-       atm.update()
-       ngs ** atm * tel * dm * wfs
-       dm.coefs -= gain * M2C @ wfs.signal
+       atm.update() # update the atmosphere phase screens
+       ngs ** atm * tel * dm * wfs # propagate the light through all the elements
+       dm.coefs -= gain * M2C @ reconstructor @ wfs.signal # integrator control law
 
 .. toctree::
    :maxdepth: 2
@@ -29,6 +29,8 @@ OOPAO is a Python end-to-end Adaptive Optics (AO) simulation framework inspired 
    atmosphere
    deformable_mirror
    asterism
+   detector
+   influence_functions
 
 .. toctree::
    :maxdepth: 2

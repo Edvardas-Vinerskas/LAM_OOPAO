@@ -2,84 +2,121 @@
 """
 Created on Tue Mar 07 10:40:42 2023
 
-Accurate version of PAPYRUS AO System used for reproducing the real system in details.
-- 17/06/2025: Update after change of the WFS camera.
-- 23/06/2025: Update to prepare the integration with DAO
-- 17/09/2026: Update of the PAPYRUS file to match EKARUS config
-@author: cheritie - astriffl
+Accurate version of RAMA AO System used for reproducing the real system in details.
+- 03/07/2026: First version of the numerical twin
+
+@author: cheritier
 """
 import time
 import matplotlib.pyplot as plt
 import numpy as np
-from OOPAO.calibration.CalibrationVault import CalibrationVault
-from OOPAO.calibration.InteractionMatrix import InteractionMatrix
-from OOPAO.tools.displayTools import cl_plot, displayMap
-from Ekarus import Ekarus
-
+from Rama import Rama
+from OOPAO.tools.displayTools import displayMap, cl_plot
 #%% Compute the OOPAO Objects
 
-Ekatwin = Ekarus()
+Ramatwin = Rama()
 # telescope object
-tel     = Ekatwin.tel
+tel     = Ramatwin.tel
 # source object VIS
-ngs     = Ekatwin.ngs
+ngs     = Ramatwin.ngs
 # source object IR
-src     = Ekatwin.src
+src     = Ramatwin.src
 # deformable mirror object
-dm      = Ekatwin.dm
+dm      = Ramatwin.dm
 # Pyramid WFS object
-wfs     = Ekatwin.wfs
+wfs     = Ramatwin.wfs
 # atmosphere object
-atm     = Ekatwin.atm
-# Tip/Tilt mirror object
-tt      = Ekatwin.tt
+atm     = Ramatwin.atm
 # parameter file
-param   = Ekatwin.param
+param   = Ramatwin.param
 
 dm.display_dm()
 
 
 
-#%% apply a shift of the EM field
+#%% load data from the bench
+
+# get access to the data 
+from astropy.io import fits
+from OOPAO.tools.tools import OopaoError
+
+# data available : https://nuage.osupytheas.fr/s/YRbHrHSQA9ZSiQP
+
+# interaction matrix from the bench
+IM_rama_full = fits.getdata(param['path_data']+'IMFull.fits')
+# valid pixels used for the reconstruction
+valid_pix_full = np.load(param['path_data']+'valid_pixel.npy').astype(bool)
+# valid pixels used by DAO (larger)
+valid_pix_dao_full = np.load(param['path_data']+'valid_pixel_dao.npy').astype(bool)
 
 
-from OOPAO.FieldTransformer import FieldTransformer
-pupil_shift = FieldTransformer(shift_x=[1], # shift X in pixel
-                               shift_y=[0], # shift Y in pixel
-                               src = ngs)
-
-# case with no pupil shift
-ngs**tel*dm*wfs
-plt.figure(),plt.imshow(wfs.cam.frame)
-
-# case with no pupil shift on both DM and WFS 
-ngs**tel*pupil_shift*dm*wfs
-plt.figure(),plt.imshow(wfs.cam.frame)
-# case with no pupil shift only on WFS 
-ngs**tel*dm*pupil_shift*wfs
-plt.figure(),plt.imshow(wfs.cam.frame)
+sub_valid_pixel = valid_pix_dao_full[valid_pix_full]
+# mode 2 command matrix
+M2C = np.load(param['path_data']+'M2C.npy')
 
 
+#%% reduce the size of the valid pixel
+from rama_tools import compress_rama_data, compute_rama_frame
 
-
-#%% Function to swith to on-sky pupil (possibility to add an offset for the position of the pupil)
-Ekatwin.set_pupil(calibration=True,
-                   sky_offset=[0,0])
-
-ngs*tel*wfs
+valid_pix = compress_rama_data(valid_pix_full, n_pix= param['size_quadrant_ramatwin'])
+valid_pix_dao = compress_rama_data(valid_pix_dao_full, n_pix= param['size_quadrant_ramatwin'])
 
 plt.figure()
-plt.imshow(tel.pupil)
-plt.figure()
-plt.imshow(wfs.cam.frame)
+plt.subplot(1,3,1)
+plt.imshow(valid_pix_dao)
+plt.subplot(1,3,2)
+plt.imshow(valid_pix)
+plt.subplot(1,3,3)
+plt.imshow(valid_pix_dao_full.astype(float) - valid_pix_full.astype(float))
 
-# set back to calibration pupil
-# Ekatwin.set_pupil(calibration=True)
-# ngs*tel*wfs
-# plt.figure()
-# plt.imshow(tel.pupil)
-# plt.figure()
-# plt.imshow(wfs.cam.frame)
+
+#%% optimize PWFS pupil position based on the valid pixels provided by DAO
+    
+Ramatwin.check_pwfs_pupils(valid_pixel_map = valid_pix,correct=True)
+
+
+
+#%% better alternative, do it based on the variance map of the iMat
+
+# compute the equivalent rama frame
+imat_variance_map = compute_rama_frame(signal=np.var(IM_rama_full,axis=1),valid_signal = valid_pix_dao)
+
+# threshold it
+imat_variance_map = imat_variance_map>0.005*imat_variance_map.max()
+
+plt.figure()
+plt.imshow(imat_variance_map)
+
+#% optimize PWFS pupil position based on the valid pixels provided by DAO
+
+Ramatwin.check_pwfs_pupils(valid_pixel_map = imat_variance_map,correct=True)
+
+
+#%% illustrate a few modes
+
+plt.close('all')
+ngs**tel*wfs
+wfs.modulation = 0   
+delta = 10
+for ind in range(3):
+    
+    dm.coefs = M2C[:,delta+ind]*1e-9
+    ngs**tel*dm*wfs
+    
+    
+    plt.figure(1)
+    plt.subplot(3,3,1+ind*3)
+    
+    plt.imshow(dm.OPD)
+    
+    plt.subplot(3,3,2+ind*3)
+    plt.imshow(wfs.signal_2D*valid_pix_dao)
+    
+    plt.subplot(3,3,3+ind*3)
+
+    plt.imshow(compute_rama_frame(signal=IM_rama_full[:,delta+ind],valid_signal = valid_pix_dao)*valid_pix_dao)
+
+
 
 
 #%% PAPYRUS KL Basis Computation (only for the bench)
@@ -98,12 +135,15 @@ dm.coefs = M2C[:,:10] * 1e-9
 ngs*tel*dm
 displayMap(ngs.phase)
 
-#%% Ekatwin Full Interaction Matrix Computation
+#%% Ramatwin Full Interaction Matrix Computation
+from OOPAO.calibration.InteractionMatrix import InteractionMatrix
 
-wfs.modulation = 3
+# change modulation for calibration?
+ngs**tel*wfs
+wfs.modulation = 1
 stroke = 1e-9
 
-calib_dm_468 = InteractionMatrix(ngs       = ngs,
+calib_dm_97 = InteractionMatrix(ngs       = ngs,
                             atm            = atm,
                             tel            = tel,
                             dm             = dm,
@@ -116,20 +156,25 @@ calib_dm_468 = InteractionMatrix(ngs       = ngs,
                             print_time     = False,
                             display        = True)
     
+    
+wfs.modulation = 0
+
+    
 #%%  -----------------------     Close loop  ----------------------------------
+from OOPAO.calibration.CalibrationVault import CalibrationVault
 
 # truncate to a given number of modes before the inversion
-end_mode    = 360 
+end_mode    = 83 
 
 # closed loop data
 M2C_CL      = M2C[:,:end_mode]  # modes-to-command matrix used in closed loop
-calib_CL    = CalibrationVault(calib_dm_468.D[:,:end_mode])  # calibration object with reconstructor (calib_CL.M) for the number of modes selected
+calib_CL    = CalibrationVault(calib_dm_97.D[:,:end_mode])  # calibration object with reconstructor (calib_CL.M) for the number of modes selected
 
 # compute the reconstructor (wfs signal - to - dm zonal commands )
 reconstructor = M2C_CL@calib_CL.M
 
 plt.figure()
-plt.plot(np.std(calib_CL.D,axis=0),label='Ekatwin')
+plt.plot(np.std(calib_CL.D,axis=0),label='Ramatwin')
 plt.legend()
 plt.xlabel('KL Mode Index')
 plt.ylabel('Int. Mat STD')
@@ -139,7 +184,7 @@ from OOPAO.Detector import Detector
 from OOPAO.tools.tools import strehlMeter
 # select desired pupil(Calib)
 
-Ekatwin.set_pupil(calibration=False,spiders=True)
+Ramatwin.set_pupil(calibration=True,spiders=False)
 
 # compute KL modal projector truncating the modes by the pupil used
 KL_basis_dm = (dm.modes@M2C)*np.tile(tel.pupil.flatten()[:,None],M2C.shape[1])
@@ -148,7 +193,7 @@ projector_kl = np.linalg.pinv(KL_basis_dm)
 
 #%%
 # select desired pupil(Sky/Calib)
-Ekatwin.set_pupil(calibration=False,spiders=True)
+Ramatwin.set_pupil(calibration=True,spiders=False)
 
 # instrument path
 src_cam = Detector(tel.resolution*2)
@@ -190,14 +235,6 @@ atm.generateNewPhaseScreen(seed=10)
 # combine telescope with atmosphere
 tel+atm
 
-
-from OOPAO.FieldTransformer import FieldTransformer
-
-
-pupil_wobble = FieldTransformer(ngs,
-                                shift_x=[0],
-                                shift_y=[0])
-
 # propagate both sources
 atm*ngs*tel*ngs_cam
 atm*src*tel*src_cam
@@ -206,7 +243,7 @@ atm*src*tel*src_cam
 nLoop = 500  # number of iterations
 gainCL = 0.4  # integrator gain
 wfs.cam.photonNoise = True  # enable photon noise on the WFS camera
-display = True  # enable the display
+display = False  # enable the display
 frame_delay = 2  # number of frame delay
 
 # variables used to to save closed-loop data data
@@ -287,7 +324,7 @@ for i in range(nLoop):
     # compute input modes from atmosphere
     modes_in.append(projector_kl@(atm.OPD*tel.pupil).flatten())
     # propagate light from the ngs through the atmosphere, telescope, DM to the WFS and ngs camera if display is enable
-    ngs**atm*tel*pupil_wobble*dm*wfs
+    ngs**atm*tel*dm*wfs
     cam_+=wfs.cam.frame
     if display:
         tel*ngs_cam
@@ -307,7 +344,7 @@ for i in range(nLoop):
 
     modes_out.append(projector_kl@tel.OPD.flatten())
     # propagate light from the src through the atmosphere, telescope, DM to the src camera if display is enable
-    src**atm*tel*pupil_wobble*dm
+    src**atm*tel*dm
     if display:
         tel*src_cam
         SRC_PSF = np.log10(np.abs(src_cam.frame))
@@ -375,8 +412,7 @@ for i in range(nLoop):
     print('NGS: Strehl ratio [%] : ', np.round(SR_ngs[i],1), ' // WFE [nm] : ', np.round(wfe_residual_NGS[i],2))
     print('SRC: Strehl ratio [%] : ', np.round(SR_src[i],1), ' // WFE [nm] : ', np.round(wfe_residual_SRC[i],2))
 
-    
-#%%
+
     
 #%% Closed Loop data analysis
 
@@ -399,7 +435,7 @@ plt.ylabel('SR [%]')
 
 # extracted from CL Telemtry
 modes_in_dm = np.linalg.pinv(M2C_CL) @ np.asarray(dm_commands).T
-modes_out_wfs = calib_dm_468.M @ np.asarray(wfs_signals).T
+modes_out_wfs = calib_dm_97.M @ np.asarray(wfs_signals).T
 
 plt.figure()
 plt.loglog(np.std(np.asarray(modes_in).T[:,50:],axis=1),label ='Modal Projection')

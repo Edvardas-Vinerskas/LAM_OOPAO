@@ -13,13 +13,13 @@ from OOPAO.calibration.CalibrationVault import CalibrationVault
 from OOPAO.calibration.InteractionMatrix import InteractionMatrix
 from OOPAO.tools.displayTools import cl_plot, displayMap, display_wfs_signals
 from OOPAO.tools.tools import OopaoError
-from compute_ekatwin import compute_ekarus_model
-from parameter_files.parameterFile_ekatwin import initializeParameterFile
+from compute_ramatwin import compute_rama_model
+from parameter_files.parameterFile_ramatwin import initializeParameterFile
 from OOPAO.tools.interpolateGeometricalTransformation import interpolate_cube
 from OOPAO.MisRegistration import MisRegistration
 from OOPAO.tools.tools import OopaoError
 
-class Ekarus:
+class Rama:
 
     def __init__(self):
         self.param = initializeParameterFile()
@@ -31,7 +31,7 @@ class Ekarus:
         loc = directory + '/ekarus_inputs/'
     
         # tel_calib,_,dm_calib,_,_ = compute_papyrus_model(param = param, loc = loc, source=False, IFreal=IFreal)
-        self.tel,self.ngs,self.src,self.dm,self.wfs,self.atm,self.tt,self.perfet_OCAM,self.OCAM = compute_ekarus_model(param = self.param, loc = loc, source=True, IFreal=False)
+        self.tel,self.ngs,self.src,self.dm,self.wfs,self.atm = compute_rama_model(param = self.param, loc = loc, source=True, IFreal=False)
         
         
     def set_pupil(self,calibration=True,sky_offset = [0,0],spiders=False):
@@ -58,7 +58,7 @@ class Ekarus:
 
     def check_pwfs_pupils(self,valid_pixel_map,n_it=3, correct = False):
         
-        self.wfs.modulation = 20
+        self.wfs.modulation = 10
         
         from OOPAO.tools.tools import centroid
         
