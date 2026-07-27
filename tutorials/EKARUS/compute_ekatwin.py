@@ -88,9 +88,9 @@ def compute_ekarus_model(param,loc,source,IFreal=False):
     
     from OOPAO.DeformableMirror import DeformableMirror, MisRegistration
     from OOPAO.tools.interpolateGeometricalTransformation import interpolate_cube
-    
+
     def get_influence_functions_dm468(loc,diameter,resolution_out,pixel_size_out,mis_registration = None):
-        
+        vect = fits.getdata(loc+'descramble.fits').astype(int)
         IF=[]
         for i in range(468):
             i_if = f"{i:04d}"
@@ -113,22 +113,27 @@ def compute_ekarus_model(param,loc,source,IFreal=False):
         # decode Hadamard matrix to get zonal influence functions
         IF = Z2H@IF
         
+        IF_descrambled = IF.copy()
+
+        for i in range(468):
+            IF_descrambled[i,:] = IF[vect[i],:].copy()
+            
         #reshape in 3D for interpolation
-        IF = IF.reshape(n_if,n_px1,n_px2)
+        IF_descrambled = IF_descrambled.reshape(n_if,n_px1,n_px2)
         if resolution_out != n_px1:
-            IF = np.asarray(interpolate_cube(cube_in=IF,
+            IF_descrambled = np.asarray(interpolate_cube(cube_in=IF_descrambled,
                          pixel_size_in= pixel_size_input,
                          pixel_size_out=pixel_size_out,
                          resolution_out = resolution_out,
                          mis_registration=mis_registration))
             
-        coord  =  centroid(IF)
-        IF = IF.reshape(n_if,resolution_out*resolution_out).T
+        coord  =  centroid(IF_descrambled)
+        IF_descrambled = IF_descrambled.reshape(n_if,resolution_out*resolution_out).T
 
-        return IF,coord
+        return IF_descrambled,coord
         
     if_dm468, coord_dm468 = get_influence_functions_dm468(loc = param['dm_inf_funct_location'],
-                                                          diameter=tel.initial_D*24/23,#to be fine tuned
+                                                          diameter=tel.initial_D*24/24,#to be fine tuned
                                                           resolution_out=tel.resolution,
                                                           pixel_size_out=tel.pixelSize,
                                                           mis_registration=MisRegistration(param))
