@@ -2,23 +2,25 @@ import numpy as np
 from ozitelemetry.PSFTelemetry import PSFTele
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm, SymLogNorm
+from astropy.io import fits
 
 
-savedir = "bench_sky_04_16/onsky_HD98262_1st200_2nd400_v7_linear20260417-015851"
-filename = "HD98262-CL-2026-04-17T02_12_34-Cube_OL"
+savedir = "D:/bench_sky_04_14/bench_1st200_2nd400_v2_atm_15_3520260414-193033"
+filename = "RL v2-CL-2026-04-14T19_39_26-Cube"
 #v10 for both innit
 
 
 
 psf_telemetry = PSFTele(
     tele_path=f"{savedir}/{filename}.fits",
-    is_onsky= True,
-    is_cl= False,
+    is_onsky= False,
+    is_cl= True,
     crop_img=100
 )
 
 psf_telemetry.psf_analysis(
-    elevation_deg=59
+    elevation_deg=63,
+    polychromatic = False #False for on bench since you are using a monochromatic source
 )
 
 print("out:", psf_telemetry.out)
@@ -112,3 +114,72 @@ plt.show()
 # plt.tight_layout()
 # # plt.savefig(f'{savedir}/CNN.png', dpi=300, bbox_inches='tight')
 # plt.show()
+
+
+# THIS WAS USED TO PLOT THE STREHL RATIO GAIN WHEN USING PO4AO vs integrator for 2nd stage
+# THIS ONLY HAS DATA FROM 15 and 16 days
+# # Strehl ratio [%] per target / reconstructor.
+# # 'rl' = reinforcement-learning controller, 'pythint' = python integrator.
+# # Arcturus has both a CNN and a linear reconstructor; Dubhe merges its two nights.
+# strehl_data = {
+#     'Arcturus (CNN)': {
+#         'rl':      [42.6, 45.2, 47.5, 49.4],
+#         'pythint': [28.6, 34.3, 43.5, 44.7],
+#     },
+#     'Arcturus (linear)': {
+#         'rl':      [37.3, 33.9, 37.2, 30.6],
+#         'pythint': [35.7, 29.2, 37.9, 27.1],
+#     },
+#     'Dubhe': {
+#         'rl':      [32.0, 34.1, 31.1, 33.6, 31.0, 30.5, 36.3, 33.1],
+#         'pythint': [25.1, 31.2, 29.9, 31.3, 14.2, 23.1, 25.5, 28.3],
+#     },
+#     'HD134943': {
+#         'rl':      [30.4, 17.2, 10.8],
+#         'pythint': [30.2, 13.5, 11.2],
+#     },
+#     'HD98262': {
+#         'rl':      [43.2, 41.3, 41.3],
+#         'pythint': [40.1, 37.6, 39.7],
+#     },
+# }
+
+
+# # Paired comparison: each point is one (integrator, PO4AO) measurement pair.
+# # Points above the y = x line are pairs where PO4AO beats the integrator.
+# # (color, marker, filled) — Arcturus linear is the open marker of the same hue.
+# target_style = {
+#     'Arcturus (CNN)':    ('#1f77b4', 'o', True),
+#     'Arcturus (linear)': ('#1f77b4', 'o', False),
+#     'Dubhe':             ('#ff7f0e', 's', True),
+#     'HD134943':          ('#2ca02c', '^', True),
+#     'HD98262':           ('#d62728', 'D', True),
+# }
+# lo, hi = 5, 55
+
+# fig, ax = plt.subplots(figsize=(5, 5), dpi=150)
+# ax.plot([lo, hi], [lo, hi], color='0.4', ls='--', lw=1, zorder=1)
+
+
+# for star, d in strehl_data.items():
+#     x, y = d['pythint'], d['rl']          # x: integrator, y: PO4AO
+#     color, marker, filled = target_style[star]
+#     if filled:
+#         ax.scatter(x, y, c=color, marker=marker, s=55,
+#                    edgecolor='white', linewidth=0.5, zorder=3, label=star)
+#     else:
+#         ax.scatter(x, y, facecolors='none', edgecolors=color, marker=marker, s=55,
+#                    linewidth=1.3, zorder=3, label=star)
+
+# ax.set_xlim(lo, hi)
+# ax.set_ylim(lo, hi)
+# ax.set_aspect('equal')
+# ax.set_xlabel('Python integrator Strehl [%]', fontsize=12)
+# ax.set_ylabel('PO4AO Strehl [%]', fontsize=12)
+# ax.set_title(f'Paired comparison', fontsize=13)
+# ax.legend(fontsize=10, loc='lower right')
+# plt.tight_layout()
+# plt.savefig('strehl_PO4AO_vs_pythint.png', dpi=150, bbox_inches='tight')
+# plt.show()
+
+
