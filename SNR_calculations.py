@@ -90,7 +90,7 @@ print(f"variance background (single): {np.var(background_single_frame)}")
 print(f"number of frames: {wfs_frame_dark_subtracted.shape[0]}")
 
 
-
+#calculated SNR of all targets
 arcturus_SNR = [18.26, 15.30, 17.61, 17.88]
 dubhe_SNR = [3.88, 3.76, 3.77, 3.87, 3.53]
 HD98262_SNR = [1.55, 1.54, 1.52, 1.48]
