@@ -1,0 +1,34 @@
+# Install with:  pip install -r requirements.txt
+# Tested with Python 3.12
+
+# PyTorch CUDA 12.1 build (remove this line for the CPU-only build)
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+# OOPAO core
+numpy>=2.0
+scipy>=1.13
+matplotlib>=3.8
+astropy>=6.0
+joblib
+jsonpickle
+mpmath
+numba
+numexpr
+psutil
+pyFFTW
+scikit-image
+tqdm
+
+# PAPYRIIS / PO4AO / RL scripts
+torch>=2.5
+gymnasium>=1.0
+pymatreader
+maoppy
+aopera
+pillow
+PyYAML
+imageio
+
+# Optional
+# cupy-cuda12x   # GPU arrays in OOPAO
+# PyQt5          # GUI scripts
