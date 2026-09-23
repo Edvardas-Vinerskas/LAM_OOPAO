@@ -1,6 +1,6 @@
 """
 #a bit of philosophy
-#   atm reconstruction from 1st stage DM shape like in test.py (from dm shape)
+#   atm reconstruction from 1st stage DM shape like in PAPYRIIS_main.py (from dm shape)
         you can either do this, or do from slopes but it should be consistent
         Benoit told me to reconstruct the atm from DM shape so that I avoid optical gains but I am not sure if that helps
         I think the main difference should be coming from the slightly different transfer functions
@@ -14,6 +14,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
+from scipy.integrate import cumulative_trapezoid
 from functions import *
 
 #TODO check the timeseries length of onsky and simulation data (make them the same for aesthetics)
@@ -26,7 +27,7 @@ atm_ideal            = False
 plot_timeseries      = False
 plot_tPSD            = True
 plot_onsky = True   # plot on-sky results (solid/dashed lines)
-plot_sim   = True   # plot simulation results (dotted lines)
+plot_sim   = False   # plot simulation results (dotted lines)
 #TODO for the sim mismatch, you should analyse
 # influence functions
 # maybe you should apply different limits for the timeseries being analysed
@@ -49,16 +50,16 @@ psd_modes = [0, 10, 20, 30, 40]   # KL mode indices to plot PSDs for
 mode_1, mode_2, mode_3, mode_4, mode_5 = psd_modes
 
 # on sky data
-loaddir = 'bench_sky_04_15/onsky_arcturus_1st200_2nd400_v10_20260416-020659'
+loaddir = 'bench_sky_04_15/onsky_dubhe_1st200_2nd400_v4_20260415-230026'
 loaddirlinear = "bench_sky_04_16/onsky_arcturus_1st200_2nd400_v9_linear_20260417-042610"
 linear_telemetry_2nd    = np.load(f'{loaddirlinear}/2026-04-17T04_35_20_telemetry_2nd_data_pythint.npy', allow_pickle = True) #label integrator
-RL_telemetry_2nd    = np.load(f'{loaddir}/2026-04-16T02_11_05_telemetry_2nd_data_RLiter70.npy', allow_pickle = True) #label CNN + PO4AO
-RL_telemetry_1st    = np.load(f'{loaddir}/2026-04-16T02_10_40_telemetry_data_RLiter70.npy', allow_pickle = True)
+RL_telemetry_2nd    = np.load(f'{loaddir}/2026-04-15T23_04_49_telemetry_2nd_data_RLiter80.npy', allow_pickle = True) #label CNN + PO4AO
+RL_telemetry_1st    = np.load(f'{loaddir}/2026-04-15T23_04_24_telemetry_data_RLiter80.npy', allow_pickle = True)
 # RL_telemetry_1st    = np.load(f'{loaddirlinear}/2026-04-17T04_18_08_telemetry_data_pythint.npy', allow_pickle = True)
 # {loaddirlinear}/2026-04-17T04_50_14_telemetry_2nd_data_pythint
 # {loaddir}/2026-04-16T02_14_21_telemetry_2nd_data_pythint
-int_telemetry_2nd   = np.load(f'{loaddir}/2026-04-16T02_14_21_telemetry_2nd_data_pythint.npy', allow_pickle = True) #label CNN
-CL1st_OL_2nd        = np.load(f'{loaddir}/2026-04-16T02_17_55_telemetry_2nd_data_CL1OL2.npy', allow_pickle = True)
+int_telemetry_2nd   = np.load(f'{loaddir}/2026-04-15T23_07_53_telemetry_2nd_data_pythint.npy', allow_pickle = True) #label CNN
+CL1st_OL_2nd        = np.load(f'{loaddir}/2026-04-15T23_14_16_telemetry_2nd_data_CL1OL2.npy', allow_pickle = True)
 
 
 loaddir_sim = "PAPYRIIS_2stage_CNN_RL/~2026-06-23/PAPYRIIS_arcturus_noise_quantisation_pwfs_calibration_pupil_EMCCD"
@@ -71,7 +72,7 @@ CL1st_OL_2nd_sim        = np.load(f"{loaddir_sim}/results_2nd_stage_CL1OL2.npz")
 
 #TODO the simulation results are not the same
 #you should maybe use different influence functions for simulations and on sky?
-#TODO these don't have the representative masks (masking done as per test.py or just look inside the 2 below functions)
+#TODO these don't have the representative masks (masking done as per PAPYRIIS_main.py or just look inside the 2 below functions)
 dm_1st_inf, pupil_mask_1 = first_stage_dm_builder()
 dm_2nd_inf, pupil_mask_2 = second_stage_dm_builder()
 
@@ -533,33 +534,40 @@ if plot_timeseries:
 
 
 if plot_tPSD:
-    plt.figure()
+    plt.figure(figsize=(12, 8))
     if RL:
         if plot_onsky:
-            plt.plot(PSD_residual_mode_1_freq_t_1st_RL, PSD_residual_mode_1_1st_RL, '--', color="indianred", label=f"PSD_mode_{mode_1}_1st_int")
-            plt.plot(PSD_residual_mode_1_freq_t_2nd_RL, PSD_residual_mode_1_2nd_RL, color="red", label=f"PSD_mode_{mode_1}_2nd_{label_RL}")
+            plt.plot(PSD_residual_mode_1_freq_t_1st_RL, PSD_residual_mode_1_1st_RL, '--', color="indianred", lw=2.5, label=f"1st stage integrator")
+            plt.plot(PSD_residual_mode_1_freq_t_2nd_RL, PSD_residual_mode_1_2nd_RL, color="red", lw=2.5, label=f"2nd stage CNN + PO4AO")
         if plot_sim:
-            plt.plot(PSD_residual_mode_1_freq_t_1st_RL_sim, PSD_residual_mode_1_1st_RL_sim, ':', color="indianred", label=f"PSD_mode_{mode_1}_1st_int ({label_int_sim})")
-            plt.plot(PSD_residual_mode_1_freq_t_2nd_RL_sim, PSD_residual_mode_1_2nd_RL_sim, ':', color="red", label=f"PSD_mode_{mode_1}_2nd_{label_RL_sim}")
+            plt.plot(PSD_residual_mode_1_freq_t_1st_RL_sim, PSD_residual_mode_1_1st_RL_sim, ':', color="indianred", lw=2.5, label=f"PSD_mode_{mode_1}_1st_int ({label_int_sim})")
+            plt.plot(PSD_residual_mode_1_freq_t_2nd_RL_sim, PSD_residual_mode_1_2nd_RL_sim, ':', color="red", lw=2.5, label=f"PSD_mode_{mode_1}_2nd_{label_RL_sim}")
     if integrator:
         if plot_onsky:
-            plt.plot(PSD_residual_mode_1_freq_t_2nd_int, PSD_residual_mode_1_2nd_int, color="blue", label=f"PSD_mode_{mode_1}_2nd_{label_int}")
+            plt.plot(PSD_residual_mode_1_freq_t_2nd_int, PSD_residual_mode_1_2nd_int, color="blue", lw=2.5, label=f"2nd stage CNN + integrator")
         if plot_sim:
-            plt.plot(PSD_residual_mode_1_freq_t_2nd_int_sim, PSD_residual_mode_1_2nd_int_sim, ':', color="blue", label=f"PSD_mode_{mode_1}_2nd_{label_int_sim}")
+            plt.plot(PSD_residual_mode_1_freq_t_2nd_int_sim, PSD_residual_mode_1_2nd_int_sim, ':', color="blue", lw=2.5, label=f"PSD_mode_{mode_1}_2nd_{label_int_sim}")
     if ideal:
-        plt.plot(PSD_residual_mode_1_freq_t_2nd_ideal, PSD_residual_mode_1_2nd_ideal, label=f"PSD_mode_{mode_1}_2nd_{label_ideal}")
+        plt.plot(PSD_residual_mode_1_freq_t_2nd_ideal, PSD_residual_mode_1_2nd_ideal, lw=2.5, label=f"PSD_mode_{mode_1}_2nd_{label_ideal}")
     if plot_onsky:
-        plt.plot(PSD_atm_mode_1_freq_t, PSD_atm_mode_1, color="black", label=f"atm_PSD_mode_{mode_1}")
+        plt.plot(PSD_atm_mode_1_freq_t, PSD_atm_mode_1, lw=2.5, color="black", label=f"atm")
     if plot_sim and RL:
-        plt.plot(PSD_atm_mode_1_freq_t_sim, PSD_atm_mode_1_sim, ':', color="black", label=f"atm_PSD_mode_{mode_1} (sim)")
+        plt.plot(PSD_atm_mode_1_freq_t_sim, PSD_atm_mode_1_sim, ':', color="black", lw=2.5, label=f"atm_PSD_mode_{mode_1} (sim)")
     plt.title(f"residual PSD mode_{mode_1}, gain {CL_gain_pyr}")
-    plt.xlabel("frequency (Hz)")
+    plt.title(f"Tip PSD", fontsize = 30)
+    plt.xlabel("frequency (Hz)", fontsize=24)
     plt.yscale("log")
     plt.xscale("log")
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
     plt.grid(True, which='both', alpha=0.5)
     plt.minorticks_on()
     plt.legend()
-    plt.ylabel("PSD (nm² Hz⁻¹)")
+    plt.minorticks_on()
+    plt.legend(fontsize=18)
+    plt.ylabel("PSD (nm² Hz⁻¹)", fontsize=24)
+    # plt.savefig(f'{loaddir}/tip_tPSD.png', dpi=300, bbox_inches='tight')
+
 
     plt.figure()
     if RL:
@@ -680,57 +688,62 @@ if plot_tPSD:
 
 #---------------------------------------------------Cumulative PSD---------------------------------------------------#
 
+# maskers = (PSD_residual_mode_1_freq_t_2nd_RL >= 50) & (PSD_residual_mode_1_freq_t_2nd_RL <= 62)
+
+# print(cumulative_trapezoid(PSD_residual_mode_1_2nd_RL[maskers], PSD_residual_mode_1_freq_t_2nd_RL[maskers], initial=0))
+# print(cumulative_trapezoid(PSD_residual_mode_1_2nd_int[maskers], PSD_residual_mode_1_freq_t_2nd_int[maskers], initial=0))
+print(f'ratio of total tip residual in nm²: {cumulative_trapezoid(PSD_residual_mode_1_2nd_int, PSD_residual_mode_1_freq_t_2nd_int, initial=0)[-1]/cumulative_trapezoid(PSD_residual_mode_1_2nd_RL, PSD_residual_mode_1_freq_t_2nd_RL, initial=0)[-1]}')
 
 
 if plot_tPSD:
     plt.figure(figsize=(12, 8))
     if RL:
         if plot_onsky:
-            plt.plot(PSD_residual_mode_1_freq_t_1st_RL, np.cumsum(PSD_residual_mode_1_1st_RL), '--', color="indianred", lw=2.5, label="1st stage integrator")
-            plt.plot(PSD_residual_mode_1_freq_t_2nd_RL, np.cumsum(PSD_residual_mode_1_2nd_RL), color="red", lw=2.5, label="2nd stage CNN + PO4AO")
+            plt.plot(PSD_residual_mode_1_freq_t_1st_RL, cumulative_trapezoid(PSD_residual_mode_1_1st_RL, PSD_residual_mode_1_freq_t_1st_RL, initial=0), '--', color="indianred", lw=2.5, label="1st stage integrator")
+            plt.plot(PSD_residual_mode_1_freq_t_2nd_RL, cumulative_trapezoid(PSD_residual_mode_1_2nd_RL, PSD_residual_mode_1_freq_t_2nd_RL, initial=0), color="red", lw=2.5, label="2nd stage CNN + PO4AO")
         if plot_sim:
-            plt.plot(PSD_residual_mode_1_freq_t_1st_RL_sim, np.cumsum(PSD_residual_mode_1_1st_RL_sim), ':', color="indianred", lw=2.5, label=f"1st stage integrator ({label_int_sim})")
-            plt.plot(PSD_residual_mode_1_freq_t_2nd_RL_sim, np.cumsum(PSD_residual_mode_1_2nd_RL_sim), ':', color="red", lw=2.5, label=f"2nd stage CNN + PO4AO ({label_RL_sim})")
+            plt.plot(PSD_residual_mode_1_freq_t_1st_RL_sim, cumulative_trapezoid(PSD_residual_mode_1_1st_RL_sim, PSD_residual_mode_1_freq_t_1st_RL_sim, initial=0), ':', color="indianred", lw=2.5, label=f"1st stage integrator ({label_int_sim})")
+            plt.plot(PSD_residual_mode_1_freq_t_2nd_RL_sim, cumulative_trapezoid(PSD_residual_mode_1_2nd_RL_sim, PSD_residual_mode_1_freq_t_2nd_RL_sim, initial=0), ':', color="red", lw=2.5, label=f"2nd stage CNN + PO4AO ({label_RL_sim})")
     if integrator:
         if plot_onsky:
-            plt.plot(PSD_residual_mode_1_freq_t_2nd_int, np.cumsum(PSD_residual_mode_1_2nd_int), color="blue", lw=2.5, label="2nd stage CNN")
+            plt.plot(PSD_residual_mode_1_freq_t_2nd_int, cumulative_trapezoid(PSD_residual_mode_1_2nd_int, PSD_residual_mode_1_freq_t_2nd_int, initial=0), color="blue", lw=2.5, label="2nd stage CNN + integrator")
         if plot_sim:
-            plt.plot(PSD_residual_mode_1_freq_t_2nd_int_sim, np.cumsum(PSD_residual_mode_1_2nd_int_sim), ':', color="blue", lw=2.5, label=f"2nd stage CNN ({label_int_sim})")
+            plt.plot(PSD_residual_mode_1_freq_t_2nd_int_sim, cumulative_trapezoid(PSD_residual_mode_1_2nd_int_sim, PSD_residual_mode_1_freq_t_2nd_int_sim, initial=0), ':', color="blue", lw=2.5, label=f"2nd stage CNN ({label_int_sim})")
     if ideal:
-        plt.plot(PSD_residual_mode_1_freq_t_2nd_ideal, np.cumsum(PSD_residual_mode_1_2nd_ideal), lw=2.5, label=f"PSD_mode_{mode_1}_2nd_{label_ideal}")
+        plt.plot(PSD_residual_mode_1_freq_t_2nd_ideal, cumulative_trapezoid(PSD_residual_mode_1_2nd_ideal, PSD_residual_mode_1_freq_t_2nd_ideal, initial=0), lw=2.5, label=f"PSD_mode_{mode_1}_2nd_{label_ideal}")
 
-    plt.title(f"Cumulative PSD tip mode", fontsize=30)
+    plt.title(f"Tip Cumulative PSD", fontsize=30)
     plt.xlabel("Frequency (Hz)", fontsize=24)
     plt.ylabel("Cumulative PSD (nm²)", fontsize=24)
     plt.yscale("log")
     plt.xscale("log")
-    plt.ylim(bottom=7)
+    #plt.ylim(bottom=7)
     plt.xticks(fontsize=20)
     plt.yticks(fontsize=20)
     plt.grid(True, which='both', alpha=0.5)
     plt.minorticks_on()
     plt.legend(fontsize=18)
     plt.axvspan(50, 60, alpha=0.2, color='red', zorder=0)#color='red', alpha=0.12
-    plt.text(70, 150, 'Vibration\nCompensation', fontsize=24, fontweight='bold',
-             color='darkred', ha='left', va='center')
+    # plt.text(70, 150, 'Vibration\nCompensation', fontsize=24, fontweight='bold',
+    #          color='darkred', ha='left', va='center')
     # plt.savefig(f'{loaddir}/cumsum_PSD.png', dpi=300, bbox_inches='tight')
 
 
     plt.figure()
     if RL:
         if plot_onsky:
-            plt.plot(PSD_residual_mode_2_freq_t_1st_RL, np.cumsum(PSD_residual_mode_2_1st_RL), '--', color="indianred", label=f"PSD_mode_{mode_2}_1st_int")
-            plt.plot(PSD_residual_mode_2_freq_t_2nd_RL, np.cumsum(PSD_residual_mode_2_2nd_RL), color="red", label=f"PSD_mode_{mode_2}_2nd_{label_RL}")
+            plt.plot(PSD_residual_mode_2_freq_t_1st_RL, cumulative_trapezoid(PSD_residual_mode_2_1st_RL, PSD_residual_mode_2_freq_t_1st_RL, initial=0), '--', color="indianred", label=f"PSD_mode_{mode_2}_1st_int")
+            plt.plot(PSD_residual_mode_2_freq_t_2nd_RL, cumulative_trapezoid(PSD_residual_mode_2_2nd_RL, PSD_residual_mode_2_freq_t_2nd_RL, initial=0), color="red", label=f"PSD_mode_{mode_2}_2nd_{label_RL}")
         if plot_sim:
-            plt.plot(PSD_residual_mode_2_freq_t_1st_RL_sim, np.cumsum(PSD_residual_mode_2_1st_RL_sim), ':', color="indianred", label=f"PSD_mode_{mode_2}_1st_int ({label_int_sim})")
-            plt.plot(PSD_residual_mode_2_freq_t_2nd_RL_sim, np.cumsum(PSD_residual_mode_2_2nd_RL_sim), ':', color="red", label=f"PSD_mode_{mode_2}_2nd_{label_RL_sim}")
+            plt.plot(PSD_residual_mode_2_freq_t_1st_RL_sim, cumulative_trapezoid(PSD_residual_mode_2_1st_RL_sim, PSD_residual_mode_2_freq_t_1st_RL_sim, initial=0), ':', color="indianred", label=f"PSD_mode_{mode_2}_1st_int ({label_int_sim})")
+            plt.plot(PSD_residual_mode_2_freq_t_2nd_RL_sim, cumulative_trapezoid(PSD_residual_mode_2_2nd_RL_sim, PSD_residual_mode_2_freq_t_2nd_RL_sim, initial=0), ':', color="red", label=f"PSD_mode_{mode_2}_2nd_{label_RL_sim}")
     if integrator:
         if plot_onsky:
-            plt.plot(PSD_residual_mode_2_freq_t_2nd_int, np.cumsum(PSD_residual_mode_2_2nd_int), color="blue", label=f"PSD_mode_{mode_2}_2nd_{label_int}")
+            plt.plot(PSD_residual_mode_2_freq_t_2nd_int, cumulative_trapezoid(PSD_residual_mode_2_2nd_int, PSD_residual_mode_2_freq_t_2nd_int, initial=0), color="blue", label=f"PSD_mode_{mode_2}_2nd_{label_int}")
         if plot_sim:
-            plt.plot(PSD_residual_mode_2_freq_t_2nd_int_sim, np.cumsum(PSD_residual_mode_2_2nd_int_sim), ':', color="blue", label=f"PSD_mode_{mode_2}_2nd_{label_int_sim}")
+            plt.plot(PSD_residual_mode_2_freq_t_2nd_int_sim, cumulative_trapezoid(PSD_residual_mode_2_2nd_int_sim, PSD_residual_mode_2_freq_t_2nd_int_sim, initial=0), ':', color="blue", label=f"PSD_mode_{mode_2}_2nd_{label_int_sim}")
     if ideal:
-        plt.plot(PSD_residual_mode_2_freq_t_2nd_ideal, np.cumsum(PSD_residual_mode_2_2nd_ideal), label=f"PSD_mode_{mode_2}_2nd_{label_ideal}")
+        plt.plot(PSD_residual_mode_2_freq_t_2nd_ideal, cumulative_trapezoid(PSD_residual_mode_2_2nd_ideal, PSD_residual_mode_2_freq_t_2nd_ideal, initial=0), label=f"PSD_mode_{mode_2}_2nd_{label_ideal}")
 
     plt.title(f"Cumulative PSD KL mode {mode_2}, gain {CL_gain_pyr}")
     plt.xlabel("frequency (Hz)")
@@ -745,18 +758,18 @@ if plot_tPSD:
     plt.figure()
     if RL:
         if plot_onsky:
-            plt.plot(PSD_residual_mode_3_freq_t_1st_RL, np.cumsum(PSD_residual_mode_3_1st_RL), '--', color="indianred", label=f"PSD_mode_{mode_3}_1st_int")
-            plt.plot(PSD_residual_mode_3_freq_t_2nd_RL, np.cumsum(PSD_residual_mode_3_2nd_RL), color="red", label=f"PSD_mode_{mode_3}_2nd_{label_RL}")
+            plt.plot(PSD_residual_mode_3_freq_t_1st_RL, cumulative_trapezoid(PSD_residual_mode_3_1st_RL, PSD_residual_mode_3_freq_t_1st_RL, initial=0), '--', color="indianred", label=f"PSD_mode_{mode_3}_1st_int")
+            plt.plot(PSD_residual_mode_3_freq_t_2nd_RL, cumulative_trapezoid(PSD_residual_mode_3_2nd_RL, PSD_residual_mode_3_freq_t_2nd_RL, initial=0), color="red", label=f"PSD_mode_{mode_3}_2nd_{label_RL}")
         if plot_sim:
-            plt.plot(PSD_residual_mode_3_freq_t_1st_RL_sim, np.cumsum(PSD_residual_mode_3_1st_RL_sim), ':', color="indianred", label=f"PSD_mode_{mode_3}_1st_int ({label_int_sim})")
-            plt.plot(PSD_residual_mode_3_freq_t_2nd_RL_sim, np.cumsum(PSD_residual_mode_3_2nd_RL_sim), ':', color="red", label=f"PSD_mode_{mode_3}_2nd_{label_RL_sim}")
+            plt.plot(PSD_residual_mode_3_freq_t_1st_RL_sim, cumulative_trapezoid(PSD_residual_mode_3_1st_RL_sim, PSD_residual_mode_3_freq_t_1st_RL_sim, initial=0), ':', color="indianred", label=f"PSD_mode_{mode_3}_1st_int ({label_int_sim})")
+            plt.plot(PSD_residual_mode_3_freq_t_2nd_RL_sim, cumulative_trapezoid(PSD_residual_mode_3_2nd_RL_sim, PSD_residual_mode_3_freq_t_2nd_RL_sim, initial=0), ':', color="red", label=f"PSD_mode_{mode_3}_2nd_{label_RL_sim}")
     if integrator:
         if plot_onsky:
-            plt.plot(PSD_residual_mode_3_freq_t_2nd_int, np.cumsum(PSD_residual_mode_3_2nd_int), color="blue", label=f"PSD_mode_{mode_3}_2nd_{label_int}")
+            plt.plot(PSD_residual_mode_3_freq_t_2nd_int, cumulative_trapezoid(PSD_residual_mode_3_2nd_int, PSD_residual_mode_3_freq_t_2nd_int, initial=0), color="blue", label=f"PSD_mode_{mode_3}_2nd_{label_int}")
         if plot_sim:
-            plt.plot(PSD_residual_mode_3_freq_t_2nd_int_sim, np.cumsum(PSD_residual_mode_3_2nd_int_sim), ':', color="blue", label=f"PSD_mode_{mode_3}_2nd_{label_int_sim}")
+            plt.plot(PSD_residual_mode_3_freq_t_2nd_int_sim, cumulative_trapezoid(PSD_residual_mode_3_2nd_int_sim, PSD_residual_mode_3_freq_t_2nd_int_sim, initial=0), ':', color="blue", label=f"PSD_mode_{mode_3}_2nd_{label_int_sim}")
     if ideal:
-        plt.plot(PSD_residual_mode_3_freq_t_2nd_ideal, np.cumsum(PSD_residual_mode_3_2nd_ideal), label=f"PSD_mode_{mode_3}_2nd_{label_ideal}")
+        plt.plot(PSD_residual_mode_3_freq_t_2nd_ideal, cumulative_trapezoid(PSD_residual_mode_3_2nd_ideal, PSD_residual_mode_3_freq_t_2nd_ideal, initial=0), label=f"PSD_mode_{mode_3}_2nd_{label_ideal}")
 
     plt.title(f"Cumulative PSD KL mode {mode_3}, gain {CL_gain_pyr}")
     plt.xlabel("frequency (Hz)")
@@ -771,18 +784,18 @@ if plot_tPSD:
     plt.figure()
     if RL:
         if plot_onsky:
-            plt.plot(PSD_residual_mode_4_freq_t_1st_RL, np.cumsum(PSD_residual_mode_4_1st_RL), '--', color="indianred", label=f"PSD_mode_{mode_4}_1st_int")
-            plt.plot(PSD_residual_mode_4_freq_t_2nd_RL, np.cumsum(PSD_residual_mode_4_2nd_RL), color="red", label=f"PSD_mode_{mode_4}_2nd_{label_RL}")
+            plt.plot(PSD_residual_mode_4_freq_t_1st_RL, cumulative_trapezoid(PSD_residual_mode_4_1st_RL, PSD_residual_mode_4_freq_t_1st_RL, initial=0), '--', color="indianred", label=f"PSD_mode_{mode_4}_1st_int")
+            plt.plot(PSD_residual_mode_4_freq_t_2nd_RL, cumulative_trapezoid(PSD_residual_mode_4_2nd_RL, PSD_residual_mode_4_freq_t_2nd_RL, initial=0), color="red", label=f"PSD_mode_{mode_4}_2nd_{label_RL}")
         if plot_sim:
-            plt.plot(PSD_residual_mode_4_freq_t_1st_RL_sim, np.cumsum(PSD_residual_mode_4_1st_RL_sim), ':', color="indianred", label=f"PSD_mode_{mode_4}_1st_int ({label_int_sim})")
-            plt.plot(PSD_residual_mode_4_freq_t_2nd_RL_sim, np.cumsum(PSD_residual_mode_4_2nd_RL_sim), ':', color="red", label=f"PSD_mode_{mode_4}_2nd_{label_RL_sim}")
+            plt.plot(PSD_residual_mode_4_freq_t_1st_RL_sim, cumulative_trapezoid(PSD_residual_mode_4_1st_RL_sim, PSD_residual_mode_4_freq_t_1st_RL_sim, initial=0), ':', color="indianred", label=f"PSD_mode_{mode_4}_1st_int ({label_int_sim})")
+            plt.plot(PSD_residual_mode_4_freq_t_2nd_RL_sim, cumulative_trapezoid(PSD_residual_mode_4_2nd_RL_sim, PSD_residual_mode_4_freq_t_2nd_RL_sim, initial=0), ':', color="red", label=f"PSD_mode_{mode_4}_2nd_{label_RL_sim}")
     if integrator:
         if plot_onsky:
-            plt.plot(PSD_residual_mode_4_freq_t_2nd_int, np.cumsum(PSD_residual_mode_4_2nd_int), color="blue", label=f"PSD_mode_{mode_4}_2nd_{label_int}")
+            plt.plot(PSD_residual_mode_4_freq_t_2nd_int, cumulative_trapezoid(PSD_residual_mode_4_2nd_int, PSD_residual_mode_4_freq_t_2nd_int, initial=0), color="blue", label=f"PSD_mode_{mode_4}_2nd_{label_int}")
         if plot_sim:
-            plt.plot(PSD_residual_mode_4_freq_t_2nd_int_sim, np.cumsum(PSD_residual_mode_4_2nd_int_sim), ':', color="blue", label=f"PSD_mode_{mode_4}_2nd_{label_int_sim}")
+            plt.plot(PSD_residual_mode_4_freq_t_2nd_int_sim, cumulative_trapezoid(PSD_residual_mode_4_2nd_int_sim, PSD_residual_mode_4_freq_t_2nd_int_sim, initial=0), ':', color="blue", label=f"PSD_mode_{mode_4}_2nd_{label_int_sim}")
     if ideal:
-        plt.plot(PSD_residual_mode_4_freq_t_2nd_ideal, np.cumsum(PSD_residual_mode_4_2nd_ideal), label=f"PSD_mode_{mode_4}_2nd_{label_ideal}")
+        plt.plot(PSD_residual_mode_4_freq_t_2nd_ideal, cumulative_trapezoid(PSD_residual_mode_4_2nd_ideal, PSD_residual_mode_4_freq_t_2nd_ideal, initial=0), label=f"PSD_mode_{mode_4}_2nd_{label_ideal}")
 
     plt.title(f"Cumulative PSD KL mode {mode_4}, gain {CL_gain_pyr}")
     plt.xlabel("frequency (Hz)")
@@ -797,18 +810,18 @@ if plot_tPSD:
     plt.figure()
     if RL:
         if plot_onsky:
-            plt.plot(PSD_residual_mode_5_freq_t_1st_RL, np.cumsum(PSD_residual_mode_5_1st_RL), '--', color="indianred", label=f"PSD_mode_{mode_5}_1st_int")
-            plt.plot(PSD_residual_mode_5_freq_t_2nd_RL, np.cumsum(PSD_residual_mode_5_2nd_RL), color="red", label=f"PSD_mode_{mode_5}_2nd_{label_RL}")
+            plt.plot(PSD_residual_mode_5_freq_t_1st_RL, cumulative_trapezoid(PSD_residual_mode_5_1st_RL, PSD_residual_mode_5_freq_t_1st_RL, initial=0), '--', color="indianred", label=f"PSD_mode_{mode_5}_1st_int")
+            plt.plot(PSD_residual_mode_5_freq_t_2nd_RL, cumulative_trapezoid(PSD_residual_mode_5_2nd_RL, PSD_residual_mode_5_freq_t_2nd_RL, initial=0), color="red", label=f"PSD_mode_{mode_5}_2nd_{label_RL}")
         if plot_sim:
-            plt.plot(PSD_residual_mode_5_freq_t_1st_RL_sim, np.cumsum(PSD_residual_mode_5_1st_RL_sim), ':', color="indianred", label=f"PSD_mode_{mode_5}_1st_int ({label_int_sim})")
-            plt.plot(PSD_residual_mode_5_freq_t_2nd_RL_sim, np.cumsum(PSD_residual_mode_5_2nd_RL_sim), ':', color="red", label=f"PSD_mode_{mode_5}_2nd_{label_RL_sim}")
+            plt.plot(PSD_residual_mode_5_freq_t_1st_RL_sim, cumulative_trapezoid(PSD_residual_mode_5_1st_RL_sim, PSD_residual_mode_5_freq_t_1st_RL_sim, initial=0), ':', color="indianred", label=f"PSD_mode_{mode_5}_1st_int ({label_int_sim})")
+            plt.plot(PSD_residual_mode_5_freq_t_2nd_RL_sim, cumulative_trapezoid(PSD_residual_mode_5_2nd_RL_sim, PSD_residual_mode_5_freq_t_2nd_RL_sim, initial=0), ':', color="red", label=f"PSD_mode_{mode_5}_2nd_{label_RL_sim}")
     if integrator:
         if plot_onsky:
-            plt.plot(PSD_residual_mode_5_freq_t_2nd_int, np.cumsum(PSD_residual_mode_5_2nd_int), color="blue", label=f"PSD_mode_{mode_5}_2nd_{label_int}")
+            plt.plot(PSD_residual_mode_5_freq_t_2nd_int, cumulative_trapezoid(PSD_residual_mode_5_2nd_int, PSD_residual_mode_5_freq_t_2nd_int, initial=0), color="blue", label=f"PSD_mode_{mode_5}_2nd_{label_int}")
         if plot_sim:
-            plt.plot(PSD_residual_mode_5_freq_t_2nd_int_sim, np.cumsum(PSD_residual_mode_5_2nd_int_sim), ':', color="blue", label=f"PSD_mode_{mode_5}_2nd_{label_int_sim}")
+            plt.plot(PSD_residual_mode_5_freq_t_2nd_int_sim, cumulative_trapezoid(PSD_residual_mode_5_2nd_int_sim, PSD_residual_mode_5_freq_t_2nd_int_sim, initial=0), ':', color="blue", label=f"PSD_mode_{mode_5}_2nd_{label_int_sim}")
     if ideal:
-        plt.plot(PSD_residual_mode_5_freq_t_2nd_ideal, np.cumsum(PSD_residual_mode_5_2nd_ideal), label=f"PSD_mode_{mode_5}_2nd_{label_ideal}")
+        plt.plot(PSD_residual_mode_5_freq_t_2nd_ideal, cumulative_trapezoid(PSD_residual_mode_5_2nd_ideal, PSD_residual_mode_5_freq_t_2nd_ideal, initial=0), label=f"PSD_mode_{mode_5}_2nd_{label_ideal}")
 
     plt.title(f"Cumulative PSD KL mode {mode_5}, gain {CL_gain_pyr}")
     plt.xlabel("frequency (Hz)")
