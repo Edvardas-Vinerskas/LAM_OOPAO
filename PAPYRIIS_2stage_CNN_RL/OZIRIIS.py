@@ -142,7 +142,7 @@ class OZIRIIS:
                         samplingTime        = self.param['samplingTime_2nd'],
                         pupil = pupil_sky)
         
-
+        #tel_sky_2 is my custom code for testing and simulations
         tel_sky_2 = Telescope(resolution      = self.param['resolution_2nd'] ,
                         diameter            = self.param['diameter'],
                         samplingTime        = self.param['samplingTime_2nd'],

@@ -15,7 +15,7 @@ Produces:
   * Per-mode temporal error transfer functions  (residual / atmosphere PSD)
   * Per-mode 2nd/1st PSD ratio  (optional)
   * Per-mode residual time series  (optional)
- 
+ #TODO probably this file need to be deleted
 """
 
 from __future__ import annotations
