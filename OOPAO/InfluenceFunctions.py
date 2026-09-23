@@ -21,9 +21,12 @@ class InfluenceFunctions:
 
     Attributes
     ----------
-    influence_function_2D : np.ndarray
+    influence_function_3D : np.ndarray
         Influence-function cube of shape [n_act, resolution, resolution],
         with flips and sign applied.
+    influence_function_2D : np.ndarray
+        The same influence functions as a [resolution**2, n_act] matrix (the
+        DeformableMirror modes).
     coordinates : np.ndarray
         Actuator coordinates computed as the centroids of the (flipped)
         influence functions.
@@ -77,10 +80,9 @@ class InfluenceFunctions:
                                  resolution=resolution,
                                  loc=loc,
                                  mis_registration=mis_registration,
-                                 specific_parameters=specific_parameters)
+                                 specific_parameters=specific_parameters) * sign
 
         # ------------- general operations applied to the IFs -------------
-        self.sign = sign
 
         # potential flips of the IFs
         if flip_lr:
@@ -88,8 +90,17 @@ class InfluenceFunctions:
         if flip_ud:
             IF_2D = np.flip(IF_2D, axis=1)
 
-        self.influence_function_2D = IF_2D * self.sign
+        self.influence_function_3D = IF_2D
+        self.influence_function_2D = IF_2D.reshape(IF_2D.shape[0],IF_2D.shape[1]**2).T
+
         self.coordinates = centroid(IF_2D)
+        self.tag = 'influenceFunction'
+        self.name_system = name_system
+        self.flip_lr = flip_lr
+        self.flip_ud = flip_ud
+        self.loc = loc
+        self.sign = sign
+        self.specific_parameters = specific_parameters
 
     @staticmethod
     def _get_compute_function(name_system: str):

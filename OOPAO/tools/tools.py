@@ -20,6 +20,12 @@ from scipy.special import j1
 from scipy.signal.windows import tukey
 import math
 
+try:
+    from cupy import get_array_module
+except ImportError:
+    def get_array_module(*args):
+        return np
+
 
 #%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% USEFUL FUNCTIONS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -296,21 +302,49 @@ def findNextPowerOf2(n):
 #             y+=im[j,i]*j/s
             
 #     return x,y
-def centroid( image, threshold=0.01):
-    if np.ndim(image) <= 2:
-        im = np.reshape(image.copy(), (1, np.shape(image)[0], np.shape(image)[1]))
-    else:
-        im = np.atleast_3d(image.copy())
-    im[im < (threshold*im.max())] = 0
-    centroid_out = np.zeros([im.shape[0], 2])
-    X_map, Y_map = np.meshgrid(np.arange(im.shape[1]), np.arange(im.shape[2]))
-    X_coord_map = np.atleast_3d(X_map).T
-    Y_coord_map = np.atleast_3d(Y_map).T
-    norma = np.sum(np.sum(im, axis=1), axis=1)
-    centroid_out[:, 0] = np.sum(np.sum(im*X_coord_map, axis=1), axis=1)/norma
-    centroid_out[:, 1] = np.sum(np.sum(im*Y_coord_map, axis=1), axis=1)/norma
-    return centroid_out
+# def centroid( image, threshold=0.01):
+#     if np.ndim(image) <= 2:
+#         im = np.reshape(image.copy(), (1, np.shape(image)[0], np.shape(image)[1]))
+#     else:
+#         im = np.atleast_3d(image.copy())
+#     im[im < (threshold*im.max())] = 0
+#     centroid_out = np.zeros([im.shape[0], 2])
+#     X_map, Y_map = np.meshgrid(np.arange(im.shape[1]), np.arange(im.shape[2]))
+#     X_coord_map = np.atleast_3d(X_map).T
+#     Y_coord_map = np.atleast_3d(Y_map).T
+#     norma = np.sum(np.sum(im, axis=1), axis=1)
+#     centroid_out[:, 0] = np.sum(np.sum(im*X_coord_map, axis=1), axis=1)/norma
+#     centroid_out[:, 1] = np.sum(np.sum(im*Y_coord_map, axis=1), axis=1)/norma
+#     return centroid_out[0]
+def centroid(image, threshold=0.01):
+    """Center of mass of one image or a stack of images.
 
+    Returns [x, y] for a single image (x = column, y = row),
+    or an (N, 2) array of [x, y] for a stack of N images.
+    Thresholding is per-frame: each frame is cut at threshold * its own max.
+    """
+    # Normalize to a 3D stack (N, H, W) and work in float to avoid
+    # integer overflow in the weighted sums and integer-division surprises.
+    if np.ndim(image) <= 2:
+        im = np.asarray(image, dtype=np.float64)[np.newaxis, :, :]
+    else:
+        im = np.asarray(image, dtype=np.float64)
+
+    N, H, W = im.shape
+
+    # Per-frame threshold: each frame against its own max, not a global max.
+    frame_max = im.max(axis=(1, 2), keepdims=True)      # (N, 1, 1)
+    im = np.where(im < threshold * frame_max, 0.0, im)
+    col_map, row_map = np.meshgrid(np.arange(W), np.arange(H))
+
+    norma = im.sum(axis=(1, 2))                          # (N,)
+    norma[norma == 0] = np.nan                           # force empty frame to be nan
+
+    centroid_out = np.zeros((N, 2))
+    centroid_out[:, 0] = (im * col_map).sum(axis=(1, 2)) / norma   # X (column)
+    centroid_out[:, 1] = (im * row_map).sum(axis=(1, 2)) / norma   # Y (row)
+
+    return centroid_out[0] if np.ndim(image) <= 2 else centroid_out
 
 def bin_ndarray(ndarray, new_shape, operation='sum', ignore_zeros=False):
     """
@@ -349,11 +383,16 @@ def bin_ndarray(ndarray, new_shape, operation='sum', ignore_zeros=False):
     ndarray = ndarray.reshape(reshaped_shape)
 
     if ignore_zeros and operation == 'mean':
+        # dispatch on the actual array backend (numpy or cupy) instead of
+        # hardcoding numpy, so this also works when ndarray lives on GPU
+        xp = get_array_module(ndarray)
         # Compute sum and count of nonzero elements
-        summed = np.sum(ndarray, axis=tuple(range(1, len(new_shape) * 2, 2)))
-        count_nonzero = np.count_nonzero(ndarray, axis=tuple(range(1, len(new_shape) * 2, 2)))
-        with np.errstate(divide='ignore', invalid='ignore'):  # avoid division by 0 problems
-            binned_array = np.where(count_nonzero > 0, summed / count_nonzero, 0)
+        summed = xp.sum(ndarray, axis=tuple(range(1, len(new_shape) * 2, 2)))
+        count_nonzero = xp.count_nonzero(ndarray, axis=tuple(range(1, len(new_shape) * 2, 2)))
+        # avoid division by 0 without relying on np.errstate (not available in cupy):
+        # divide by a safe denominator (>=1) then zero out the empty bins
+        safe_count = xp.where(count_nonzero > 0, count_nonzero, 1)
+        binned_array = xp.where(count_nonzero > 0, summed / safe_count, 0)
     else:
         # Apply regular sum or mean binning
         # getattr --> retrieves numpy method: ndarray.sum if operation = "sum" and ndarray.mean if operation = "mean"
@@ -400,10 +439,20 @@ def bin_ndarray(ndarray, new_shape, operation='sum', ignore_zeros=False):
 #     return ndarray
 
 def get_gpu_memory():
-    command = "nvidia-smi --query-gpu=memory.free --format=csv"
-    memory_free_info = subprocess.check_output(command.split()).decode('ascii').split('\n')[:-1][1:]
-    memory_free_values = [int(x.split()[0]) for i, x in enumerate(memory_free_info)]
-    return memory_free_values
+    """Free GPU memory in MiB, as a list.
+
+    Uses the CUDA runtime for the device CuPy is working on (no external tool required). Falls back to
+    nvidia-smi, which lists every GPU of the machine, when CuPy cannot answer.
+    """
+    try:
+        import cupy as cp
+        free_bytes = cp.cuda.runtime.memGetInfo()[0]
+        return [int(free_bytes // 2**20)]
+    except Exception:
+        command = "nvidia-smi --query-gpu=memory.free --format=csv"
+        memory_free_info = subprocess.check_output(command.split()).decode('ascii').split('\n')[:-1][1:]
+        memory_free_values = [int(x.split()[0]) for i, x in enumerate(memory_free_info)]
+        return memory_free_values
 
 
 def compute_fourier_mode(pupil,spatial_frequency,angle_deg,zeropadding = 2):

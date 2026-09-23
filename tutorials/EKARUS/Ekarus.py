@@ -14,15 +14,14 @@ from OOPAO.calibration.InteractionMatrix import InteractionMatrix
 from OOPAO.tools.displayTools import cl_plot, displayMap, display_wfs_signals
 from OOPAO.tools.tools import OopaoError
 from compute_ekatwin import compute_ekarus_model
-from parameter_files.parameterFile_ekatwin import initializeParameterFile
 from OOPAO.tools.interpolateGeometricalTransformation import interpolate_cube
 from OOPAO.MisRegistration import MisRegistration
 from OOPAO.tools.tools import OopaoError
 
 class Ekarus:
 
-    def __init__(self):
-        self.param = initializeParameterFile()
+    def __init__(self,param):
+        self.param = param
 
         # BE SUR TO SET CONSOLE TO WORKING DIRECTORY BEFORE RUNNING
         directory = os.getcwd().replace("\\", "/")
@@ -31,7 +30,7 @@ class Ekarus:
         loc = directory + '/ekarus_inputs/'
     
         # tel_calib,_,dm_calib,_,_ = compute_papyrus_model(param = param, loc = loc, source=False, IFreal=IFreal)
-        self.tel,self.ngs,self.src,self.dm,self.wfs,self.atm,self.tt,self.perfet_OCAM,self.OCAM = compute_ekarus_model(param = self.param, loc = loc, source=True, IFreal=False)
+        self.tel,self.ngs,self.src,self.dm,self.dm_synthetic,self.wfs,self.atm,self.tt,self.perfet_OCAM,self.OCAM = compute_ekarus_model(param = self.param, loc = loc, source=True, IFreal=False)
         
         
     def set_pupil(self,calibration=True,sky_offset = [0,0],spiders=False):
@@ -58,7 +57,7 @@ class Ekarus:
 
     def check_pwfs_pupils(self,valid_pixel_map,n_it=3, correct = False):
         
-        self.wfs.modulation = 20
+        self.wfs.modulation = 10
         
         from OOPAO.tools.tools import centroid
         
@@ -143,7 +142,7 @@ class Ekarus:
     
     
     
-    def calibrate_mis_registration(self,M2C,input_im, index_modes = np.arange(10,150,10)):
+    def calibrate_mis_registration(self,dm,M2C,input_im, index_modes = np.arange(10,150,10)):
         if self.wfs.telescope.is_calibration_pupil is False:
             raise OopaoError('The calibration of the mis-registrations must be achieved using the calibration pupil.\n'+
                              'Switch to the calibration pupil using the Papyrus.set_pupil() method')
@@ -158,17 +157,11 @@ class Ekarus:
         
 
             
-        Sprint = SPRINT(self, basis,dm_input=self.dm,n_mis_reg=5,recompute_sensitivity=True )
-        Sprint.estimate(self, on_sky_slopes = input_im[:,index_modes],dm_input=self.dm ,n_iteration=2,n_update_zero_point=2,tolerance=100)
-        
-        
+        Sprint = SPRINT(self, basis,dm_input=dm,n_mis_reg=5,recompute_sensitivity=True )
+        Sprint.estimate(self, on_sky_slopes = input_im[:,index_modes],n_iteration=1,n_update_zero_point=2,tolerance=100)
         from OOPAO.mis_registration_identification_algorithm.applyMisRegistration import applyMisRegistration
-        self.dm = applyMisRegistration(tel                  = self.tel,
-                                       misRegistration_tmp  = Sprint.mis_registration_out,
-                                       param                = self.param,
-                                       dm_input             = self.dm)
-    
-        return
+        dm_tmp = dm.apply_mis_registration(Sprint.mis_registration_out)
+        return  dm_tmp
     
     def from_im_fit_ellipse(self,loc, threshold, n):
         """
@@ -227,4 +220,80 @@ class Ekarus:
         y_t = a * np.sin(phi) * np.cos(t) - b * np.cos(phi) * np.sin(t)
         
         return x_t, y_t, a, b, e
-    
+
+def _shift(arr, offset, axis):
+    """Shift along `axis` (0 or 1), zero-padding. Works for 2D frames and
+    (n_pix, n_pix, n_im) cubes."""
+    if offset == 0:
+        return arr
+    out = np.zeros_like(arr)
+    src = [slice(None)] * arr.ndim
+    dst = [slice(None)] * arr.ndim
+    if offset > 0:
+        dst[axis] = slice(offset, None)
+        src[axis] = slice(None, -offset)
+    else:
+        dst[axis] = slice(None, offset)
+        src[axis] = slice(-offset, None)
+    out[tuple(dst)] = arr[tuple(src)]
+    return out
+
+
+def compress_ekarus_data(frame_, n_pix, n_pix_crop=None, offset_X=0, offset_Y=0):
+    """
+    frame_ : (N, N) or (N, N, n_im)
+    Returns the four corner quadrants stacked into a (2*n_pix, 2*n_pix[, n_im]) block.
+    """
+    frame = np.asarray(frame_, dtype=float)
+    frame = _shift(frame, offset_X, axis=0)
+    frame = _shift(frame, offset_Y, axis=1)
+
+    Q1 = frame[:n_pix, :n_pix]
+    Q2 = frame[:n_pix, -n_pix:]
+    Q3 = frame[-n_pix:, :n_pix]
+    Q4 = frame[-n_pix:, -n_pix:]
+
+    top = np.concatenate((Q1, Q2), axis=1)
+    bottom = np.concatenate((Q3, Q4), axis=1)
+    output_frame = np.concatenate((top, bottom), axis=0)
+
+    if n_pix_crop is not None:
+        output_frame = output_frame[n_pix_crop:-n_pix_crop, n_pix_crop:-n_pix_crop]
+    return output_frame
+
+
+def decompress_ekarus_data(output_frame, shape, n_pix, n_pix_crop=None,
+                           offset_X=0, offset_Y=0, undo_offset=True):
+    """
+    Reverse of compress_ekarus_data.
+    shape : full frame/cube shape, e.g. (N, N) or (N, N, n_im).
+    """
+    output_frame = np.asarray(output_frame, dtype=float)
+    frame = np.zeros(shape, dtype=float)
+
+    # 1. undo the crop
+    if n_pix_crop is not None:
+        stacked = np.zeros((2 * n_pix, 2 * n_pix) + tuple(shape[2:]), dtype=float)
+        stacked[n_pix_crop:-n_pix_crop, n_pix_crop:-n_pix_crop] = output_frame
+    else:
+        stacked = output_frame
+
+    # 2. unstack the four quadrants back into the corners
+    frame[:n_pix, :n_pix]   = stacked[:n_pix, :n_pix]
+    frame[:n_pix, -n_pix:]  = stacked[:n_pix, n_pix:]
+    frame[-n_pix:, :n_pix]  = stacked[n_pix:, :n_pix]
+    frame[-n_pix:, -n_pix:] = stacked[n_pix:, n_pix:]
+
+    if not undo_offset:
+        return frame
+
+    # 3. undo the offsets in reverse order
+    frame = _shift(frame, -offset_Y, axis=1)
+    frame = _shift(frame, -offset_X, axis=0)
+    return frame
+
+
+def compute_ekarus_frame(signal,valid_signal):
+    data = np.zeros(valid_signal.shape)
+    data[valid_signal] = signal
+    return data

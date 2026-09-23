@@ -6,18 +6,20 @@ Created on Thu May 20 17:52:09 2021
 """
 import numpy as np
 from .Detector import Detector
-from .tools.tools import bin_ndarray, gaussian_2D, warning, OopaoError, emptyClass
+from .tools.tools import bin_ndarray, gaussian_2D, warning, OopaoError, emptyClass, get_array_module
 from joblib import Parallel, delayed
-import scipy as sp
-import sys
+import scipy.fft
+from scipy import signal as sg
 from .OPD_map import OPD_map
 
-try:
-    import cupy as xp
-    global_gpu_flag = True
-    xp = np  # for now
-except ImportError or ModuleNotFoundError:
-    xp = np
+from .runtime import array_backend, precision_bits
+xp, global_gpu_flag = array_backend()
+from .runtime import to_numpy as _to_numpy
+
+if global_gpu_flag:
+    from cupyx.scipy import signal as csg
+else:
+    csg = sg
 
 
 class ShackHartmann:
@@ -139,12 +141,7 @@ class ShackHartmann:
             _ wfs.lightRatio            : reset the valid subaperture selection considering the new value
 
         """
-        OOPAO_path = [s for s in sys.path if "OOPAO" in s]
-        l = []
-        for i in OOPAO_path:
-            l.append(len(i))
-        path = OOPAO_path[np.argmin(l)]
-        precision = np.load(path+'/precision_oopao.npy')
+        precision = precision_bits()
         if precision == 64:
             self.precision = np.float64
         else:
@@ -153,6 +150,17 @@ class ShackHartmann:
             self.precision_complex = xp.complex64
         else:
             self.precision_complex = xp.complex128
+        # bridge to move the per-subaperture EM field / FFT propagation onto
+        # GPU when cupy is available, mirroring Pyramid's convert_for_gpu /
+        # convert_for_numpy pattern; both are no-ops on a plain numpy array,
+        # so this is harmless when cupy isn't installed
+        self.gpu_available = global_gpu_flag
+        if self.gpu_available:
+            self.convert_for_gpu = xp.asarray
+            self.convert_for_numpy = xp.asnumpy
+        else:
+            self.convert_for_gpu = lambda a: a
+            self.convert_for_numpy = lambda a: a
         # -------------------- INPUTS -------------------------
         # Number of subapertures (micro-lenses) across telescope diameter
         self.nSubap = nSubap
@@ -260,23 +268,37 @@ class ShackHartmann:
         # associated centers for each case
         self.center = self.n_pix_lenslet//2
         self.center_init = self.n_pix_lenslet_init//2
-        self.outerMask = np.ones([self.n_pix_subap_init*self.zero_padding, self.n_pix_subap_init*self.zero_padding])
+        # xp (not np): multiplied against the on-GPU intensity cube in
+        # wfs_measure, and cupy refuses to mix cupy/numpy arrays in arithmetic
+        self.outerMask = xp.ones([self.n_pix_subap_init*self.zero_padding, self.n_pix_subap_init*self.zero_padding], dtype=self.precision)
         self.outerMask[1:-1, 1:-1] = 0
         # Compute camera frame in case of multiple measurements
         self.get_raw_data_multi = False
         # WFS detector object
-        self.cam = Detector(round(nSubap*self.n_pix_subap))
+        self.cam = Detector(round(nSubap*self.n_pix_subap),
+                            output_precision=np.float32 if precision == 32 else None)
         self.cam.photonNoise = 0
         self.cam.readoutNoise = 0
+        # memory budget (bytes) for one batch of wave-fronts when sensing a cube on the CPU (e.g. interaction matrix)
+        self.cpu_batch_memory = 1e9
         # joblib parameter
         self.nJobs = 1
+        # measure all the sources of an asterism at once (False: one after the other)
+        self.parallel_sources = True
+        # number of CPU threads for the batched FFTs (-1: all the cores)
+        self.fft_workers = -1
+        self._batch_cache = {}
+        self._free_memory_cache = None
         self.joblib_prefer = 'processes'
         # camera frame
         self.raw_data = np.zeros([self.n_pix_subap*(self.nSubap)//self.binning_factor, self.n_pix_subap*(self.nSubap)//self.binning_factor], dtype=float)
         # phasor to center spots in the center of the lenslets
-        [xx, yy] = np.meshgrid(np.linspace(0, self.n_pix_lenslet_init-1, self.n_pix_lenslet_init), np.linspace(0, self.n_pix_lenslet_init-1, self.n_pix_lenslet_init))
-        self.phasor = np.exp(-(1j*np.pi*(self.n_pix_lenslet_init+1+(self.pixel_scale/self.pixel_scale_init)*self.half_pixel_shift) / self.n_pix_lenslet_init)*(xx+yy))
-        self.phasor_tiled = np.moveaxis(np.tile(self.phasor[:, :, None], self.nSubap**2), 2, 0)
+        # xp (not np): multiplied against the on-GPU cube_em in
+        # get_lenslet_em_field, same cupy/numpy mixing restriction as above
+        [xx, yy] = xp.meshgrid(xp.linspace(0, self.n_pix_lenslet_init-1, self.n_pix_lenslet_init), xp.linspace(0, self.n_pix_lenslet_init-1, self.n_pix_lenslet_init))
+        # (at the working precision: a complex128 phasor would turn the lenslet FFTs into double precision)
+        self.phasor = xp.exp(-(1j*xp.pi*(self.n_pix_lenslet_init+1+(self.pixel_scale/self.pixel_scale_init)*self.half_pixel_shift) / self.n_pix_lenslet_init)*(xx+yy)).astype(self.precision_complex)
+        self.phasor_tiled = xp.moveaxis(xp.tile(self.phasor[:, :, None], self.nSubap**2), 2, 0)
         if self.src.tag == 'source':
             self.src_list = [self.src]
         elif self.src.tag == 'asterism':
@@ -300,7 +322,8 @@ class ShackHartmann:
             # set the valid lenslets accordingly
             self.set_valid_subaperture(src=src, sh_data=self.sh_data['src_'+str(i_src)])
             # Set the pupil masks for each SH (needed for the geometric SH implementation with EM field transform)
-            self.sh_data['src_' + str(i_src)].pupil_mask = src.intensity == np.max(src.intensity)
+            intensity_cpu = _to_numpy(src.intensity)
+            self.sh_data['src_' + str(i_src)].pupil_mask = intensity_cpu == np.max(intensity_cpu)
             # initialize the weithing map for the CoG computation
             self.sh_data['src_'+str(i_src)].weighting_map = 1
             # store the number of signal
@@ -317,19 +340,26 @@ class ShackHartmann:
         self.initialize_wfs()
         return
 
-    def initialize_flux(self, src, sh_data):
-        input_flux_map = src.intensity.T
-        tmp_flux_h_split = np.hsplit(input_flux_map, self.nSubap)
+    def initialize_flux(self, src, sh_data, flux_map=None):
+        # this stays on numpy (its only output feeds the valid-subaperture
+        # threshold mask, inherently a host-side control-flow decision) but
+        # the per-subaperture split is vectorized the same way as
+        # get_lenslet_em_field: one reshape/transpose instead of a
+        # per-subaperture Python loop
+        # (src.intensity is a CuPy array with GPU residency: bring it to the host first)
+        flux = _to_numpy(src.intensity if flux_map is None else flux_map)
+        flux_tiles = self._lenslet_tiles(flux)
+        npx = self.n_pix_subap_init
         sh_data.cube_flux = np.zeros([self.nSubap ** 2,
                                       self.n_pix_lenslet_init,
                                       self.n_pix_lenslet_init], dtype=float)
-        for i in range(self.nSubap):
-            tmp_flux_v_split = np.vsplit(tmp_flux_h_split[i], self.nSubap)
-            sh_data.cube_flux[i * self.nSubap:(i + 1) * self.nSubap,
-                              self.center_init - self.n_pix_subap_init // 2:self.center_init + self.n_pix_subap_init // 2,
-                              self.center_init - self.n_pix_subap_init // 2:self.center_init + self.n_pix_subap_init // 2] = np.asarray(tmp_flux_v_split)
+        c = self.center_init - npx // 2
+        sh_data.cube_flux[:, c:c+npx, c:c+npx] = flux_tiles
         # required to compute the valid subapertures
-        sh_data.photon_per_subaperture = np.apply_over_axes(np.sum, sh_data.cube_flux, [1, 2])
+        # np.apply_over_axes has no cupy equivalent; xp.sum(..., keepdims=True)
+        # is the direct, backend-agnostic replacement (same shape/values)
+        xp_local = get_array_module(sh_data.cube_flux)
+        sh_data.photon_per_subaperture = xp_local.sum(sh_data.cube_flux, axis=(1, 2), keepdims=True)
         sh_data.current_nPhoton = src.nPhoton
         return
 
@@ -396,11 +426,25 @@ class ShackHartmann:
             self.src_list = [src]
         elif src.tag == 'asterism':
             self.src_list = src.src
+        if self._can_batch_sources(self.src_list):
+            signal_2D_list, signal_list, frames_list = self._relay_batch(self.src_list)
+        else:
+            signal_2D_list, signal_list, frames_list = self._relay_sequential(self.src_list)
+        self.signal_2D = np.asarray(np.squeeze(signal_2D_list))
+        self.signal = np.concatenate(signal_list)
+        if self.is_geometric is False:
+            self.cam.frame = np.squeeze(np.array(frames_list))
+
+    def _can_batch_sources(self, src_list):
+        return (self.parallel_sources and len(src_list) > 1 and self.is_geometric is False
+                and not (self.is_LGS and self.convolution_tag != 'FFT')
+                and all(np.ndim(src.phase) == 2 and src.phase_filtered is None for src in src_list))
+
+    def _relay_sequential(self, src_list):
         signal_2D_list = []
         signal_list = []
         frames_list = []
-        for i_src, src in enumerate(self.src_list):
-            src = self.src_list[i_src]
+        for i_src, src in enumerate(src_list):
             src.optical_path.append([self.tag, self])
             # initialize flux for each source to capture an eventual change
             self.initialize_flux(src, sh_data=self.sh_data['src_'+str(i_src)])
@@ -410,12 +454,131 @@ class ShackHartmann:
             signal_list.append(np.squeeze(self.signal))
             if self.is_geometric is False:
                 frames_list.append(self.cam.frame)
-        # print(self.signal_2D.shape)
-        self.signal_2D = np.asarray(np.squeeze(signal_2D_list))
-        self.signal = np.concatenate(signal_list)
-        if self.is_geometric is False:
-            self.cam.frame = np.squeeze(np.array(frames_list))
-        return
+        return signal_2D_list, signal_list, frames_list
+
+    def _relay_batch(self, src_list):
+        """Lenslet FFTs of all the sources in one batch, then detector and centroiding source by source."""
+        if self.isInitialized:
+            if self.wavelength_calibration != self.telescope.src.wavelength:
+                raise OopaoError('A change in wavelength was detected in the WFS object \n' +
+                                 'Make sure that the correct source is propagated in the WFS object or re-calibrate with the correct source.')
+        sh_list = [self.sh_data['src_'+str(i_src)] for i_src in range(len(src_list))]
+        for src, sh_data in zip(src_list, sh_list):
+            src.optical_path.append([self.tag, self])
+            # initialize flux for each source to capture an eventual change
+            self.initialize_flux(src, sh_data=sh_data)
+            # same as wfs_measure(phase_in=src.phase)
+            src.phase = src.phase
+        signal_2D_list = []
+        signal_list = []
+        frames_list = []
+        for group in self._get_source_groups(sh_list):
+            spots = self._get_spots_batch([src_list[i] for i in group], [sh_list[i] for i in group])
+            # the noise is applied in the same order as the sequential measurement
+            for i_src, intensity in zip(group, spots):
+                self.raw_data = self._spots_to_frame(intensity, sh_list[i_src])
+                self.maps_intensity = intensity
+                self.signal_2D, self.signal = self.wfs_integrate(src=src_list[i_src], sh_data=sh_list[i_src])
+                signal_2D_list.append(np.squeeze(self.signal_2D))
+                signal_list.append(np.squeeze(self.signal))
+                frames_list.append(self.cam.frame)
+        return signal_2D_list, signal_list, frames_list
+
+    def _get_fft(self, array):
+        if get_array_module(array) is np:
+            return scipy.fft, {'workers': self.fft_workers}
+        return xp.fft, {}
+
+    def _get_source_groups(self, sh_list):
+        """Groups of sources whose batched measurement fits in memory."""
+        item = np.dtype(self.precision_complex).itemsize
+        size_src = []
+        for sh_data in sh_list:
+            size = (self.nSubap**2 + 2*sh_data.nValidSubaperture) * self.n_pix_lenslet_init**2 * item
+            if self.is_LGS:
+                size += 3 * sh_data.nValidSubaperture * sh_data.spot_kernel_elongation_fft.shape[1]**2 * 16
+            size_src.append(size)
+        if self.gpu_available:
+            if self._free_memory_cache is None:
+                self._free_memory_cache = xp.cuda.runtime.memGetInfo()[0] + xp.get_default_memory_pool().free_bytes()
+            budget = 0.5 * self._free_memory_cache
+        else:
+            budget = self.cpu_batch_memory
+        groups = []
+        current = []
+        used = 0
+        for i_src, size in enumerate(size_src):
+            if current and used + size > budget:
+                groups.append(current)
+                current = []
+                used = 0
+            current.append(i_src)
+            used += size
+        groups.append(current)
+        return groups
+
+    def _get_batch_layout(self, sh_list, key):
+        """Indices of the valid lenslets of the sources in the batch and LGS kernels (cached)."""
+        refs = [sh_data.valid_subapertures_1D for sh_data in sh_list] + \
+               [getattr(sh_data, 'spot_kernel_elongation_fft', None) for sh_data in sh_list] + [self.is_LGS]
+        cache = self._batch_cache.get(key)
+        if cache is not None and len(cache[0]) == len(refs) and all(a is b for a, b in zip(cache[0], refs)):
+            return cache[1]
+        valid = [np.flatnonzero(sh_data.valid_subapertures_1D) for sh_data in sh_list]
+        layout = emptyClass()
+        layout.index = xp.asarray(np.concatenate([i*self.nSubap**2 + v for i, v in enumerate(valid)]))
+        layout.offsets = np.cumsum([0] + [len(v) for v in valid])
+        layout.lgs_groups = []
+        if self.is_LGS:
+            # the LGS convolution is batched over the sources with the same kernel size
+            members_size = {}
+            for i, sh_data in enumerate(sh_list):
+                members_size.setdefault(sh_data.spot_kernel_elongation_fft.shape[1:], []).append(i)
+            for members in members_size.values():
+                group = emptyClass()
+                group.members = members
+                group.index = xp.asarray(np.concatenate([np.arange(layout.offsets[i], layout.offsets[i+1]) for i in members]))
+                group.offsets = np.cumsum([0] + [len(valid[i]) for i in members])
+                group.spot_kernel_elongation_fft = xp.asarray(np.concatenate([sh_list[i].spot_kernel_elongation_fft for i in members]))
+                layout.lgs_groups.append(group)
+        self._batch_cache[key] = (refs, layout)
+        return layout
+
+    def _get_spots_batch(self, src_list, sh_list):
+        """Spots of the valid lenslets of each source, from one batched propagation."""
+        layout = self._get_batch_layout(sh_list, tuple(src.ast_idx for src in src_list))
+        n_src = len(src_list)
+        npx = self.n_pix_subap_init
+        n_lenslet = self.n_pix_lenslet_init
+        # lenslet EM fields (as get_lenslet_em_field)
+        phase = xp.stack([xp.asarray(src.phase) for src in src_list])
+        amplitude = xp.stack([xp.sqrt(xp.asarray(src.intensity)) for src in src_list])
+        cube_em = xp.zeros([n_src, self.nSubap**2, n_lenslet, n_lenslet], dtype=self.precision_complex)
+        c = self.center_init - npx//2
+        cube_em[:, :, c:c+npx, c:c+npx] = self._lenslet_tiles(amplitude) * xp.exp(1j*self._lenslet_tiles(phase))
+        cube_em *= self.phasor_tiled
+        self.cube_em = cube_em[-1]
+        # propagation of the valid lenslets of all the sources
+        em_field = cube_em.reshape((-1, n_lenslet, n_lenslet))[layout.index]
+        fft, fft_kw = self._get_fft(em_field)
+        intensity = (xp.abs(fft.fft2(em_field, axes=[1, 2], **fft_kw)/n_lenslet)**2)
+        # flux on the edges of the lenslets of each source
+        edge = np.concatenate([[0], self.convert_for_numpy(xp.cumsum(xp.sum(intensity*self.outerMask, axis=(1, 2))))])
+        total = np.concatenate([[0], self.convert_for_numpy(xp.cumsum(xp.sum(intensity, axis=(1, 2))))])
+        o = layout.offsets
+        for i in range(n_src):
+            self.edge_subaperture_criterion = float((edge[o[i+1]]-edge[o[i]])/(total[o[i+1]]-total[o[i]]))
+            self._check_edge_criterion(self.edge_subaperture_criterion)
+        self.sum_intensity = xp.sum(intensity[o[-2]:o[-1]], axis=0)
+        if not self.is_LGS:
+            intensity = self._process_spots(intensity, layout, fft_module=(fft, fft_kw))
+            return [intensity[o[i]:o[i+1]] for i in range(n_src)]
+        spots = [None]*n_src
+        for group in layout.lgs_groups:
+            intensity_group = self._process_spots(intensity[group.index], group, fft_module=(fft, fft_kw))
+            for k, i in enumerate(group.members):
+                spots[i] = intensity_group[group.offsets[k]:group.offsets[k+1]]
+        return spots
 
     def wfs_integrate(self, src, sh_data):
         # propagate to detector to add noise and detector effects
@@ -461,133 +624,39 @@ class ShackHartmann:
                 # compute spot intensity
                 if src.phase_filtered is None:
                     phase = src.phase
-                    # self.initialize_flux(input_flux_map=src.intensity.T)
+                    amplitude = None
                 else:
+                    # spatially filtered wave-front (SpatialFilter): the filtered field replaces the incoming one.
+                    # Its amplitude already carries the flux, so the lenslet fields use it directly and the
+                    # flux per subaperture is its square
                     phase = src.phase_filtered
-                    self.initialize_flux(((src.amplitude_filtered)**2).T*src.intensity.T)
-                intensity = (np.abs(np.fft.fft2(np.asarray(self.get_lenslet_em_field(src=src,
-                                                                                     sh_data=sh_data,
-                                                                                     phase=phase)), axes=[1, 2])/norma)**2)
-                # reduce to valid subaperture
-                intensity = intensity[sh_data.valid_subapertures_1D, :, :]
-                self.sum_intensity = np.sum(intensity, axis=0)
-                self.edge_subaperture_criterion = np.sum(intensity*self.outerMask)/np.sum(intensity)
-                if self.edge_subaperture_criterion > 0.05:
-                    warning('The light in the subaperture is probably wrapping!\n'+str(np.round(100*self.edge_subaperture_criterion, 1)) +
-                            ' % of the total flux detected on the edges of the subapertures.\n' +
-                            'You may want to lower the seeing value or increase the number of pixel per subaperture')
-                # in case of LGS sensor, convolve with LGS spots kernel to create spot elungation
-                if self.is_LGS:
-                    if self.convolution_tag == 'FFT':
-                        # zero pad the spot intensity to match LGS spot size for the FFT product
-                        extra_pixel = (sh_data.spot_kernel_elongation_fft.shape[1] - intensity.shape[1])//2
-                        intensity = np.pad(intensity,
-                                           [[0, 0],
-                                            [extra_pixel, extra_pixel],
-                                            [extra_pixel, extra_pixel]])
-                        # compute convolution using the FFT
-                        intensity = np.fft.fftshift(np.abs((np.fft.ifft2(np.fft.fft2(intensity)*sh_data.spot_kernel_elongation_fft))), axes=[1, 2])
-                        # bin the resulting image to the right pixel scale
-                        intensity = bin_ndarray(intensity,
-                                                [intensity.shape[0],
-                                                 intensity.shape[1]//self.binning_pixel_scale,
-                                                 intensity.shape[1]//self.binning_pixel_scale], operation='sum')
-                        # crop the resulting spots to the right number of pixels
-                        n_crop = (intensity.shape[1] - self.n_pix_subap)//2
-                        if n_crop > 0:
-                            intensity = intensity[:, n_crop:-n_crop, n_crop:-n_crop]
-                    elif self.convolution_tag == 'direct':
-                        n_crop = intensity.shape[1]//4
-                        intensity = intensity[:, n_crop:-n_crop, n_crop:-n_crop]
-                        # parallelization of the direct convolution using joblib
-
-                        def joblib_convolve_direct():
-                            Q = Parallel(n_jobs=12, prefer='threads')(delayed(self.convolve_direct)(i, j) for i, j in zip(sh_data.spot_kernel_elongation, intensity))
-                            return Q
-                        intensity = np.asarray(joblib_convolve_direct())
-                        # # bin the resulting image
-                        intensity = bin_ndarray(intensity,
-                                                [intensity.shape[0],
-                                                 intensity.shape[1] // self.binning_pixel_scale,
-                                                 intensity.shape[1] // self.binning_pixel_scale], operation='sum')
-                        # crop the resulting spots
-                        n_crop = (intensity.shape[1] - self.n_pix_subap)//2
-                        if n_crop > 0:
-                            intensity = intensity[:, n_crop:-n_crop, n_crop:-n_crop]
-                else:
-                    # set the sampling of the spots
-                    if self.pixel_scale == self.pixel_scale_init:
-                        intensity = intensity
-                    elif self.pixel_scale < self.pixel_scale_init:
-                        raise OopaoError('The smallest pixel scale value is ' + str(self.pixel_scale_init) + ' "')
-                    else:
-                        # pad the intensity to provide the right number of pixel before binning
-                        self.extra_pixel = (self.binning_pixel_scale*self.n_pix_subap_init - intensity.shape[1])//2
-                        intensity = np.pad(intensity, [[0, 0], [self.extra_pixel, self.extra_pixel], [self.extra_pixel, self.extra_pixel]])
-                        # bin the spots to get the requested pixel scale
-                        intensity = bin_ndarray(intensity, [intensity.shape[0], self.n_pix_subap_init, self.n_pix_subap_init], operation='sum')
-                # crop to the right number of pixel
-                n_crop = (intensity.shape[1] - self.n_pix_subap)//2
-                if n_crop > 0:
-                    intensity = intensity[:, n_crop:-n_crop, n_crop:-n_crop]
-                elif n_crop < 0:
-                    intensity = np.pad(intensity, [[0, 0],
-                                                   [-n_crop, -n_crop],
-                                                   [-n_crop, -n_crop]])
-                if self.binning_factor > 1:
-                    intensity = bin_ndarray(intensity, [intensity.shape[0], self.n_pix_subap//self.binning_factor, self.n_pix_subap//self.binning_factor], operation='sum')
-                else:
-                    if self.binning_factor != 1:
-                        raise OopaoError('The binning factor must be a scalar >= 1')
-                # fill camera frame with computed intensity (only valid subapertures)
-
-                def joblib_fill_raw_data():
-                    Q = Parallel(n_jobs=1, prefer='processes')(delayed(self.fill_raw_data)(i, j, k) for i, j, k in zip(self.index_x[sh_data.valid_subapertures_1D],
-                                                                                                                       self.index_y[sh_data.valid_subapertures_1D],
-                                                                                                                       intensity))
-                    return Q
-                joblib_fill_raw_data()
+                    amplitude = _to_numpy(src.amplitude_filtered)
+                    self.initialize_flux(src, sh_data, flux_map=amplitude**2)
+                # get_lenslet_em_field uploads to GPU internally when available;
+                # the FFT propagation (the dominant cost) then runs on-device,
+                # for the valid subapertures only
+                em_field = self.get_lenslet_em_field(src=src, sh_data=sh_data, phase=phase, amplitude=amplitude)
+                intensity = (xp.abs(xp.fft.fft2(em_field[self._valid_index(sh_data)], axes=[1, 2])/norma)**2)
+                self.sum_intensity = xp.sum(intensity, axis=0)
+                self.edge_subaperture_criterion = float(xp.sum(intensity*self.outerMask)/xp.sum(intensity))
+                self._check_edge_criterion(self.edge_subaperture_criterion)
+                intensity = self._process_spots(intensity, sh_data)
+                self.raw_data = self._spots_to_frame(intensity, sh_data)
                 self.maps_intensity = intensity
                 if integrate:
                     self.signal_2D, self.signal = self.wfs_integrate(src=src, sh_data=sh_data)
                     return [self.signal_2D, self.signal, intensity]
             else:
-                # -- case with multiple wave-fronts to sense--
-                # set phase buffer
-                self.phase_buffer = np.array(src.phase)
-                # reset camera frame
-                self.raw_data = np.zeros([self.phase_buffer.shape[0], self.n_pix_subap*(self.nSubap)//self.binning_factor, self.n_pix_subap*(self.nSubap)//self.binning_factor], dtype=float)
-                # compute 2D intensity for multiple input wavefronts
-
-                def compute_diffractive_signals_multi():
-                    Q = Parallel(n_jobs=1, prefer='processes')(delayed(self.wfs_measure)(phase_in=i, src=src, sh_data=sh_data) for i in self.phase_buffer)
-                    return Q
-                # compute the WFS maps and WFS signals
-                m = compute_diffractive_signals_multi()
-                if m[0][0].shape[0] == 4:
-                    new_m = []
-                    for i in range(len(m)):
-                        new_m.append([m[0][0][i], m[0][1][i], m[i][2]])
-                    m = new_m
-                # re-organization of signals into the right properties according to number of wavefronts considered
-                self.signal_2D = np.zeros([m[0][0].shape[0], m[0][0].shape[1], self.phase_buffer.shape[0]])
-                self.signal = np.zeros([m[0][1].shape[0], self.phase_buffer.shape[0]])
-                self.maps_intensity = np.zeros([self.phase_buffer.shape[0], m[0][2].shape[0], m[0][2].shape[1], m[0][2].shape[2]])
-                for i in range(self.phase_buffer.shape[0]):
-                    self.signal_2D[:, :, i] = m[i][0]
-                    self.signal[:, i] = m[i][1]
-                    self.maps_intensity[i, :, :, :] = m[i][2]
-                # fill up camera frame if requested (default is False)
-                if self.get_raw_data_multi is True:
-                    self.compute_raw_data_multi(intensity=self.maps_intensity)
+                # -- case with multiple wave-fronts to sense (cube with the modes along the last axis) --
+                self._wfs_measure_cube(src, sh_data)
         else:
             # Geometric SH with single WF
             if np.ndim(src.phase) == 2:
-                self.signal_2D = self.lenslet_propagation_geometric(src.phase, sh_data.pupil_mask)*sh_data.valid_signal_2D/self.slopes_units
+                self.signal_2D = self.lenslet_propagation_geometric(_to_numpy(src.phase), sh_data.pupil_mask)*sh_data.valid_signal_2D/self.slopes_units
                 self.signal = self.signal_2D[sh_data.valid_signal_2D]
             # Geometric SH with multiple WFS
             else:
-                self.phase_buffer = np.moveaxis(src.phase, -1, 0)
+                self.phase_buffer = np.moveaxis(_to_numpy(src.phase), -1, 0)
 
                 def compute_geometric_signals():
                     Q = Parallel(n_jobs=1, prefer='processes')(
@@ -597,6 +666,193 @@ class ShackHartmann:
                 self.signal_2D = np.asarray(maps)/self.slopes_units
                 self.signal = self.signal_2D[:, sh_data.valid_signal_2D].T
         return
+
+    def _lenslet_tiles(self, array):
+        """Split (..., n, n) pupil-plane maps into (..., nSubap**2, npx, npx) lenslet tiles.
+
+        Single reshape/transpose (tile ordering i*nSubap+j, as the original hsplit/vsplit loop); works on
+        NumPy and CuPy arrays and on stacks of maps.
+        """
+        npx = self.n_pix_subap_init
+        lead = array.shape[:-2]
+        k = len(lead)
+        tiles = array.swapaxes(-1, -2).reshape(lead + (self.nSubap, npx, self.nSubap, npx))
+        tiles = tiles.transpose(tuple(range(k)) + (k+2, k, k+1, k+3))
+        return tiles.reshape(lead + (self.nSubap**2, npx, npx))
+
+    def _valid_index(self, sh_data):
+        """Integer indices of the valid subapertures on the working backend (computed once per selection)."""
+        cache = getattr(sh_data, '_valid_index_cache', None)
+        if cache is None or cache[0] is not sh_data.valid_subapertures_1D:
+            cache = (sh_data.valid_subapertures_1D, xp.asarray(np.flatnonzero(sh_data.valid_subapertures_1D)))
+            sh_data._valid_index_cache = cache
+        return cache[1]
+
+    def _check_edge_criterion(self, criterion):
+        if criterion > 0.05:
+            warning('The light in the subaperture is probably wrapping!\n'+str(np.round(100*criterion, 1)) +
+                    ' % of the total flux detected on the edges of the subapertures.\n' +
+                    'You may want to lower the seeing value or increase the number of pixel per subaperture')
+
+    def _process_spots(self, intensity, sh_data, fft_module=None):
+        """From the (nValid, N, N) lenslet intensities to the spots on the detector pixels.
+
+        LGS elongation, pixel scale, crop/padding to n_pix_subap and binning.
+        fft_module: (fft, kwargs) to compute the LGS convolution on the backend of intensity (None: with numpy).
+        """
+        # in case of LGS sensor, convolve with LGS spots kernel to create spot elungation
+        if self.is_LGS:
+            if fft_module is None:
+                # LGS kernels (get_convolution_spot) are precomputed on the
+                # host; keep this less-common path on numpy rather than
+                # threading GPU support through per-subaperture kernels
+                # that differ from one subaperture to the next
+                intensity = self.convert_for_numpy(intensity)
+                xp_, fft, fft_kw = np, np.fft, {}
+            else:
+                xp_ = get_array_module(intensity)
+                fft, fft_kw = fft_module
+            if self.convolution_tag == 'FFT':
+                # zero pad the spot intensity to match LGS spot size for the FFT product
+                extra_pixel = (sh_data.spot_kernel_elongation_fft.shape[1] - intensity.shape[1])//2
+                intensity = xp_.pad(intensity,
+                                    [[0, 0],
+                                     [extra_pixel, extra_pixel],
+                                     [extra_pixel, extra_pixel]])
+                # compute convolution using the FFT
+                intensity = xp_.fft.fftshift(xp_.abs((fft.ifft2(fft.fft2(intensity, **fft_kw)*sh_data.spot_kernel_elongation_fft, **fft_kw))), axes=[1, 2])
+                # bin the resulting image to the right pixel scale
+                intensity = bin_ndarray(intensity,
+                                        [intensity.shape[0],
+                                         intensity.shape[1]//self.binning_pixel_scale,
+                                         intensity.shape[1]//self.binning_pixel_scale], operation='sum')
+                # crop the resulting spots to the right number of pixels
+                n_crop = (intensity.shape[1] - self.n_pix_subap)//2
+                if n_crop > 0:
+                    intensity = intensity[:, n_crop:-n_crop, n_crop:-n_crop]
+            elif self.convolution_tag == 'direct':
+                n_crop = intensity.shape[1]//4
+                intensity = intensity[:, n_crop:-n_crop, n_crop:-n_crop]
+                # parallelization of the direct convolution using joblib
+
+                def joblib_convolve_direct():
+                    Q = Parallel(n_jobs=12, prefer='threads')(delayed(self.convolve_direct)(i, j) for i, j in zip(sh_data.spot_kernel_elongation, intensity))
+                    return Q
+                intensity = np.asarray(joblib_convolve_direct())
+                # # bin the resulting image
+                intensity = bin_ndarray(intensity,
+                                        [intensity.shape[0],
+                                         intensity.shape[1] // self.binning_pixel_scale,
+                                         intensity.shape[1] // self.binning_pixel_scale], operation='sum')
+                # crop the resulting spots
+                n_crop = (intensity.shape[1] - self.n_pix_subap)//2
+                if n_crop > 0:
+                    intensity = intensity[:, n_crop:-n_crop, n_crop:-n_crop]
+        else:
+            # set the sampling of the spots
+            if self.pixel_scale == self.pixel_scale_init:
+                intensity = intensity
+            elif self.pixel_scale < self.pixel_scale_init:
+                raise OopaoError('The smallest pixel scale value is ' + str(self.pixel_scale_init) + ' "')
+            else:
+                # pad the intensity to provide the right number of pixel before binning
+                self.extra_pixel = (self.binning_pixel_scale*self.n_pix_subap_init - intensity.shape[1])//2
+                xp_ = get_array_module(intensity)
+                intensity = xp_.pad(intensity, [[0, 0], [self.extra_pixel, self.extra_pixel], [self.extra_pixel, self.extra_pixel]])
+                # bin the spots to get the requested pixel scale
+                intensity = bin_ndarray(intensity, [intensity.shape[0], self.n_pix_subap_init, self.n_pix_subap_init], operation='sum')
+        # crop to the right number of pixel (backend-agnostic: dispatches on
+        # whatever produced `intensity` above -- numpy for the LGS branch,
+        # xp for the common non-LGS branch)
+        xp_ = get_array_module(intensity)
+        n_crop = (intensity.shape[1] - self.n_pix_subap)//2
+        if n_crop > 0:
+            intensity = intensity[:, n_crop:-n_crop, n_crop:-n_crop]
+        elif n_crop < 0:
+            intensity = xp_.pad(intensity, [[0, 0],
+                                            [-n_crop, -n_crop],
+                                            [-n_crop, -n_crop]])
+        if self.binning_factor > 1:
+            intensity = bin_ndarray(intensity, [intensity.shape[0], self.n_pix_subap//self.binning_factor, self.n_pix_subap//self.binning_factor], operation='sum')
+        else:
+            if self.binning_factor != 1:
+                raise OopaoError('The binning factor must be a scalar >= 1')
+        return intensity
+
+    def _spots_to_frame(self, intensity, sh_data):
+        """Detector frame (NumPy) with the spots of the valid subapertures, zero elsewhere."""
+        # one vectorized scatter + reshape/transpose instead of a per-subaperture loop
+        xp_ = get_array_module(intensity)
+        tile = intensity.shape[1]
+        full_cube = xp_.zeros((self.nSubap**2, tile, tile), dtype=intensity.dtype)
+        full_cube[sh_data.valid_subapertures_1D if xp_ is np else self._valid_index(sh_data)] = intensity
+        return self.convert_for_numpy(
+            full_cube.reshape(self.nSubap, self.nSubap, tile, tile)
+                     .transpose(0, 2, 1, 3)
+                     .reshape(self.nSubap*tile, self.nSubap*tile))
+
+    def _modes_per_batch(self, sh_data):
+        """Number of wave-fronts propagated together when sensing a cube, from the memory available."""
+        n_lenslet = self.n_pix_lenslet_init
+        # peak usage per wave-front: EM field, its FFT and the intensity of the valid lenslets, plus the tiles
+        item_bytes = 4 * max(1, sh_data.nValidSubaperture) * n_lenslet**2 * np.dtype(self.precision_complex).itemsize
+        if self.gpu_available:
+            free_bytes = xp.cuda.runtime.memGetInfo()[0] + xp.get_default_memory_pool().free_bytes()
+            return int(max(1, 0.5 * free_bytes // item_bytes))
+        return int(max(1, self.cpu_batch_memory // item_bytes))
+
+    def _wfs_measure_cube(self, src, sh_data):
+        """Diffractive SH on a (n, n, n_modes) cube of phases (e.g. interaction matrix).
+
+        The lenslet FFTs of several wave-fronts run as one batched call (sized from the memory available);
+        the detector and centroiding then run frame by frame, exactly as for a single wave-front.
+        """
+        phase = src.phase
+        n_modes = phase.shape[-1]
+        norma = sh_data.cube_flux.shape[1]
+        index = self._valid_index(sh_data)
+        amp_tiles = self._lenslet_tiles(xp.sqrt(xp.asarray(src.intensity)))[index]
+        phasor = self.phasor_tiled[index]
+        c = self.center_init - self.n_pix_subap_init//2
+        npx = self.n_pix_subap_init
+        batch = self._modes_per_batch(sh_data)
+        signal_2D, signal, maps = None, None, []
+        for start in range(0, n_modes, batch):
+            stop = min(start + batch, n_modes)
+            phase_tiles = self._lenslet_tiles(xp.moveaxis(xp.asarray(phase[:, :, start:stop]), -1, 0))[:, index]
+            cube_em = xp.zeros((stop - start, index.shape[0], self.n_pix_lenslet_init, self.n_pix_lenslet_init), dtype=self.precision_complex)
+            cube_em[..., c:c+npx, c:c+npx] = amp_tiles * xp.exp(1j*phase_tiles)
+            del phase_tiles
+            cube_em *= phasor
+            intensity = xp.abs(xp.fft.fft2(cube_em, axes=[-2, -1])/norma)**2
+            del cube_em
+            criterion = self.convert_for_numpy(xp.sum(intensity*self.outerMask, axis=(1, 2, 3))/xp.sum(intensity, axis=(1, 2, 3)))
+            self._check_edge_criterion(float(np.max(criterion)))
+            self.edge_subaperture_criterion = float(criterion[-1])
+            for i in range(stop - start):
+                spots = self._process_spots(intensity[i], sh_data)
+                self.raw_data = self._spots_to_frame(spots, sh_data)
+                signal_2D_i, signal_i = self.wfs_integrate(src=src, sh_data=sh_data)
+                if signal_2D is None:
+                    signal_2D = np.zeros([signal_2D_i.shape[0], signal_2D_i.shape[1], n_modes])
+                    signal = np.zeros([signal_i.shape[0], n_modes])
+                signal_2D[:, :, start + i] = signal_2D_i
+                signal[:, start + i] = signal_i
+                maps.append(self.convert_for_numpy(spots))
+            self.sum_intensity = xp.sum(intensity[-1], axis=0)
+            del intensity
+        self.signal_2D = signal_2D
+        self.signal = signal
+        self.maps_intensity = np.asarray(maps)
+        # fill up camera frames if requested (default is False)
+        if self.get_raw_data_multi is True:
+            self.raw_data = np.zeros([n_modes, self.n_pix_subap*(self.nSubap)//self.binning_factor, self.n_pix_subap*(self.nSubap)//self.binning_factor], dtype=float)
+            self.compute_raw_data_multi(intensity=self.maps_intensity.reshape((-1,) + self.maps_intensity.shape[2:]), sh_data=sh_data)
+        if self.gpu_available:
+            try:
+                xp.get_default_memory_pool().free_all_blocks()
+            except Exception:
+                warning('could not free the memory')
 
     def set_weighted_centroiding_map(self, src, is_lgs: bool, is_gaussian: bool, fwhm_factor, sh_data=None):
         """
@@ -709,21 +965,22 @@ class ShackHartmann:
         centroid_out[:, 1] = np.sum(np.sum(im*Y_coord_map, axis=1), axis=1)/norma
         return centroid_out
 
-    def get_lenslet_em_field(self, src, sh_data, phase):
-        tmp_phase_h_split = np.hsplit(phase.T, self.nSubap)
-        tmp_amp_h_split = np.hsplit(np.sqrt(src.intensity.T), self.nSubap)
-        self.cube_em = np.zeros([self.nSubap**2,
+    def get_lenslet_em_field(self, src, sh_data, phase, amplitude=None):
+        # split the pupil-plane phase/amplitude into the nSubap x nSubap lenslet tiles and upload once
+        # to GPU when available -- the FFT propagation right after this is the dominant cost.
+        # amplitude defaults to sqrt(src.intensity).
+        if amplitude is None:
+            amplitude = xp.sqrt(xp.asarray(src.intensity))
+        phase_tiles = self._lenslet_tiles(xp.asarray(phase))
+        amp_tiles = self._lenslet_tiles(xp.asarray(amplitude))
+        npx = self.n_pix_subap_init
+        # Keep the original complex128 path in default precision. Single
+        # precision uses complex64 for the dominant lenslet FFT allocation.
+        self.cube_em = xp.zeros([self.nSubap**2,
                                  self.n_pix_lenslet_init,
-                                 self.n_pix_lenslet_init], dtype=complex)
-        for i in range(self.nSubap):
-            tmp_phase_v_split = np.vsplit(tmp_phase_h_split[i], self.nSubap)
-            tmp_amp_v_split = np.vsplit(tmp_amp_h_split[i], self.nSubap)
-            # compute complex field with both amplitude and phase
-            complex_field = np.asarray(tmp_amp_v_split) * np.exp(1j*np.asarray(tmp_phase_v_split))
-            self.cube_em[i*self.nSubap:(i+1)*self.nSubap,
-                         self.center_init - self.n_pix_subap_init//2:self.center_init+self.n_pix_subap_init//2,
-                         self.center_init - self.n_pix_subap_init//2:self.center_init+self.n_pix_subap_init//2] = complex_field
-        # self.cube_em *= np.sqrt(sh_data.cube_flux)*self.phasor_tiled
+                                 self.n_pix_lenslet_init], dtype=self.precision_complex)
+        c = self.center_init - npx//2
+        self.cube_em[:, c:c+npx, c:c+npx] = amp_tiles * xp.exp(1j*phase_tiles)
         self.cube_em *= self.phasor_tiled
 
         return self.cube_em
@@ -757,24 +1014,28 @@ class ShackHartmann:
             sh_data = self.sh_data['src_0']
         if input_frame is None:
             input_frame = self.cam.frame
-        raw_data_h_split = np.vsplit((input_frame), self.nSubap)
-        maps_intensity = np.zeros([self.nSubap**2,
-                                   self.n_pix_subap,
-                                   self.n_pix_subap], dtype=float)
-        center = self.n_pix_subap//2
-        for i in range(self.nSubap):
-            raw_data_v_split = np.hsplit(raw_data_h_split[i], self.nSubap)
-            maps_intensity[i*self.nSubap:(i+1)*self.nSubap,
-                           center - self.n_pix_subap//self.binning_factor//2:center+self.n_pix_subap//self.binning_factor // 2,
-                           center - self.n_pix_subap//self.binning_factor//2:center+self.n_pix_subap//self.binning_factor//2] = np.asarray(raw_data_v_split)
+        # single reshape/transpose instead of a per-subaperture Python loop
+        # (validated to reproduce the old vsplit/hsplit loop's tile ordering
+        # exactly: i*nSubap+j)
+        tile = self.n_pix_subap // self.binning_factor
+        tiles = input_frame.reshape(self.nSubap, tile, self.nSubap, tile).transpose(0, 2, 1, 3).reshape(self.nSubap**2, tile, tile)
+        if tile == self.n_pix_subap:
+            maps_intensity = tiles
+        else:
+            maps_intensity = np.zeros([self.nSubap**2,
+                                       self.n_pix_subap,
+                                       self.n_pix_subap], dtype=float)
+            center = self.n_pix_subap//2
+            maps_intensity[:, center-tile//2:center+tile//2, center-tile//2:center+tile//2] = tiles
         maps_intensity = maps_intensity[sh_data.valid_subapertures_1D, :, :]
         return maps_intensity
 
     def compute_raw_data_multi(self, intensity, sh_data):
+        n_frames = intensity.shape[0] // sh_data.nValidSubaperture
         self.ind_frame = np.zeros(intensity.shape[0], dtype=(int))
-        index_x = np.tile(self.index_x[sh_data.valid_subapertures_1D], self.phase_buffer.shape[0])
-        index_y = np.tile(self.index_y[sh_data.valid_subapertures_1D], self.phase_buffer.shape[0])
-        for i in range(self.phase_buffer.shape[0]):
+        index_x = np.tile(self.index_x[sh_data.valid_subapertures_1D], n_frames)
+        index_y = np.tile(self.index_y[sh_data.valid_subapertures_1D], n_frames)
+        for i in range(n_frames):
             self.ind_frame[i*sh_data.nValidSubaperture:(i+1)*sh_data.nValidSubaperture] = i
 
         def joblib_fill_raw_data():
@@ -799,7 +1060,12 @@ class ShackHartmann:
         return np.concatenate((sx, sy))
 
     def convolve_direct(self, A_in, B_in):
-        return sp.signal.convolve(A_in, B_in, mode='same', method='direct')
+        # dispatch on the actual array backend rather than on whether cupy is
+        # merely importable: cupyx.scipy.signal.convolve rejects plain numpy
+        # input outright, so this stays correct regardless of the state of the
+        # rest of the pipeline (still numpy-only for now).
+        signal_module = sg if get_array_module(A_in) is np else csg
+        return signal_module.convolve(A_in, B_in, mode='same', method='direct')
 
     def get_convolution_spot(self, src, sh_data, fwhm_factor=1, compute_fft_kernel=False, is_gaussian=False):
         print('Computing LGS spots convolution kernels...')
@@ -959,12 +1225,13 @@ class ShackHartmann:
         if hasattr(self, 'isInitialized'):
             if self.isInitialized:
                 # recompute the phasor to center spots in the center of the lenslets on 1 or 4 pixels
-                [xx, yy] = np.meshgrid(np.linspace(0, self.n_pix_lenslet_init-1, self.n_pix_lenslet_init),
-                                       np.linspace(0, self.n_pix_lenslet_init-1, self.n_pix_lenslet_init))
-                self.phasor = np.exp(-(1j*np.pi*(self.n_pix_lenslet_init+1+(self.pixel_scale/self.pixel_scale_init)*self.half_pixel_shift) /
-                                     self.n_pix_lenslet_init)*(xx+yy))
-                self.phasor_tiled = np.moveaxis(
-                    np.tile(self.phasor[:, :, None], self.nSubap**2), 2, 0)
+                # xp (not np): see the matching comment in __init__
+                [xx, yy] = xp.meshgrid(xp.linspace(0, self.n_pix_lenslet_init-1, self.n_pix_lenslet_init),
+                                       xp.linspace(0, self.n_pix_lenslet_init-1, self.n_pix_lenslet_init))
+                self.phasor = xp.exp(-(1j*xp.pi*(self.n_pix_lenslet_init+1+(self.pixel_scale/self.pixel_scale_init)*self.half_pixel_shift) /
+                                     self.n_pix_lenslet_init)*(xx+yy)).astype(self.precision_complex)
+                self.phasor_tiled = xp.moveaxis(
+                    xp.tile(self.phasor[:, :, None], self.nSubap**2), 2, 0)
 
     def __mul__(self, obj):
         if obj.tag == 'detector':
