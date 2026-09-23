@@ -154,7 +154,7 @@ OOPAO/M4_model/*.fits
 *.npz
 *.png
 *.pt
-*.txt
+
 /bench_sky_04_09/
 /bench_sky_04_14/
 /bench_sky_04_15/
