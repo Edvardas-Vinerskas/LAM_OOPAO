@@ -1,4 +1,4 @@
-# Install with:  pip install -r requirements.txt
+# Install with:  pip install -r required_lam.txt
 # Tested with Python 3.12
 
 # PyTorch CUDA 12.1 build (remove this line for the CPU-only build)
