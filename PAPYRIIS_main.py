@@ -14,6 +14,7 @@ from skimage.transform import resize
 from PAPYRIIS_2stage_CNN_RL.OOPAO_PAPYRIIS_env import OOPAO_environment_PAPYRIIS
 import torch
 from scipy import signal
+import os
 
 
 PAPYRIIS_env = OOPAO_environment_PAPYRIIS()
@@ -30,8 +31,13 @@ PAPYRIIS_env = OOPAO_environment_PAPYRIIS()
 print(f'_r0_{PAPYRIIS_env.atm_2nd.r0:.3f}_V0_{PAPYRIIS_env.atm_2nd.V0:.3f}_L0_{PAPYRIIS_env.atm_2nd.L0:.3f}_tboil_{PAPYRIIS_env.atm_2nd.t_boiling[0]:.3f}')
 OPD_screen_1 = PAPYRIIS_env.generate_second_stage_atmosphere(nLoop=150000)
 
+savedir_atm = "generated_atm_2nd_stage"
+if not os.path.exists(savedir_atm):
+    os.makedirs(savedir_atm)
+
+
 np.savez(
-    f"PAPYRIIS_2stage_CNN_RL/generated_atm_2nd_stage/atm_OPDs_2nd_r0_{PAPYRIIS_env.atm_2nd.r0:.3f}_V0_{PAPYRIIS_env.atm_2nd.V0:.3f}_L0_{PAPYRIIS_env.atm_2nd.L0:.3f}_tboil_{PAPYRIIS_env.atm_2nd.t_boiling[0]:.3f}_multi_layer.npz",
+    f"PAPYRIIS_2stage_CNN_RL/{savedir_atm}/atm_OPDs_2nd_r0_{PAPYRIIS_env.atm_2nd.r0:.3f}_V0_{PAPYRIIS_env.atm_2nd.V0:.3f}_L0_{PAPYRIIS_env.atm_2nd.L0:.3f}_tboil_{PAPYRIIS_env.atm_2nd.t_boiling[0]:.3f}_multi_layer.npz",
     atm_OPDs_2nd=OPD_screen_1,
     r0=PAPYRIIS_env.atm_2nd.r0,
     L0=PAPYRIIS_env.atm_2nd.L0,
