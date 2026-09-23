@@ -46,7 +46,10 @@ ngs = Papytwin.ngs
 dm_1st = Papytwin.dm
 pwfs = Papytwin.wfs
 atm = Papytwin.atm
-
+"""
+#TODO what is this code doing?
+I don't remember but since it was a test file, it must not have been too important
+"""
 
 """
 pwfs = Pyramid(nSubap            = (80)//1,
