@@ -57,7 +57,8 @@ from OOPAO.Telescope import Telescope
 
 #our atmosphere
 #you can also do this from CL1OL2 I guess, in fact you can do this then from any telemetry file
-CL1OL2  = np.load(f'bench_sky_04_15/onsky_arcturus_1st200_2nd400_v7_20260416-011431/2026-04-16T01_19_12_telemetry_data_RLiter50.npy', allow_pickle = True)
+savedir_atm_sky = 'bench_sky_04_15/onsky_arcturus_1st200_2nd400_v10_20260416-020659'
+CL1OL2  = np.load(f'{savedir_atm_sky}/2026-04-16T02_10_40_telemetry_data_RLiter70.npy', allow_pickle = True)
 
 print(CL1OL2.item().keys()) #'dmCmdCube' should be the total dm commands #modeCube should be wfs measurements in mode space
 
@@ -88,14 +89,15 @@ alpha = 0.7
 # OPD_screen_4 = OPD_screen_file_4['atm_OPDs_2nd'][:5000]
 
 
-results_2nd_stage_RL= np.load("PAPYRIIS_2stage_CNN_RL/~2026-06-01\PAPYRIIS_arcturus_noise/results_2nd_stage.npz")
-pupil_mask      = results_2nd_stage_RL["telescope_pupil"].astype(bool)
-projector_kl_2nd    = results_2nd_stage_RL["projector_kl_2nd"].reshape(-1, 90, 90)[:, pupil_mask]
+#TODO probably need to delete this
+# results_2nd_stage_RL= np.load("PAPYRIIS_2stage_CNN_RL/~2026-06-01/PAPYRIIS_arcturus_noise/results_2nd_stage.npz")
+# pupil_mask      = results_2nd_stage_RL["telescope_pupil"].astype(bool)
+# projector_kl_2nd    = results_2nd_stage_RL["projector_kl_2nd"].reshape(-1, 90, 90)[:, pupil_mask]
 
 
-results_1st_stage   = np.load("PAPYRIIS_2stage_CNN_RL/~2026-06-01/PAPYRIIS_arcturus_noise/results_1st_stage_r0_0.050_V0_4.121.npz")
-pupil_mask_1st      = results_1st_stage['telescope_pupil'].astype(bool)
-projector_kl_1st    = results_1st_stage['projector_kl_1st'].reshape(-1, 80, 80)[:, pupil_mask_1st]
+# results_1st_stage   = np.load("PAPYRIIS_2stage_CNN_RL/~2026-06-01/PAPYRIIS_arcturus_noise/results_1st_stage_r0_0.050_V0_4.121.npz")
+# pupil_mask_1st      = results_1st_stage['telescope_pupil'].astype(bool)
+# projector_kl_1st    = results_1st_stage['projector_kl_1st'].reshape(-1, 80, 80)[:, pupil_mask_1st]
 
 
 
@@ -112,6 +114,7 @@ M2C_1st = - np.load("PAPYRIIS_2stage_CNN_RL/M2C_1rst.npy")
 dm_1st_modes, pupil_mask = first_stage_dm_builder()
 dm_1st_modes = dm_1st_modes.reshape(100, 100, 241)
 dm_1st_modes_masked = dm_1st_modes[pupil_mask, :]
+
 
 
 dmCmdCube_modes_1 = mode_calculator_fromDM(CL1OL2.item()['dmCmdCube'].squeeze(), M2C_1st)#(CL1OL2.item()['dmCmdCube'].squeeze(), M2C_1st)

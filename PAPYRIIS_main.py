@@ -14,9 +14,30 @@ from skimage.transform import resize
 from PAPYRIIS_2stage_CNN_RL.OOPAO_PAPYRIIS_env import OOPAO_environment_PAPYRIIS
 import torch
 from scipy import signal
+import os
 
 
 PAPYRIIS_env = OOPAO_environment_PAPYRIIS()
+
+
+savedir_atm = "PAPYRIIS_2stage_CNN_RL/dm_testing"
+
+if not os.path.exists(savedir_atm):
+    os.makedirs(savedir_atm)
+
+
+print(PAPYRIIS_env.dm_2nd.modes.reshape((90, 90, 97)))
+print(PAPYRIIS_env.dm_1st.modes.reshape((80, 80, 241)))
+
+
+plt.figure()
+plt.imshow(PAPYRIIS_env.dm_2nd.modes.reshape((90, 90, 97))[:, :, 10])
+
+plt.figure()
+plt.imshow(PAPYRIIS_env.dm_1st.modes.reshape((80, 80, 241))[:, :, 10])
+plt.show()
+
+errrr
 #TODO do a few different atmospheres with varying r_0 and varying boiling to check which one works best
 #TODO go through the paper and ask yourself if you need any more layers in the simulation?
 #TODO match the performance of the first stage (remember that you have a perfect pyramid and so maybe your gain should not be 0.7)
@@ -26,7 +47,7 @@ PAPYRIIS_env = OOPAO_environment_PAPYRIIS()
 #TODO wfs cameras are ok!
 # here seems to be where the actual generating of everythin starts
 #----------------------------------------------------Generate 2nd atmosphere#----------------------------------------------------
-
+'''
 print(f'_r0_{PAPYRIIS_env.atm_2nd.r0:.3f}_V0_{PAPYRIIS_env.atm_2nd.V0:.3f}_L0_{PAPYRIIS_env.atm_2nd.L0:.3f}_tboil_{PAPYRIIS_env.atm_2nd.t_boiling[0]:.3f}')
 OPD_screen_1 = PAPYRIIS_env.generate_second_stage_atmosphere(nLoop=150000)
 
@@ -40,7 +61,7 @@ np.savez(
     windDirection=PAPYRIIS_env.atm_2nd.windDirection,
     altitude=PAPYRIIS_env.atm_2nd.altitude
 )
-
+'''
 
 #---------------------------------------------------Project atmosphere to 1st stage#----------------------------------------------------
 '''
@@ -98,7 +119,8 @@ np.savez(f"{savedir_test}/results_1st_stage_r0_{PAPYRIIS_env.atm_2nd.r0:.3f}_V0_
 #TODO redo it with noise and on sky but slightly higher r_0
 #TODO last one has EMCCD and slow_tt (one thing to include is bits in the cred2 hehe and also pyramid OGs)
 #PAPYRIIS_2stage_CNN_RL\~2026-06-01\PAPYRIIS_arcturus_nonoise\results_2nd_stage.npz
-savedir_test = "PAPYRIIS_2stage_CNN_RL/~2026-06-23/PAPYRIIS_arcturus_noise_quantisation_pwfs_calibration_pupil_EMCCD"
+#results_1st_stage_r0_0.070_V0_4.049_L0_30.000_tboil_5.000_multi_layer
+savedir_test = "PAPYRIIS_2stage_CNN_RL/2026-09-23"
 loaddir_test = savedir_test
 print(f"{loaddir_test}/results_1st_stage_r0_{PAPYRIIS_env.atm_2nd.r0:.3f}_V0_{PAPYRIIS_env.atm_2nd.V0:.3f}_L0_{PAPYRIIS_env.atm_2nd.L0:.3f}_tboil_{PAPYRIIS_env.atm_2nd.t_boiling[0]:.3f}_multi_layer.npz")
 
@@ -111,20 +133,21 @@ print(first_stage_results['src_opds'].shape)
 print(first_stage_results['residuals_opds_1rst'].shape)
 
 
-dm_commands = np.zeros((30000, 97))
-reconstructed_cmd = np.zeros((30000, 97))
-scnd_stage_strehl = np.zeros((30000))
+dm_commands = np.zeros((10000, 97))
+reconstructed_cmd = np.zeros((10000, 97))
+scnd_stage_strehl = np.zeros((10000))
 tel_2nd_pupil = 0
-src_opd = np.zeros((30000, 90, 90))
+src_opd = np.zeros((10000, 90, 90))
 projector_kl_2nd = np.zeros((87, 8100))
 
 
 obs, _ = PAPYRIIS_env.reset(residuals_opds_1rst)
 a = time.perf_counter()
-for t in range(30000):
+for t in range(10000):
     action = 0 * obs.unsqueeze(0).unsqueeze(0)
     next_obs, INFO = PAPYRIIS_env.step(action.squeeze(), residuals_opds_1rst)
-    print(f'2nd strehl ratio {INFO['2nd_stage_strehl']}')
+    if t%100 == 0:
+        print(f'iteration {t}, 2nd strehl ratio {INFO['2nd_stage_strehl']}')
     dm_commands[t] =INFO["dm_commands"]
     reconstructed_cmd[t] =INFO["reconstructed_cmd"].detach().cpu().numpy()
     scnd_stage_strehl[t] =INFO["2nd_stage_strehl"]
@@ -135,7 +158,7 @@ for t in range(30000):
     obs = next_obs
 
 print(time.perf_counter() - a)
-np.savez(f"{savedir_test}/results_2nd_stage_CL1OL2.npz",
+np.savez(f"{savedir_test}/results_2nd_stage_CL1OL2_v4.npz",
     # Concatenated across iterations
     all_2nd_stage_strehl    = scnd_stage_strehl,
     all_dm_commands         = dm_commands,
@@ -144,3 +167,6 @@ np.savez(f"{savedir_test}/results_2nd_stage_CL1OL2.npz",
     telescope_pupil         = tel_2nd_pupil,
     projector_kl_2nd        = projector_kl_2nd,
     )
+
+
+

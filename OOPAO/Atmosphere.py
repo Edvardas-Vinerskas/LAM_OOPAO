@@ -606,7 +606,7 @@ class Atmosphere:
         if self.is_user_defined_opd:
             backend = xp if self.gpu_resident else np
             OPD_support = [_to_backend(self.user_defined_opd, backend)]*len(self.src_list)
-            warning('User-Defined OPD are only propagated once in the Atmosphere class.')
+            #warning('User-Defined OPD are only propagated once in the Atmosphere class.')
             self.set_OPD(OPD_support)
             self.is_user_defined_opd = False
             return
