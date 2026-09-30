@@ -8,7 +8,6 @@ special methods.
 
 import numpy as np
 import scipy as scp
-from Pupil_selection import reference_intensities
 from skimage.transform import resize
 import logging
 import tqdm
@@ -32,6 +31,7 @@ HERE = Path(__file__).resolve().parent
 
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
+from Pupil_selection import reference_intensities
 from parameterFile_papyriis import initializeParameterFile
 from parallel_utils_twin import _reconstruct_phase_worker, _import_all_oopao_symbols, _simulate_psf_chunk_worker
 from OOPAO.Zernike import Zernike
@@ -66,7 +66,7 @@ class OZIRIIS:
             self.param = initializeParameterFile()
         else:
             self.param = param
-        self.M2C = np.load(str(HERE) +'\M2C_2nd.npy')
+        self.M2C = np.load(os.path.join(HERE, 'M2C_2nd.npy'))
         self.psf_sampling = 2.56
         self.initialise_OOPAO_objects()
         self.compute_projectors()
@@ -99,7 +99,7 @@ class OZIRIIS:
         self.zwfs1 = self.vzwfs.zwfs1
         self.zwfs2 = self.vzwfs.zwfs2
         self.cam = Detector(psf_sampling=self.psf_sampling)
-        param = np.load(str(HERE) + '\dm_second_stage_misreg_dict.npy', allow_pickle=True).item()
+        param = np.load(os.path.join(HERE, 'dm_second_stage_misreg_dict.npy'), allow_pickle=True).item()
         m = MisRegistration(param)
         
         self.dm = DeformableMirror(telescope=self.tel, nSubap=10, mechCoupling=0.35, print_dm_properties=False, pitch=0.11, misReg=m)
