@@ -4,11 +4,13 @@ Created on Fri Jun 21 11:33:27 2024
 
 @author: mmotte
 """
-#TODO the camera resolutino is 40 for now
 import warnings
-import matplotlib.pyplot as plt #TODO delete
 import matplotlib
-matplotlib.use('TkAgg')
+import os
+if os.environ.get('DISPLAY'):
+    matplotlib.use('TkAgg')
+else:
+    matplotlib.use('Agg')  # headless (no X display)
 
 import numpy as np
 
@@ -144,9 +146,9 @@ class ZWFS:
                             FWC             = None,
                             integrationTime = 1/400,
                             QE              = 0.8,
-                            darkCurrent     = 334,
-                            readoutNoise    = 25,
-                            photonNoise     = True)
+                            darkCurrent     = 334, #334
+                            readoutNoise    = 25, #25
+                            photonNoise     = True) 
         self.wfs_measure(phase_in=np.zeros(self.telescope.pupil.shape))
         
         self._ref_signal = self.signal

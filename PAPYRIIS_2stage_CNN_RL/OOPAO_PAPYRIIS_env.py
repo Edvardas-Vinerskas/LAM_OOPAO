@@ -13,7 +13,8 @@ from functions import *
 import matplotlib.pyplot as plt
 
 import sys
-sys.path.insert(0, r"C:\Users\evinerskas\PycharmProjects\LAM_OOPAO\ozitelemetry")
+import os
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'ozitelemetry'))
 
 import OOPAO
 from OOPAO.Source import Source
@@ -71,7 +72,7 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
         self.FIRST_SKY_OFFSET    = (2, 2)
 
         self.SECOND_GAIN         = "not applicable"
-        self.SECOND_LEAK         = 0.95 #TODO fix this so it satisfies the po4ao_config (oopsie innit)
+        self.SECOND_LEAK         = 0.95
         #self.SECOND_FRAME_DELAY  = 3 #at least I think this is the frame delay encountered
 
 
@@ -82,7 +83,7 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
         self.Papytwin = Papyrus()
         self.tel_1st    = self.Papytwin.tel
         self.ngs_1st    = self.Papytwin.ngs
-        self.dm_1st     = self.Papytwin.dm
+        self.dm_1st     = self.Papytwin.dm #should be 4.3 microns (is 4.37 microns, so good enough)
         self.pwfs       = self.Papytwin.wfs
         self.atm_1st    = self.Papytwin.atm     
         self.slow_tt    = self.Papytwin.slow_tt
@@ -96,10 +97,12 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
                                )
 
         self.tel_2nd    = self.OZItwin.tel
+        #TODO this is where the source is set!
         self.src_2nd = Source(optBand='H', magnitude=-2.81)
         self.src_2nd.wavelength = 1.6e-06
         param_misreg = np.load("PAPYRIIS_2stage_CNN_RL/dm_second_stage_misreg_dict.npy", allow_pickle=True).item()
         m = MisRegistration(param_misreg)
+        #should be 16 microns (is 10 microns, so in the right ballpark but I mean you probably only need a few lambda, and here you already have more than 5 lambda)
         self.dm_2nd = DeformableMirror(telescope=self.tel_2nd, 
                                    nSubap=10, 
                                    mechCoupling=0.35, 
@@ -263,7 +266,7 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
     def step(self, action, atm_OPD_1st_residual):
         self.atm_2nd.update(atm_OPD_1st_residual[self.CURRENT_STEPS])
 
-        # frame delay implementation (zernike)
+        # 3 frame delay implementation (zernike)
         self.vzwfssignal_buffer.append(action)
         self.vzwfs_delayed_signal = self.vzwfssignal_buffer[0]
         self.vzwfssignal_buffer.pop(0)
@@ -295,7 +298,6 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
         dm_commands = self.dm_2nd.coefs.copy()
         src_opd = self.src_2nd.OPD_no_pupil.copy()
         atm_opd = self.atm_2nd.OPD.copy()
-        atm_opd_2 = atm_OPD_1st_residual[self.CURRENT_STEPS]
 
 
         INFO = {
@@ -351,23 +353,20 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
         self.pwfs.cam  = self.Papytwin.OCAM
         
 
-        self.ngs_1st ** self.atm_1st * self.tel_1st * self.dm_1st * self.pwfs
+        self.ngs_1st ** self.atm_1st * self.tel_1st * self.dm_1st * self.slow_tt * self.pwfs
 
 
         dm_commands = np.zeros((nLoop, self.dm_1st.nValidAct))
         reconstructed_cmd = np.zeros((int(nLoop/2), self.dm_1st.nValidAct))
         src_opds = np.zeros((nLoop, self.tel_1st.pupil.shape[0], self.tel_1st.pupil.shape[1]))
-        self.pwfssignal_buffer  = [np.zeros(self.pwfs.nSignal)] #2frame delay pwfs
+        frame_delay = 2 #TODO make argument?
+        self.pwfssignal_buffer = [np.zeros(self.pwfs.nSignal) for _ in range(frame_delay - 1)] #1 frame delay
+
         strehlers = np.zeros(100)
 
-        #TODO papyrus ngs is R, src is src =   Source('IR1310', 0)
+
         #TODO > 1.55 - 1.7 µm goes to 2nd stage wavefront sensing
-        #TODO so we are closing the loop on the ngs and src is I guess if I plan to attach a science camera?
-        #TODO setting for the 2nd stage self.src = Source(optBand='H', magnitude=-2.5)
-            # self.src.wavelength = 1.6e-06
-            # self.src.bandwidth = 2e-07
-        #TODO for now I haven't changed the wavelengths because for OPD it does not matter
-        #TODO if you add cameras later then it will matter (I don't think Mathieu had any cameras?)
+
 
         for i in range(nLoop):
             self.atm_1st.update(atm_OPD_1st[i])
@@ -416,7 +415,7 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
             nLoop=nLoop,
             gainCL=gainCL,
             leak=leak,
-            frame_delay=2,
+            frame_delay=frame_delay,
             photon_noise=photon_noise,
         ),
         "telescope_pupil": self.tel_1st.pupil, 

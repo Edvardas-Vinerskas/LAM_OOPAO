@@ -5,6 +5,9 @@ In this code you can compare the different PSDs from the deformable mirror and f
 
 
 
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from functions import *
 import matplotlib.pyplot as plt
@@ -55,54 +58,31 @@ from OOPAO.Telescope import Telescope
 
 
 
-#our atmosphere
-#you can also do this from CL1OL2 I guess, in fact you can do this then from any telemetry file
-CL1OL2  = np.load(f'bench_sky_04_15/onsky_arcturus_1st200_2nd400_v7_20260416-011431/2026-04-16T01_19_12_telemetry_data_RLiter50.npy', allow_pickle = True)
-
-print(CL1OL2.item().keys()) #'dmCmdCube' should be the total dm commands #modeCube should be wfs measurements in mode space
-
-
 #dm_command_loader
-loaddir = "PAPYRIIS_2stage_CNN_RL/~2026-06-23/PAPYRIIS_arcturus_noise_quantisation_pwfs_calibration_pupil_EMCCD"
-dm_coefs_file_1 = np.load(f"{loaddir}/results_1st_stage_r0_0.050_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz")
-dm_coefs_file_2 = np.load(f"{loaddir}/results_1st_stage_r0_0.050_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz")
-dm_coefs_file_3 = np.load(f"{loaddir}/results_1st_stage_r0_0.050_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz")
-dm_coefs_file_4 = np.load(f"{loaddir}/results_1st_stage_r0_0.050_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz")
+#TODO I uploaded the full telemetry files without the cred frames, so you don't need to use the abomination in the following line
+CL1OL2 = np.load('/home/evinerskas/LAM_OOPAO/bench_sky_04_15/arcturus_v6/dmCmdCube_1st_stage.npz')
+# CL1OL22 = np.load('/home/evinerskas/LAM_OOPAO/bench_sky_04_15/arcturus_v7/dmCmdCube_1st_stage.npz')
+# CL1OL23 = np.load('/home/evinerskas/LAM_OOPAO/bench_sky_04_15/arcturus_v8/dmCmdCube_1st_stage.npz')
+# CL1OL24 = np.load('/home/evinerskas/LAM_OOPAO/bench_sky_04_15/arcturus_v10/dmCmdCube_1st_stage.npz')
+
+loaddir = "/home/evinerskas/LAM_OOPAO/PAPYRIIS_2stage_CNN_RL/2026-09-23/"
+
+dm_coefs_file_1 = np.load(f"{loaddir}/PAPYRIIS_arcturus_v1/results_1st_stage_r0_0.050_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz")
+dm_coefs_file_2 = np.load(f"{loaddir}/PAPYRIIS_arcturus_v2/results_1st_stage_r0_0.070_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz")
+dm_coefs_file_3 = np.load(f"{loaddir}/PAPYRIIS_arcturus_v4/results_1st_stage_r0_0.100_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz")
+dm_coefs_file_4 = np.load(f"{loaddir}/PAPYRIIS_arcturus_v4/results_1st_stage_r0_0.100_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz")
 
 
-#phase screen loader
-# OPD_screen_file_1 = np.load("PAPYRIIS_2stage_CNN_RL/generated_atm_2nd_stage/atm_OPDs_2nd_r0_0.050_V0_4.121_L0_30.000_tboil_2.000_single_layer.npz")
-# OPD_screen_file_2 = np.load("PAPYRIIS_2stage_CNN_RL/generated_atm_2nd_stage/atm_OPDs_2nd_r0_0.050_V0_4.049_L0_30.000_tboil_2.000_multi_layer.npz")
-# OPD_screen_file_3 = np.load("PAPYRIIS_2stage_CNN_RL/generated_atm_2nd_stage/atm_OPDs_2nd_r0_0.050_V0_4.121_L0_30.000_tboil_2.000_single_layer.npz")
-# OPD_screen_file_4 = np.load("PAPYRIIS_2stage_CNN_RL/generated_atm_2nd_stage/atm_OPDs_2nd_r0_0.050_V0_4.121_L0_30.000_tboil_2000.000_single_layer.npz")
-# print(OPD_screen_file_1.files)
-label_1 = 'atm_sky'
-label_2 = 'atm_sim_tboil_5.000_multi_layer_gain04'
-label_3 = 'atm_sim_tboil_5.000_multi_layer_gain04'
-label_4 = 'atm_sim_tboil_5.000_multi_layer_gain04'
+label_1 = 'atm_sky' #CL1OL2
+label_2 = 'atm_sim_r0_0.050' #dm_coefs_file_1 #atm_sim_tboil_5.000_multi_layer_gain04
+label_3 = 'atm_sim_r0_0.070' #dm_coefs_file_2
+label_4 = 'atm_sim_r0_0.10' #dm_coefs_file_3
 alpha = 0.7
 
-# OPD_screen_1 = OPD_screen_file_1['atm_OPDs_2nd'][:5000]
-# OPD_screen_2 = OPD_screen_file_2['atm_OPDs_2nd'][:5000]
-# OPD_screen_3 = OPD_screen_file_3['atm_OPDs_2nd'][:5000]
-# OPD_screen_4 = OPD_screen_file_4['atm_OPDs_2nd'][:5000]
-
-
-results_2nd_stage_RL= np.load("PAPYRIIS_2stage_CNN_RL/~2026-06-01\PAPYRIIS_arcturus_noise/results_2nd_stage.npz")
-pupil_mask      = results_2nd_stage_RL["telescope_pupil"].astype(bool)
-projector_kl_2nd    = results_2nd_stage_RL["projector_kl_2nd"].reshape(-1, 90, 90)[:, pupil_mask]
-
-
-results_1st_stage   = np.load("PAPYRIIS_2stage_CNN_RL/~2026-06-01/PAPYRIIS_arcturus_noise/results_1st_stage_r0_0.050_V0_4.121.npz")
-pupil_mask_1st      = results_1st_stage['telescope_pupil'].astype(bool)
-projector_kl_1st    = results_1st_stage['projector_kl_1st'].reshape(-1, 80, 80)[:, pupil_mask_1st]
-
-
-
-# OPD_screen_1        = OPD_screen_1[:, pupil_mask_2nd]
-# OPD_screen_2        = OPD_screen_2[:, pupil_mask_2nd]
-# OPD_screen_3        = OPD_screen_3[:, pupil_mask_2nd]
-# OPD_screen_4        = OPD_screen_4[:, pupil_mask_2nd]
+#plot saving
+save_dir      = "PAPYRIIS_2stage_CNN_RL/atm_comparison_plots"
+save_filename = "atm_comparison_psd.png"
+save_dpi      = 200
 
 
 M2C_1st = - np.load("PAPYRIIS_2stage_CNN_RL/M2C_1rst.npy")
@@ -114,7 +94,11 @@ dm_1st_modes = dm_1st_modes.reshape(100, 100, 241)
 dm_1st_modes_masked = dm_1st_modes[pupil_mask, :]
 
 
-dmCmdCube_modes_1 = mode_calculator_fromDM(CL1OL2.item()['dmCmdCube'].squeeze(), M2C_1st)#(CL1OL2.item()['dmCmdCube'].squeeze(), M2C_1st)
+
+dmCmdCube_modes_1 = CL1OL2['dmCmdCube']
+# dmCmdCube_modes_2 = CL1OL22['dmCmdCube']
+# dmCmdCube_modes_3 = CL1OL23['dmCmdCube']
+# dmCmdCube_modes_4 = CL1OL24['dmCmdCube']
 dmCmdCube_modes_2 = mode_calculator_fromDM(dm_coefs_file_1["dm_commands"], M2C_1st)
 dmCmdCube_modes_3 = mode_calculator_fromDM(dm_coefs_file_2["dm_commands"], M2C_1st)
 dmCmdCube_modes_4 = mode_calculator_fromDM(dm_coefs_file_3["dm_commands"], M2C_1st)
@@ -279,7 +263,9 @@ ax4.legend()
 
 # Prevent overlapping labels in the 2x2 layout
 plt.tight_layout()
-plt.show()
+os.makedirs(save_dir, exist_ok=True)
+fig.savefig(os.path.join(save_dir, save_filename), dpi=save_dpi)
+plt.close(fig)
 
 
 
