@@ -80,7 +80,7 @@ def compute_papyrus_model(param,loc,source,IFreal=False):
 
     ngs=Source(optBand   = param['opticalBandCalib'],\
               magnitude = param['magnitude'])
-    ngs.wavelength = 1.6e-06
+    # ngs.wavelength = 1.6e-06
     
     # combine the NGS to the telescope using '*' operator:
     ngs*tel

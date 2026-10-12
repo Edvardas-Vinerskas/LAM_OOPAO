@@ -52,11 +52,8 @@ except:
     print('==================================')
     print('\n')
 
-OOPAO_path = [s for s in sys.path if "OOPAO" in s]
-l = []
-for i in OOPAO_path:
-    l.append(len(i))
-path = OOPAO_path[np.argmin(l)]
+# repository root (parent of the OOPAO package), independent of sys.path contents
+path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 np.save(path+'/precision_oopao', 64)
 
 show_message = True

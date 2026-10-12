@@ -5,6 +5,7 @@ Created on Fri Jun 21 11:33:27 2024
 @author: mmotte
 """
 
+import os
 import warnings
 
 import numpy as np
@@ -68,11 +69,7 @@ class ZWFS:
 
 
         """
-        OOPAO_path = [s for s in sys.path if "OOPAO" in s]
-        l = []
-        for i in OOPAO_path:
-            l.append(len(i))
-        path = OOPAO_path[np.argmin(l)]
+        path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         precision = np.load(path+'/precision_oopao.npy')
         if precision == 64:
             self.precision = np.float64
