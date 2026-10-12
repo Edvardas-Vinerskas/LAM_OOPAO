@@ -19,7 +19,7 @@ matplotlib.use('Agg')  # non-interactive backend: figures are saved to disk inst
 import matplotlib.pyplot as plt
 from functions import *
 
-save_dir = 'PAPYRIIS_2stage_CNN_RL/2026-09-23/figures_1st_stage_tests_noise_check'   # folder where all figures are saved
+save_dir = 'PAPYRIIS_2stage_CNN_RL/2026-09-23/figures_1st_stage_tests_pushpull_vs_push'   # folder where all figures are saved
 save_dpi = 200
 os.makedirs(save_dir, exist_ok=True)
 
@@ -42,10 +42,10 @@ CL1st_OL_2nd     = np.load(f'{loaddir}/2026-04-16T01_27_23_telemetry_2nd_data_CL
 # simulations to compare: label, folder, 1st stage results file, 2nd stage CL1OL2 results file (same folder)
 simdir = "PAPYRIIS_2stage_CNN_RL/2026-09-23"
 simulations = [
-    {"label": "noise", "folder": f"{simdir}/PAPYRIIS_arcturus_v4", "file_1st": "results_1st_stage_r0_0.100_V0_3.002_L0_30.000_tboil_5.000_multi_layer.npz", "file_2nd": "results_2nd_stage_CL1OL2_r0_0.100_V0_3.002_L0_30.000_tboil_5.000.npz"},
-    {"label": "no_dark_cur", "folder": f"{simdir}/PAPYRIIS_arcturus_v4_nodarkcurr_cred", "file_1st": "results_1st_stage_r0_0.100_V0_3.002_L0_30.000_tboil_5.000_multi_layer.npz", "file_2nd": "results_2nd_stage_CL1OL2_r0_0.100_V0_3.002_L0_30.000_tboil_5.000.npz"},
-    {"label": "no_photon", "folder": f"{simdir}/PAPYRIIS_arcturus_v4_nophoton_cred", "file_1st": "results_1st_stage_r0_0.100_V0_3.002_L0_30.000_tboil_5.000_multi_layer.npz", "file_2nd": "results_2nd_stage_CL1OL2_r0_0.100_V0_3.002_L0_30.000_tboil_5.000.npz"},
-    {"label": "no_noise_cred", "folder": f"{simdir}/PAPYRIIS_arcturus_v4_nonoisecred", "file_1st": "results_1st_stage_r0_0.100_V0_3.002_L0_30.000_tboil_5.000_multi_layer.npz", "file_2nd": "results_2nd_stage_CL1OL2_r0_0.100_V0_3.002_L0_30.000_tboil_5.000.npz"},
+    {"label": "new interaction", "folder": f"{simdir}/PAPYRIIS_arcturus_v2_pushpull", "file_1st": "results_1st_stage_r0_0.070_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz", "file_2nd": "results_2nd_stage_CL1OL2_r0_0.070_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz"},
+    {"label": "old interaction", "folder": f"{simdir}/PAPYRIIS_arcturus_v2", "file_1st": "results_1st_stage_r0_0.070_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz", "file_2nd": "results_2nd_stage_CL1OL2.npz"},
+    # {"label": "gain = 0.6", "folder": f"{simdir}/PAPYRIIS_arcturus_v2_pushpull_g06", "file_1st": "results_1st_stage_r0_0.070_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz", "file_2nd": "results_2nd_stage_CL1OL2_r0_0.070_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz"},
+    # {"label": "gain = 0.7", "folder": f"{simdir}/PAPYRIIS_arcturus_v2_pushpull_g07", "file_1st": "results_1st_stage_r0_0.070_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz", "file_2nd": "results_2nd_stage_CL1OL2_r0_0.070_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz"},
 ]
 
 # colours as in the original file (on sky), sims get a dark -> light gradient of the same colour
@@ -61,45 +61,36 @@ shades_1st_psd      = sim_shades("Reds",  len(simulations))
 
 #TODO these don't have the representative masks (masking done as per PAPYRIIS_main.py or just look inside the 2 below functions)
 dm_1st_inf, pupil_mask_1 = first_stage_dm_builder()
-dm_2nd_inf, pupil_mask_2 = second_stage_dm_builder()
+dm_2nd_inf_sky, pupil_mask_2 = second_stage_dm_builder(sign = 1.6e-5)   # on sky data: real DM amplitude
+dm_2nd_inf_sim, _            = second_stage_dm_builder(sign = 1e-5)     # simulated data: DM used in the simulations
 
 dm_1st_inf = dm_1st_inf.reshape(100, 100, 241)
 dm_1st_inf_masked = dm_1st_inf[pupil_mask_1, :]
 
-dm_2nd_inf = dm_2nd_inf.reshape(100, 100, 97)
-dm_2nd_inf_masked = dm_2nd_inf[pupil_mask_2, :]
+dm_2nd_inf_sky_masked = dm_2nd_inf_sky.reshape(100, 100, 97)[pupil_mask_2, :]
+dm_2nd_inf_sim_masked = dm_2nd_inf_sim.reshape(100, 100, 97)[pupil_mask_2, :]
 
 M2C_1st = - np.load('PAPYRIIS_2stage_CNN_RL/M2C_1rst.npy')
 M2C_2nd = np.load('PAPYRIIS_2stage_CNN_RL/M2C_2nd.npy')
 
 C2M_2nd = np.linalg.pinv(M2C_2nd)
 M2P_1st = dm_1st_inf_masked @ M2C_1st
-projector_kl_2nd_to_1st = np.linalg.pinv(dm_1st_inf_masked @ M2C_1st) @ (dm_2nd_inf_masked @ M2C_2nd)
+projector_kl_2nd_to_1st_sky = np.linalg.pinv(M2P_1st) @ (dm_2nd_inf_sky_masked @ M2C_2nd)
+projector_kl_2nd_to_1st_sim = np.linalg.pinv(M2P_1st) @ (dm_2nd_inf_sim_masked @ M2C_2nd)
 
 # M2P_1st scaled to nm before computing covariance
-GG_diag = np.diag(mode_covariance(M2P_1st * 1e9))
-
-
-def KL_variance_calculator(modes, GG_diag, frame_bounds):
-    """
-    Calculate variance of KL modes in nm^2.
-
-    modes shape: (timeseries length, no_of_modes)
-    GG_diag: precomputed diagonal of mode_covariance(m2p_nm), where m2p_nm = dm_inf_masked * 1e9 @ m2c
-    """
-    modes_masked = modes[frame_bounds[0]:frame_bounds[1], :]
-    modes_var = np.var(np.asarray(modes_masked), axis=0) * GG_diag
-    return modes_var, modes_masked
+GG = mode_covariance(M2P_1st * 1e9)   # full covariance: KL_variance_calculator (from functions.py) uses the cross terms for the total
+GG_diag = np.diag(GG)                 # diagonal only: tPSD_calculator
 
 
 # ---------------------------------------------------Load data---------------------------------------------------#
 if plot_onsky:
     next_states_1st = CL1st_OL_2nd.item()['slavedreconsCube'].squeeze() #1st stage residual as measured by 2nd stage
-    modes_1st_stage = next_states_1st @ C2M_2nd.T @ projector_kl_2nd_to_1st.T
-    coefs_var_1st_stage, modes_1st_stage_masked = KL_variance_calculator(modes_1st_stage, GG_diag, KL_frames)
+    modes_1st_stage = next_states_1st @ C2M_2nd.T @ projector_kl_2nd_to_1st_sky.T
+    coefs_var_1st_stage, modes_1st_stage_masked, coefs_var_1st_stage_total = KL_variance_calculator(modes_1st_stage, GG, KL_frames)
 
     modes_atm = mode_calculator_fromDM(RL_telemetry_1st.item()['dmCmdCube'].squeeze(), M2C_1st)
-    coefs_var_atm, modes_atm_masked = KL_variance_calculator(modes_atm, GG_diag, KL_frames)
+    coefs_var_atm, modes_atm_masked, coefs_var_atm_total = KL_variance_calculator(modes_atm, GG, KL_frames)
 
 if plot_sim:
     for sim in simulations:
@@ -107,7 +98,7 @@ if plot_sim:
         if plot_atm:
             dm_atm_coefs = np.load(f"{sim['folder']}/{sim['file_1st']}")['dm_commands']  # only this array is read from the npz
             sim["modes_atm"] = mode_calculator_fromDM(dm_atm_coefs, M2C_1st)
-            sim["var_atm"], sim["modes_atm_masked"] = KL_variance_calculator(sim["modes_atm"], GG_diag, KL_frames)
+            sim["var_atm"], sim["modes_atm_masked"], sim["var_atm_total"] = KL_variance_calculator(sim["modes_atm"], GG, KL_frames)
 
         if plot_residual:
             path_2nd = f"{sim['folder']}/{sim['file_2nd']}"
@@ -115,26 +106,26 @@ if plot_sim:
                 print(f"missing {path_2nd}, skipping 1st stage residual for {sim['label']}")
                 continue
             next_states_1st_sim = np.load(path_2nd)['all_reconstructed_cmd'].squeeze()
-            sim["modes_1st"] = next_states_1st_sim @ C2M_2nd.T @ projector_kl_2nd_to_1st.T
-            sim["var_1st"], sim["modes_1st_masked"] = KL_variance_calculator(sim["modes_1st"], GG_diag, KL_frames)
+            sim["modes_1st"] = next_states_1st_sim @ C2M_2nd.T @ projector_kl_2nd_to_1st_sim.T
+            sim["var_1st"], sim["modes_1st_masked"], sim["var_1st_total"] = KL_variance_calculator(sim["modes_1st"], GG, KL_frames)
 
 
 # ---------------------------------------------------KL mode variance---------------------------------------------------#
 plt.figure(figsize=(19, 8))  # wider than the original (12, 8) to fit the legend on the right
 if plot_atm:
     if plot_onsky:
-        plt.plot(coefs_var_atm, color=color_atm, label=f"Atm, σ² = {np.sum(coefs_var_atm):,.0f} nm²")
+        plt.plot(coefs_var_atm, color=color_atm, label=f"Atm, σ² = {coefs_var_atm_total:,.0f} nm²")
     if plot_sim:
         for sim, color in zip(simulations, shades_atm):
-            plt.plot(sim["var_atm"], ':', color=color, label=f"Atm (sim, {sim['label']}), σ² = {np.sum(sim['var_atm']):,.0f} nm²")
+            plt.plot(sim["var_atm"], ':', color=color, label=f"Atm (sim, {sim['label']}), σ² = {sim['var_atm_total']:,.0f} nm²")
 if plot_residual:
     if plot_onsky:
-        plt.plot(coefs_var_1st_stage, '--', color=color_1st_variance, lw=2.5, label=f"1st stage (integrator), σ² = {np.sum(coefs_var_1st_stage):,.0f} nm²")
+        plt.plot(coefs_var_1st_stage, '--', color=color_1st_variance, lw=2.5, label=f"1st stage (integrator), σ² = {coefs_var_1st_stage_total:,.0f} nm²")
     if plot_sim:
         for sim, color in zip(simulations, shades_1st_variance):
             if "var_1st" not in sim:
                 continue
-            plt.plot(sim["var_1st"], ':', color=color, lw=2.5, label=f"1st stage (sim, {sim['label']}), σ² = {np.sum(sim['var_1st']):,.0f} nm²")
+            plt.plot(sim["var_1st"], ':', color=color, lw=2.5, label=f"1st stage (sim, {sim['label']}), σ² = {sim['var_1st_total']:,.0f} nm²")
 
 plt.title(f"KL mode variance", fontsize=30)
 plt.yscale("log")
@@ -189,5 +180,5 @@ for mode in psd_modes:
 
 if plot_sim and plot_atm:
     for sim in simulations:
-        print(f"total atm variance ({sim['label']}): {np.sum(sim['var_atm']):,.0f} nm²")
+        print(f"total atm variance ({sim['label']}): {sim['var_atm_total']:,.0f} nm²")
 print(f"figures saved in {save_dir}")

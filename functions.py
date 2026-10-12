@@ -377,8 +377,14 @@ def first_stage_dm_builder():
     return dm_1st.modes, tel.pupil
 
 
+def second_stage_dm_builder(sign):
+    '''
+    Builds the 2nd stage DM influence functions (OOPAO gaussians, 100x100 grid, D = 1.52 m)
 
-def second_stage_dm_builder():
+    sign: influence function peak in meters of OPD per unit command (applied with a negative sign)
+        1e-5   -> simulated data (the DM used in OOPAO_PAPYRIIS_env.py)
+        1.6e-5 -> on sky data (matches the measured IF_dm2 peak of the real DM)
+    '''
     tel_sky_2 = Telescope(resolution      = 100,
                             diameter            = 1.52,
                             samplingTime        = 1/400,
@@ -399,6 +405,28 @@ def second_stage_dm_builder():
                                     print_dm_properties=False, 
                                     pitch=0.11, 
                                     misReg=m,
-                                    sign=-1e-5)
+                                    sign=-sign)
     return dm_2nd.modes, tel_sky_2.pupil
 
+def KL_variance_calculator(modes, GG, frame_bounds):
+    """
+    Calculate the temporal variance of KL modes in nm^2.
+
+    modes shape: (timeseries length, no_of_modes), coefficients in M2C units
+    GG: full mode covariance matrix, mode_covariance(m2p_nm), where m2p_nm = dm_inf_masked * 1e9 @ m2c
+
+    Returns:
+        modes_var: per-mode temporal variance (diagonal of GG only)
+        modes_masked: the modes inside frame_bounds
+        var_from_modes_total: total temporal variance including the cross terms of GG
+
+    The temporal mean (static aberration, e.g. NCPA or the DM flat) is removed,
+    so the static part mean @ GG @ mean is not included in any of the outputs.
+    """
+    GG_diag = np.diag(GG)
+    modes_masked = np.asarray(modes[frame_bounds[0]:frame_bounds[1], :], dtype=np.float64)
+    modes_var = np.var(modes_masked, axis=0) * GG_diag
+
+    modes_centered = modes_masked - modes_masked.mean(axis=0)
+    var_from_modes_total = np.mean(np.sum((modes_centered @ GG) * modes_centered, axis=1))
+    return modes_var, modes_masked, var_from_modes_total
