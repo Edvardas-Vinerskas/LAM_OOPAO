@@ -28,16 +28,16 @@ def initializeParameterFile():
     # param['windSpeed']             = np.array([1.17, 1.33, 3.72, 7.15, 5.67])  # V0 = 4 m/s -> tau0 =  5.4 ms
     # param['windSpeed']             = np.array([1.46, 1.66, 4.65, 8.94, 7.09])  # V0 = 5 m/s -> tau0 =  4.3 ms
 
-    param['r0'                   ] = 0.1                                     # value of r0 in the visibile in [m]
+    param['r0'                   ] = 0.085                                     # value of r0 in the visibile in [m]
     param['L0'                   ] = 30                                             # value of L0 in the visibile in [m]
     param['fractionnalR0'        ] = np.array([0.45,0.1,0.1,0.25,0.1]).astype(np.float64)
     #param['V0'                   ] = 1.8                       # Cn2 profile
     #7, 5, 10, 12, 3
-    param['windSpeed']             = np.array([0.88, 0.99, 2.79, 5.37, 4.25]).astype(np.float64)#* param['V0'        ]/6.15                   # wind speed of the different layers in [m.s-1]
+    param['windSpeed']             = np.array([1.17, 1.33, 3.72, 7.15, 5.67]).astype(np.float64)#* param['V0'        ]/6.15                   # wind speed of the different layers in [m.s-1]
     param['windDirection'        ] = np.array([0,72,144,216,288]).astype(np.float64)                          # wind direction of the different layers in [degrees]
     param['altitude'             ] = np.array([0, 1000,5000,10000,12000]).astype(np.float64)             # altitude of the different layers in [m]
     param['t_boiling'            ] = np.array([5, 5, 5, 5, 5]).astype(np.float64)
-
+# taskset -c 2 python3 PAPYRIIS_main.py
     """
     param['r0'                   ] = 0.05                             
     param['L0'                   ] = 30                                    
@@ -67,9 +67,9 @@ def initializeParameterFile():
     
     ###%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% NGS PROPERTIES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-    param['magnitude'            ] = -2.81                                          # magnitude of the guide star
+    param['magnitude'            ] = -1.03                                          # magnitude of the guide star
     param['opticalBand'          ] = 'K'                                            # optical band of the guide star
-    param['opticalBandCalib'     ] = 'H'                                            # optical band of calibration laser
+    param['opticalBandCalib'     ] = 'R'                                            # optical band of calibration laser
     
     
     ###%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% DM PROPERTIES %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

@@ -7,7 +7,10 @@ Created on Fri Jun 21 11:33:27 2024
 import warnings
 import matplotlib
 import os
-if os.environ.get('DISPLAY'):
+import sys
+if 'ipykernel' in sys.modules:
+    pass  # Jupyter / VS Code interactive window: keep the kernel's inline backend
+elif os.environ.get('DISPLAY'):
     matplotlib.use('TkAgg')
 else:
     matplotlib.use('Agg')  # headless (no X display)

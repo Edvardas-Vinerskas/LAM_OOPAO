@@ -100,14 +100,15 @@ CL1st_OL_2nd_sim        = np.load(f"{loaddir_sim}/results_2nd_stage_CL1OL2.npz")
 #you should maybe use different influence functions for simulations and on sky?
 #TODO these don't have the representative masks (masking done as per PAPYRIIS_main.py or just look inside the 2 below functions)
 dm_1st_inf, pupil_mask_1 = first_stage_dm_builder()
-dm_2nd_inf, pupil_mask_2 = second_stage_dm_builder()
+dm_2nd_inf_sky, pupil_mask_2 = second_stage_dm_builder(sign = 1.6e-5)   # on sky data: real DM amplitude
+dm_2nd_inf_sim, _            = second_stage_dm_builder(sign = 1e-5)     # simulated data: DM used in the simulations
 
 
 dm_1st_inf = dm_1st_inf.reshape(100, 100, 241)
 dm_1st_inf_masked = dm_1st_inf[pupil_mask_1, :]
 
-dm_2nd_inf = dm_2nd_inf.reshape(100, 100, 97)
-dm_2nd_inf_masked = dm_2nd_inf[pupil_mask_2, :]
+dm_2nd_inf_sky_masked = dm_2nd_inf_sky.reshape(100, 100, 97)[pupil_mask_2, :]
+dm_2nd_inf_sim_masked = dm_2nd_inf_sim.reshape(100, 100, 97)[pupil_mask_2, :]
 
 #TODO do you need a - sign here
 M2C_1st = - np.load('PAPYRIIS_2stage_CNN_RL/M2C_1rst.npy')
@@ -117,20 +118,21 @@ C2M_2nd = np.linalg.pinv(M2C_2nd)
 M2P_1st = dm_1st_inf_masked @ M2C_1st
 
 GG = mode_covariance(M2P_1st)
-projector_kl_2nd_to_1st = np.linalg.pinv(dm_1st_inf_masked @ M2C_1st) @ (dm_2nd_inf_masked @ M2C_2nd)
+projector_kl_2nd_to_1st_sky = np.linalg.pinv(dm_1st_inf_masked @ M2C_1st) @ (dm_2nd_inf_sky_masked @ M2C_2nd)
+projector_kl_2nd_to_1st_sim = np.linalg.pinv(dm_1st_inf_masked @ M2C_1st) @ (dm_2nd_inf_sim_masked @ M2C_2nd)
 
 
 #RL
 if RL:
     next_states_2nd = RL_telemetry_2nd.item()['slavedreconsCube'].squeeze()
     modes_2nd_stage_RL = next_states_2nd @ C2M_2nd.T
-    modes_2nd_stage_RL = modes_2nd_stage_RL @ projector_kl_2nd_to_1st.T
+    modes_2nd_stage_RL = modes_2nd_stage_RL @ projector_kl_2nd_to_1st_sky.T
 
 
     next_states_1st = CL1st_OL_2nd.item()['slavedreconsCube'].squeeze() #1st stage residual as measured by 2nd stage
     modes_1st_stage_RL = next_states_1st @ C2M_2nd.T
     
-    modes_1st_stage_RL = modes_1st_stage_RL @ projector_kl_2nd_to_1st.T
+    modes_1st_stage_RL = modes_1st_stage_RL @ projector_kl_2nd_to_1st_sky.T
     dm_atm_coefs = RL_telemetry_1st.item()['dmCmdCube'].squeeze()
     modes_atm_RL = mode_calculator_fromDM(dm_atm_coefs, M2C_1st)
 
@@ -146,7 +148,7 @@ if RL:
 if integrator:
     next_states_2nd = int_telemetry_2nd.item()['slavedreconsCube'].squeeze()
     modes_2nd_stage_int = next_states_2nd @ C2M_2nd.T
-    modes_2nd_stage_int = modes_2nd_stage_int @ projector_kl_2nd_to_1st.T
+    modes_2nd_stage_int = modes_2nd_stage_int @ projector_kl_2nd_to_1st_sky.T
 
     frequency_int = frequency_2nd
     time_plot_int = np.arange(0, 30000 / frequency_2nd, 1 / frequency_2nd)
@@ -154,17 +156,17 @@ if integrator:
 #linear
 # next_states_2nd_linear = linear_telemetry_2nd.item()['slavedreconsCube'].squeeze()
 # modes_2nd_stage_linear = next_states_2nd_linear @ C2M_2nd.T
-# modes_2nd_stage_linear = modes_2nd_stage_linear @ projector_kl_2nd_to_1st.T
+# modes_2nd_stage_linear = modes_2nd_stage_linear @ projector_kl_2nd_to_1st_sky.T
 
 
 if RL and plot_sim:
     # next_states_2nd_sim = RL_telemetry_2nd_sim['all_reconstructed_cmd'].squeeze()
     # modes_2nd_stage_RL_sim = next_states_2nd_sim @ C2M_2nd.T
-    # modes_2nd_stage_RL_sim = modes_2nd_stage_RL_sim @ projector_kl_2nd_to_1st.T
+    # modes_2nd_stage_RL_sim = modes_2nd_stage_RL_sim @ projector_kl_2nd_to_1st_sim.T
 
     next_states_1st_sim = CL1st_OL_2nd_sim['all_reconstructed_cmd'].squeeze()
     modes_1st_stage_RL_sim = next_states_1st_sim @ C2M_2nd.T
-    modes_1st_stage_RL_sim = modes_1st_stage_RL_sim @ projector_kl_2nd_to_1st.T
+    modes_1st_stage_RL_sim = modes_1st_stage_RL_sim @ projector_kl_2nd_to_1st_sim.T
 
     dm_atm_coefs_sim = RL_telemetry_1st_sim['dm_commands']
     modes_atm_RL_sim = mode_calculator_fromDM(dm_atm_coefs_sim, M2C_1st)
@@ -175,7 +177,7 @@ if RL and plot_sim:
 # if integrator and plot_sim:
     # next_states_2nd_int_sim = int_telemetry_2nd_sim['all_reconstructed_cmd'].squeeze()
     # modes_2nd_stage_int_sim = next_states_2nd_int_sim @ C2M_2nd.T
-    # modes_2nd_stage_int_sim = modes_2nd_stage_int_sim @ projector_kl_2nd_to_1st.T
+    # modes_2nd_stage_int_sim = modes_2nd_stage_int_sim @ projector_kl_2nd_to_1st_sim.T
 
     # frequency_int_sim = frequency_2nd
     # time_plot_int_sim = np.arange(0, len(modes_2nd_stage_int_sim) / frequency_2nd, 1 / frequency_2nd)
@@ -212,55 +214,45 @@ if RL:
 
 # ---------------------------------------------------Zernike/KL decomposition---------------------------------------------------#
 #RL
-def KL_variance_calculator(modes, GG_diag, frame_bounds):
-    """
-    Calculate variance of KL modes in nm^2.
-
-    modes shape: (timeseries length, no_of_modes)
-    GG_diag: precomputed diagonal of mode_covariance(m2p_nm), where m2p_nm = dm_inf_masked * 1e9 @ m2c
-    """
-    modes_masked = modes[frame_bounds[0]:frame_bounds[1], :]
-    modes_var = np.var(np.asarray(modes_masked), axis=0) * GG_diag
-    return modes_var, modes_masked
-
 # M2P_1st is already computed above; scale to nm before computing covariance
-GG_diag = np.diag(mode_covariance(M2P_1st * 1e9))
+GG = mode_covariance(M2P_1st * 1e9)   # full covariance: KL_variance_calculator (from functions.py) uses the cross terms for the total
+GG_diag = np.diag(GG)                 # diagonal only: tPSD_calculator
 
 if RL:
-    coefs_var_1st_stage_masked_RL, modes_1st_stage_RL_masked = KL_variance_calculator(modes_1st_stage_RL, GG_diag, KL_frames_RL)
-    coefs_var_2nd_stage_masked_RL, modes_2nd_stage_RL_masked = KL_variance_calculator(modes_2nd_stage_RL, GG_diag, KL_frames_RL)
+    coefs_var_1st_stage_masked_RL, modes_1st_stage_RL_masked, coefs_var_1st_stage_masked_RL_total = KL_variance_calculator(modes_1st_stage_RL, GG, KL_frames_RL)
+    coefs_var_2nd_stage_masked_RL, modes_2nd_stage_RL_masked, coefs_var_2nd_stage_masked_RL_total = KL_variance_calculator(modes_2nd_stage_RL, GG, KL_frames_RL)
 
 if integrator:
-    coefs_var_2nd_stage_masked_int, modes_2nd_stage_int_masked = KL_variance_calculator(modes_2nd_stage_int, GG_diag, KL_frames_int)
+    coefs_var_2nd_stage_masked_int, modes_2nd_stage_int_masked, coefs_var_2nd_stage_masked_int_total = KL_variance_calculator(modes_2nd_stage_int, GG, KL_frames_int)
 
-# coefs_var_2nd_stage_masked_linear, modes_2nd_stage_linear_masked = KL_variance_calculator(modes_2nd_stage_linear, GG_diag, KL_frames_int)
+# coefs_var_2nd_stage_masked_linear, modes_2nd_stage_linear_masked, coefs_var_2nd_stage_masked_linear_total = KL_variance_calculator(modes_2nd_stage_linear, GG, KL_frames_int)
 
 if ideal:
-    coefs_var_1st_stage_masked_ideal, modes_1st_stage_ideal_masked = KL_variance_calculator(modes_1st_stage_ideal, GG_diag, KL_frames_ideal)
-    coefs_var_2nd_stage_masked_ideal, modes_2nd_stage_ideal_masked = KL_variance_calculator(modes_2nd_stage_ideal, GG_diag, KL_frames_ideal)
+    coefs_var_1st_stage_masked_ideal, modes_1st_stage_ideal_masked, coefs_var_1st_stage_masked_ideal_total = KL_variance_calculator(modes_1st_stage_ideal, GG, KL_frames_ideal)
+    coefs_var_2nd_stage_masked_ideal, modes_2nd_stage_ideal_masked, coefs_var_2nd_stage_masked_ideal_total = KL_variance_calculator(modes_2nd_stage_ideal, GG, KL_frames_ideal)
 #atmosphere
-coefs_var_atm, _ = KL_variance_calculator(modes_atm, GG_diag, KL_frames_int)
+coefs_var_atm, _, coefs_var_atm_total = KL_variance_calculator(modes_atm, GG, KL_frames_int)
 
 if RL and plot_sim:
-    coefs_var_1st_stage_masked_RL_sim, modes_1st_stage_RL_sim_masked = KL_variance_calculator(modes_1st_stage_RL_sim, GG_diag, KL_frames_RL)
-    # coefs_var_2nd_stage_masked_RL_sim, modes_2nd_stage_RL_sim_masked = KL_variance_calculator(modes_2nd_stage_RL_sim, GG_diag, KL_frames_RL)
+    coefs_var_1st_stage_masked_RL_sim, modes_1st_stage_RL_sim_masked, coefs_var_1st_stage_masked_RL_sim_total = KL_variance_calculator(modes_1st_stage_RL_sim, GG, KL_frames_RL)
+    # coefs_var_2nd_stage_masked_RL_sim, modes_2nd_stage_RL_sim_masked, coefs_var_2nd_stage_masked_RL_sim_total = KL_variance_calculator(modes_2nd_stage_RL_sim, GG, KL_frames_RL)
 
 # if integrator and plot_sim:
-    # coefs_var_2nd_stage_masked_int_sim, modes_2nd_stage_int_sim_masked = KL_variance_calculator(modes_2nd_stage_int_sim, GG_diag, KL_frames_int)
+    # coefs_var_2nd_stage_masked_int_sim, modes_2nd_stage_int_sim_masked, coefs_var_2nd_stage_masked_int_sim_total = KL_variance_calculator(modes_2nd_stage_int_sim, GG, KL_frames_int)
 
 if plot_sim and RL:
-    coefs_var_atm_sim, _ = KL_variance_calculator(modes_atm_sim, GG_diag, KL_frames_int)
+    coefs_var_atm_sim, _, coefs_var_atm_sim_total = KL_variance_calculator(modes_atm_sim, GG, KL_frames_int)
 
 
 plt.figure(figsize=(12, 8))
 if plot_onsky:
-    plt.plot(coefs_var_atm, color="black", label=f"Atm, σ² = {np.sum(coefs_var_atm):,.0f} nm²")
+    plt.plot(coefs_var_atm, color="black", label=f"Atm, σ² = {coefs_var_atm_total:,.0f} nm²")
 if plot_sim and RL:
-    plt.plot(coefs_var_atm_sim, ':', color="black", label=f"Atm (sim), σ² = {np.sum(coefs_var_atm_sim):,.0f} nm²")
+    plt.plot(coefs_var_atm_sim, ':', color="black", label=f"Atm (sim), σ² = {coefs_var_atm_sim_total:,.0f} nm²")
 if RL:
     if plot_onsky:
         var_1st = np.sum(coefs_var_1st_stage_masked_RL[:70])
-        plt.plot(coefs_var_1st_stage_masked_RL, '--', color="cornflowerblue", lw=2.5, label=f"1st stage (integrator), σ² = {np.sum(coefs_var_1st_stage_masked_RL):,.0f} nm²")
+        plt.plot(coefs_var_1st_stage_masked_RL, '--', color="cornflowerblue", lw=2.5, label=f"1st stage (integrator), σ² = {coefs_var_1st_stage_masked_RL_total:,.0f} nm²")
 
 
 # var_linear = np.sum(coefs_var_2nd_stage_masked_linear[:70])
@@ -268,7 +260,7 @@ if RL:
 if integrator:
     if plot_onsky:
         var_int = np.sum(coefs_var_2nd_stage_masked_int[:70])
-        plt.plot(coefs_var_2nd_stage_masked_int, color="indianred", lw=2.5, label=f"2nd stage ({label_int}), σ² = {np.sum(coefs_var_2nd_stage_masked_int):,.0f} nm²")
+        plt.plot(coefs_var_2nd_stage_masked_int, color="indianred", lw=2.5, label=f"2nd stage ({label_int}), σ² = {coefs_var_2nd_stage_masked_int_total:,.0f} nm²")
     # if plot_sim:
         # plt.plot(coefs_var_2nd_stage_masked_int_sim, ':', color="indianred", lw=2.5, label=f"2nd stage ({label_int_sim})")
 
@@ -276,14 +268,14 @@ if integrator:
 if RL:
     if plot_onsky:
         var_RL  = np.sum(coefs_var_2nd_stage_masked_RL[:70])
-        plt.plot(coefs_var_2nd_stage_masked_RL, color="red", lw=2.5, label=f"2nd stage ({label_RL}), σ² = {np.sum(coefs_var_2nd_stage_masked_RL):,.0f} nm²")
+        plt.plot(coefs_var_2nd_stage_masked_RL, color="red", lw=2.5, label=f"2nd stage ({label_RL}), σ² = {coefs_var_2nd_stage_masked_RL_total:,.0f} nm²")
     if plot_sim:
-        plt.plot(coefs_var_1st_stage_masked_RL_sim, ':', color="cornflowerblue", lw=2.5, label=f"1st stage ({label_int_sim}), σ² = {np.sum(coefs_var_1st_stage_masked_RL_sim):,.0f} nm²")
+        plt.plot(coefs_var_1st_stage_masked_RL_sim, ':', color="cornflowerblue", lw=2.5, label=f"1st stage ({label_int_sim}), σ² = {coefs_var_1st_stage_masked_RL_sim_total:,.0f} nm²")
         # plt.plot(coefs_var_2nd_stage_masked_RL_sim, ':', color="red", lw=2.5, label=f"2nd stage ({label_RL_sim})")
 
 if ideal:
     var_ideal = np.sum(coefs_var_2nd_stage_masked_ideal[:70])
-    plt.plot(coefs_var_2nd_stage_masked_ideal, color="green", lw=2.5, label=f"2nd stage ({label_ideal}), σ² = {np.sum(coefs_var_2nd_stage_masked_ideal):,.0f} nm²")
+    plt.plot(coefs_var_2nd_stage_masked_ideal, color="green", lw=2.5, label=f"2nd stage ({label_ideal}), σ² = {coefs_var_2nd_stage_masked_ideal_total:,.0f} nm²")
 
 # if RL and plot_onsky:
 #     ratio = var_linear / var_RL

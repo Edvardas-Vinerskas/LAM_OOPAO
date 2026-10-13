@@ -139,7 +139,22 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
                             nMeasurements  = 1,\
                             noise          = 'off',
                             print_time=False,
-                            display=True)
+                            display=True,
+                            single_pass = False)
+
+        self.calib_1st_pushonly = InteractionMatrix(  ngs = self.ngs_1st,\
+                                    atm            = self.atm_1st,\
+                                    tel            = self.tel_1st,\
+                                    dm             = self.dm_1st,\
+                                    wfs            = self.pwfs,\
+                                    M2C            = self.M2C_1st_CL,\
+                                    stroke         = 0.0001,\
+                                    phaseOffset    = 0,\
+                                    nMeasurements  = 1,\
+                                    noise          = 'off',
+                                    print_time=False,
+                                    display=True)
+
         self.pwfs.cam.sensor = "EMCCD"
         # self.calib_1st = CalibrationVault(self.im_1st[:, :self.modes_1st])
         self.calib_1st_M = self.calib_1st.M
@@ -164,9 +179,19 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
 
         #reference_intensity = np.load('PAPYRIIS_2stage_CNN_RL/reference_intensity.npy')
         #this should act as a reference innit
+        # noiseless reference: switch off the random noise of both ZWFS cameras for this one frame
         self.dm_2nd.coefs = 0
+        cams  = [self.vzwfs.zwfs1.cam, self.vzwfs.zwfs2.cam]
+        saved = [(c.photonNoise, c.readoutNoise, c.darkCurrent) for c in cams]
+        for c in cams:
+            c.photonNoise, c.readoutNoise, c.darkCurrent = False, 0, 0
         self.src_2nd * self.tel_2nd * self.dm_2nd * self.vzwfs
-        self.frame_preprocessor.ProcessReference(self.vzwfs.signal_2D_cam_padded/np.sum(self.vzwfs.signal_2D_cam_padded))
+        # dark current is never subtracted by the camera, so add its mean level back (90x90 area only, not the 3 px padding)
+        dark = [np.pad(np.full(c.frame.shape, d * c.integrationTime * c.gain), 3) for c, (_, _, d) in zip(cams, saved)]
+        reference_frame = self.vzwfs.signal_2D_cam_padded + np.concatenate(dark, axis=1)
+        for c, (p, r, d) in zip(cams, saved):
+            c.photonNoise, c.readoutNoise, c.darkCurrent = p, r, d
+        self.frame_preprocessor.ProcessReference(reference_frame/np.sum(reference_frame))
 
 
         self.M2C_2nd = np.load('PAPYRIIS_2stage_CNN_RL/M2C_KL.npy') #obtained from Francisco
@@ -359,8 +384,8 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
         dm_commands = np.zeros((nLoop, self.dm_1st.nValidAct))
         reconstructed_cmd = np.zeros((int(nLoop/2), self.dm_1st.nValidAct))
         src_opds = np.zeros((nLoop, self.tel_1st.pupil.shape[0], self.tel_1st.pupil.shape[1]))
-        frame_delay = 2 #TODO make argument?
-        self.pwfssignal_buffer = [np.zeros(self.pwfs.nSignal) for _ in range(frame_delay - 1)] #1 frame delay
+        frame_delay = 2
+        self.pwfssignal_buffer = [np.zeros(self.pwfs.nSignal) for _ in range(frame_delay - 1)] 
 
         strehlers = np.zeros(100)
 
@@ -408,7 +433,8 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
 
         residuals_opd_1st = self.project_opd_between_pupils(src_opds, input_pupil = self.tel_1st.pupil,
                                                                 output_pupil = self.tel_2nd.pupil, 
-                                                                output_shape = self.tel_2nd.pupil.shape)
+                                                                output_shape = self.tel_2nd.pupil.shape,
+                                                                desc = "Project 1st-stage residuals to second stage")
             
         first_stage_results = {
         "config": FirstStageLoopConfig(
@@ -456,9 +482,13 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
         return final_mask, OPDs_crop
 
 
-    def _rescale_matrix(self, A, j, k, anti_aliasing=True):
+    def _rescale_matrix(self, A, j, k, anti_aliasing=True, desc=None):
         """
         Resample a 2D, 3D, or 4D array to a target spatial shape.
+
+        3D/4D arrays are resized frame by frame: a single N-D resize fits the order-5
+        spline along the leading (unchanged) axes too, 216 taps/pixel instead of 36,
+        which is ~5x slower for the same result.
 
         Parameters
         ----------
@@ -470,21 +500,22 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
             Target size along the second spatial axis.
         anti_aliasing : bool, optional
             Whether to apply anti-aliasing during resizing.
+        desc : str, optional
+            If given, show a tqdm progress bar with this label (3D/4D only).
 
         Returns
         -------
         ndarray
             Resized array with the requested spatial dimensions.
         """
-        if A.ndim == 3:
-            l, m, n = A.shape
-            return resize(A, (l, j, k), order=5, anti_aliasing=anti_aliasing)
-        elif A.ndim == 4:
-            o, l, m, n = A.shape
-            return resize(A, (o, l, j, k), order=5, anti_aliasing=anti_aliasing)
-        elif A.ndim == 2:
-            m, n = A.shape
+        if A.ndim == 2:
             return resize(A, (j, k), order=5, anti_aliasing=anti_aliasing) #resizes the image to specified size
+        elif A.ndim in (3, 4):
+            frames = A.reshape(-1, A.shape[-2], A.shape[-1])
+            out = np.zeros((frames.shape[0], j, k))
+            for i in tqdm.tqdm(range(frames.shape[0]), desc=desc, disable=desc is None):
+                out[i] = resize(frames[i], (j, k), order=5, anti_aliasing=anti_aliasing)
+            return out.reshape(*A.shape[:-2], j, k)
 
 
 
@@ -494,7 +525,8 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
         OPDs: np.ndarray,
         input_pupil = None,
         output_pupil = None,
-        output_shape = None
+        output_shape = None,
+        desc = None
     ):
         OPDs = np.asarray(OPDs)
         output_pupil = np.asarray(output_pupil).astype(bool)
@@ -503,6 +535,7 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
             OPDs,
             output_shape[0],
             output_shape[1],
+            desc = desc
         )
 
         out = opd_rescaled
@@ -516,7 +549,8 @@ class OOPAO_environment_PAPYRIIS(gym.Env):
             atm_OPD_2nd,
             input_pupil = None,
             output_pupil = self.tel_1st.pupil,
-            output_shape = self.tel_1st.pupil.shape
+            output_shape = self.tel_1st.pupil.shape,
+            desc = "Project atmosphere to first stage"
         )
 
 

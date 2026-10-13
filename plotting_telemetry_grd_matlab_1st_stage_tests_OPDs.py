@@ -23,7 +23,7 @@ matplotlib.use('Agg')  # non-interactive backend: figures are saved to disk inst
 import matplotlib.pyplot as plt
 from functions import *
 
-save_dir = 'PAPYRIIS_2stage_CNN_RL/2026-09-23/figures_1st_stage_OPD'   # folder where all figures are saved
+save_dir = 'PAPYRIIS_2stage_CNN_RL/2026-09-23/figures_1st_stage_OPD_v2_push_pull'   # folder where all figures are saved
 save_dpi = 200
 os.makedirs(save_dir, exist_ok=True)
 
@@ -38,6 +38,9 @@ CL_gain_pyr   = 0.3
 KL_frames     = [0, 15000]              # [start, end] indices for the timeseries window
 psd_modes     = [0, 10, 20, 30, 40]  # KL mode indices to plot PSDs for
 
+#TODO reuse your simulation for higher r_0 to see the results with new interaction
+
+
 # on sky data
 loaddir = 'bench_sky_04_15/arcturus_v7'
 RL_telemetry_1st = np.load(f'{loaddir}/2026-04-16T01_19_12_telemetry_data_RLiter50.npy', allow_pickle = True)
@@ -47,12 +50,12 @@ CL1st_OL_2nd     = np.load(f'{loaddir}/2026-04-16T01_27_23_telemetry_2nd_data_CL
 
 # simulation to compare: folder, 1st stage results file, 2nd stage CL1OL2 results file (same folder), atm OPD file
 simdir = "PAPYRIIS_2stage_CNN_RL/2026-09-23"
-sim = {"label": "arcturus_v4",
-       "folder":   f"{simdir}/PAPYRIIS_arcturus_v1",
-       "file_1st": "results_1st_stage_r0_0.050_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz",
-       "file_2nd": "results_2nd_stage_CL1OL2.npz",
-       "file_atm_1st": "PAPYRIIS_2stage_CNN_RL/projected_atm_1st_stage/atm_OPDs_1st_r0_0.050_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz",
-       "file_atm_2nd": "PAPYRIIS_2stage_CNN_RL/generated_atm_2nd_stage/atm_OPDs_2nd_r0_0.050_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz"}
+sim = {"label": "arcturus_v2",
+       "folder":   f"{simdir}/PAPYRIIS_arcturus_v2_pushpull",
+       "file_1st": "results_1st_stage_r0_0.070_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz",
+       "file_2nd": "results_2nd_stage_CL1OL2_r0_0.070_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz",
+       "file_atm_1st": "PAPYRIIS_2stage_CNN_RL/projected_atm_1st_stage/atm_OPDs_1st_r0_0.070_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz",
+       "file_atm_2nd": "PAPYRIIS_2stage_CNN_RL/generated_atm_2nd_stage/atm_OPDs_2nd_r0_0.070_V0_4.049_L0_30.000_tboil_5.000_multi_layer.npz"}
 
 
 # curves to plot: comment out a line to leave that curve out (only the selected curves are computed)
@@ -61,14 +64,14 @@ sim = {"label": "arcturus_v4",
 onsky_curves = [
     {"key": "atm",        "kind": "atm",      "label": "Atm",                          "ls": "-",  "color": "black",          "color_psd": "black",        "freq": frequency_atm},
     {"key": "integrator", "kind": "residual", "label": "1st stage (integrator)",       "ls": "--", "color": "cornflowerblue", "color_psd": "indianred",    "freq": frequency_1st},
-    {"key": "pwfs",       "kind": "residual", "label": "1st stage (PWFS measurement)", "ls": "--", "color": "mediumpurple",   "color_psd": "mediumpurple", "freq": frequency_atm},  # modeCube at the on sky 1st stage rate
+    # {"key": "pwfs",       "kind": "residual", "label": "1st stage (PWFS measurement)", "ls": "--", "color": "mediumpurple",   "color_psd": "mediumpurple", "freq": frequency_atm},  # modeCube at the on sky 1st stage rate
 ]
 
 # sim atmospheres: key, label, colour, sampling frequency
 atm_sims = [
     {"key": "dm",     "label": "DM",        "color": "dimgray",     "freq": frequency_1st},  # from the 1st stage DM commands
     {"key": "opd_80", "label": "OPD 80x80", "color": "saddlebrown", "freq": frequency_1st},  # atm OPD screens (real, unfiltered atmosphere)
-    {"key": "opd_90", "label": "OPD 90x90", "color": "peru",        "freq": frequency_1st},  # same atm on the 2nd stage 90x90 grid
+    # {"key": "opd_90", "label": "OPD 90x90", "color": "peru",        "freq": frequency_1st},  # same atm on the 2nd stage 90x90 grid
 ]
 
 # different ways of calculating the sim 1st stage residual: key, label, colour, sampling frequency
@@ -77,22 +80,23 @@ greens = plt.get_cmap("Greens")
 residual_methods = [
     {"key": "CNN",          "label": "CNN reconstruction (no OG)",   "color": "tab:blue",    "freq": frequency_1st},
     {"key": "opd_2nd_90",   "label": "residual OPD 2nd stage (90x90)",   "color": greens(0.95),  "freq": frequency_1st},
-    {"key": "opd_1st_90",   "label": "residual OPD 1st stage (90x90)",   "color": greens(0.70),  "freq": frequency_1st},
-    {"key": "opd_1st_80",   "label": "residual OPD 1st stage (80x80)",   "color": greens(0.45),  "freq": frequency_1st},
-    {"key": "pwfs",         "label": "PWFS measurement (OG)",     "color": "tab:purple",  "freq": frequency_1st / 2},  # PWFS measured every 2nd frame (7500 samples)
-    {"key": "atm_minus_dm", "label": "φ_atm - φ_dm (no OG)",         "color": "tab:orange",  "freq": frequency_1st},
+    # {"key": "opd_1st_90",   "label": "residual OPD 1st stage (90x90)",   "color": greens(0.70),  "freq": frequency_1st},
+    # {"key": "opd_1st_80",   "label": "residual OPD 1st stage (80x80)",   "color": greens(0.45),  "freq": frequency_1st},
+    # {"key": "pwfs",         "label": "PWFS measurement (OG)",     "color": "tab:purple",  "freq": frequency_1st / 2},  # PWFS measured every 2nd frame (7500 samples)
+    # {"key": "atm_minus_dm", "label": "φ_atm - φ_dm (no OG)",         "color": "tab:orange",  "freq": frequency_1st},
 ]
 
 
 #TODO these don't have the representative masks (masking done as per PAPYRIIS_main.py or just look inside the 2 below functions)
 dm_1st_inf, pupil_mask_1 = first_stage_dm_builder()
-dm_2nd_inf, pupil_mask_2 = second_stage_dm_builder()
+dm_2nd_inf_sky, pupil_mask_2 = second_stage_dm_builder(sign = 1.6e-5)   # on sky data: real DM amplitude
+dm_2nd_inf_sim, _            = second_stage_dm_builder(sign = 1e-5)     # simulated data: DM used in the simulations
 
 dm_1st_inf = dm_1st_inf.reshape(100, 100, 241)
 dm_1st_inf_masked = dm_1st_inf[pupil_mask_1, :]
 
-dm_2nd_inf = dm_2nd_inf.reshape(100, 100, 97)
-dm_2nd_inf_masked = dm_2nd_inf[pupil_mask_2, :]
+dm_2nd_inf_sky_masked = dm_2nd_inf_sky.reshape(100, 100, 97)[pupil_mask_2, :]
+dm_2nd_inf_sim_masked = dm_2nd_inf_sim.reshape(100, 100, 97)[pupil_mask_2, :]
 
 M2C_1st = - np.load('PAPYRIIS_2stage_CNN_RL/M2C_1rst.npy')
 #M2C_2nd = np.load('PAPYRIIS_2stage_CNN_RL/M2C_2nd.npy')  # on sky 2nd stage basis (66 modes)
@@ -103,24 +107,14 @@ C2M_1st = np.linalg.pinv(M2C_1st)
 C2M_KL  = np.linalg.pinv(M2C_KL)
 M2P_1st = dm_1st_inf_masked @ M2C_1st
 #projector_kl_2nd_to_1st     = np.linalg.pinv(M2P_1st) @ (dm_2nd_inf_masked @ M2C_2nd)  # on sky
-projector_kl_2nd_to_1st = np.linalg.pinv(M2P_1st) @ (dm_2nd_inf_masked @ M2C_KL)   # used for both on sky and sim
+projector_kl_2nd_to_1st_sky = np.linalg.pinv(M2P_1st) @ (dm_2nd_inf_sky_masked @ M2C_KL)   # on sky
+projector_kl_2nd_to_1st_sim = np.linalg.pinv(M2P_1st) @ (dm_2nd_inf_sim_masked @ M2C_KL)   # sim
 #stage_2nd_filter = projector_kl_2nd_to_1st @ np.linalg.pinv(projector_kl_2nd_to_1st)  #passes 1st stage measuremrents through 2nd stage basis to apply the effects of the 2nd stage
 
 
 # M2P_1st scaled to nm before computing covariance
-GG_diag = np.diag(mode_covariance(M2P_1st * 1e9))
-
-
-def KL_variance_calculator(modes, GG_diag, frame_bounds):
-    """
-    Calculate variance of KL modes in nm^2.
-
-    modes shape: (timeseries length, no_of_modes)
-    GG_diag: precomputed diagonal of mode_covariance(m2p_nm), where m2p_nm = dm_inf_masked * 1e9 @ m2c
-    """
-    modes_masked = modes[frame_bounds[0]:frame_bounds[1], :]
-    modes_var = np.var(np.asarray(modes_masked), axis=0) * GG_diag
-    return modes_var, modes_masked
+GG = mode_covariance(M2P_1st * 1e9)   # full covariance: KL_variance_calculator (from functions.py) uses the cross terms for the total
+GG_diag = np.diag(GG)                 # diagonal only: tPSD_calculator
 
 
 # ---------------------------------------------------Load data---------------------------------------------------#
@@ -131,14 +125,14 @@ if plot_onsky:
     # every source gives 1st stage KL modes, shape (timeseries length, no_of_modes); only the selected ones are computed
     onsky_sources = {
         "atm":        lambda: mode_calculator_fromDM(RL_telemetry_1st.item()['dmCmdCube'].squeeze(), M2C_1st),
-        "integrator": lambda: CL1st_OL_2nd.item()['slavedreconsCube'].squeeze() @ C2M_KL.T @ projector_kl_2nd_to_1st.T,  #1st stage residual as measured by 2nd stage
+        "integrator": lambda: CL1st_OL_2nd.item()['slavedreconsCube'].squeeze() @ C2M_KL.T @ projector_kl_2nd_to_1st_sky.T,  #1st stage residual as measured by 2nd stage
         "pwfs":       lambda: RL_telemetry_1st.item()['modeCube'].squeeze(),
     }
-    onsky = {"var": {}, "modes_masked": {}}
+    onsky = {"var": {}, "modes_masked": {}, "var_total": {}}
     for curve in onsky_curves:
         if curve_selected(curve["kind"]):
             key = curve["key"]
-            onsky["var"][key], onsky["modes_masked"][key] = KL_variance_calculator(onsky_sources[key](), GG_diag, KL_frames)
+            onsky["var"][key], onsky["modes_masked"][key], onsky["var_total"][key] = KL_variance_calculator(onsky_sources[key](), GG, KL_frames)
 
 if plot_sim:
     print(f"loading {sim['folder']}")
@@ -155,7 +149,7 @@ if plot_sim:
     def opd_80_to_kl_1st(opds):
         return mode_calculator_fromOPD(opds[:, opd_mask_1st], np.eye(kl_basis_1st.shape[1]), kl_basis_1st)
     def opd_90_to_kl_1st(opds):
-        return mode_calculator_fromOPD(opds[:, opd_mask_2nd], np.eye(kl_basis_2nd.shape[1]), kl_basis_2nd) @ projector_kl_2nd_to_1st.T
+        return mode_calculator_fromOPD(opds[:, opd_mask_2nd], np.eye(kl_basis_2nd.shape[1]), kl_basis_2nd) @ projector_kl_2nd_to_1st_sim.T
 
     # every source gives 1st stage KL modes, shape (timeseries length, no_of_modes); only the selected ones are computed
     atm_sources = {
@@ -169,17 +163,17 @@ if plot_sim:
             sim["modes_atm"][key] = atm_sources[key]()
         return sim["modes_atm"][key]
 
-    sim["var_atm"], sim["modes_atm_masked"] = {}, {}
+    sim["var_atm"], sim["modes_atm_masked"], sim["var_atm_total"] = {}, {}, {}
     if plot_atm:
         for atm in atm_sims:
             key = atm["key"]
-            sim["var_atm"][key], sim["modes_atm_masked"][key] = KL_variance_calculator(sim_atm_modes(key), GG_diag, KL_frames)
-            print(f"  atm {atm['label']:31s} σ² = {np.sum(sim['var_atm'][key]):,.0f} nm²")
+            sim["var_atm"][key], sim["modes_atm_masked"][key], sim["var_atm_total"][key] = KL_variance_calculator(sim_atm_modes(key), GG, KL_frames)
+            print(f"  atm {atm['label']:31s} σ² = {sim['var_atm_total'][key]:,.0f} nm²")
 
-    sim["var_1st"], sim["modes_1st_masked"] = {}, {}
+    sim["var_1st"], sim["modes_1st_masked"], sim["var_1st_total"] = {}, {}, {}
     if plot_residual:
         residual_sources = {
-            "CNN":          lambda: path_2nd['all_reconstructed_cmd'].squeeze() @ C2M_KL.T @ projector_kl_2nd_to_1st.T,  # sim CNN cmds = M2C_KL[:, :50] @ cnn_output
+            "CNN":          lambda: path_2nd['all_reconstructed_cmd'].squeeze() @ C2M_KL.T @ projector_kl_2nd_to_1st_sim.T,  # sim CNN cmds = M2C_KL[:, :50] @ cnn_output
             "opd_2nd_90":   lambda: opd_90_to_kl_1st(path_2nd['residual_opds_2nd']),
             "opd_1st_90":   lambda: opd_90_to_kl_1st(path_1st['residuals_opds_1rst']),
             "opd_1st_80":   lambda: opd_80_to_kl_1st(path_1st['src_opds']),
@@ -189,8 +183,8 @@ if plot_sim:
         }
         for method in residual_methods:
             key = method["key"]
-            sim["var_1st"][key], sim["modes_1st_masked"][key] = KL_variance_calculator(residual_sources[key](), GG_diag, KL_frames)
-            print(f"  {method['label']:35s} σ² = {np.sum(sim['var_1st'][key]):,.0f} nm²")
+            sim["var_1st"][key], sim["modes_1st_masked"][key], sim["var_1st_total"][key] = KL_variance_calculator(residual_sources[key](), GG, KL_frames)
+            print(f"  {method['label']:35s} σ² = {sim['var_1st_total'][key]:,.0f} nm²")
 
 
 # ---------------------------------------------------KL mode variance---------------------------------------------------#
@@ -199,7 +193,8 @@ def plot_onsky_variance(kind):
     for curve in onsky_curves:
         if curve["kind"] == kind:
             var = onsky["var"][curve["key"]]
-            plt.plot(var, curve["ls"], color=curve["color"], lw=1.5 if kind == "atm" else 2.5, label=f"{curve['label']}, σ² = {np.sum(var):,.0f} nm²")
+            total = onsky["var_total"][curve["key"]]
+            plt.plot(var, curve["ls"], color=curve["color"], lw=1.5 if kind == "atm" else 2.5, label=f"{curve['label']}, σ² = {total:,.0f} nm²")
 
 if plot_atm:
     if plot_onsky:
@@ -207,14 +202,16 @@ if plot_atm:
     if plot_sim:
         for atm in atm_sims:
             var = sim["var_atm"][atm["key"]]
-            plt.plot(var, ':', color=atm["color"], label=f"Atm (sim, {atm['label']}), σ² = {np.sum(var):,.0f} nm²")
+            total = sim["var_atm_total"][atm["key"]]
+            plt.plot(var, ':', color=atm["color"], label=f"Atm (sim, {atm['label']}), σ² = {total:,.0f} nm²")
 if plot_residual:
     if plot_onsky:
         plot_onsky_variance("residual")
     if plot_sim:
         for method in residual_methods:
             var = sim["var_1st"][method["key"]]
-            plt.plot(var, ':', color=method["color"], lw=2.5, label=f"1st stage (sim, {method['label']}), σ² = {np.sum(var):,.0f} nm²")
+            total = sim["var_1st_total"][method["key"]]
+            plt.plot(var, ':', color=method["color"], lw=2.5, label=f"1st stage (sim, {method['label']}), σ² = {total:,.0f} nm²")
 
 plt.title(f"KL mode variance", fontsize=30)
 plt.yscale("log")
@@ -229,6 +226,29 @@ plt.legend(fontsize=16, loc='upper left', bbox_to_anchor=(1.01, 1))  # outside t
 plt.tight_layout()
 plt.savefig(f"{save_dir}/KL_mode_variance.png", dpi=save_dpi, bbox_inches='tight')
 plt.close()
+
+
+# ---------------------------------------------------KL mode variance ratio (sim / sky)---------------------------------------------------#
+# each sim curve divided by its on-sky counterpart, coloured like the sim curve in the variance plot
+if plot_sim and plot_onsky:
+    plt.figure(figsize=(19, 8))
+    if plot_atm:
+        for atm in atm_sims:
+            plt.plot(sim["var_atm"][atm["key"]] / onsky["var"]["atm"], ':', color=atm["color"], lw=2.5, label=f"Atm: sim {atm['label']} / on sky")
+    if plot_residual:
+        plt.plot(sim["var_1st"]["CNN"] / onsky["var"]["integrator"], ':', color="tab:blue", lw=2.5, label="1st stage: sim CNN reconstruction / on sky integrator")
+    plt.axhline(1, color='black', ls='--', lw=1)
+    plt.title('KL mode variance ratio', fontsize=30)
+    plt.yscale("log")
+    plt.xlabel('KL mode index', fontsize=24)
+    plt.ylabel("Simulation / sky", fontsize=24)
+    plt.xticks(fontsize=20)
+    plt.yticks(fontsize=20)
+    plt.grid(True, which='both', alpha=0.5)
+    plt.legend(fontsize=16, loc='upper left', bbox_to_anchor=(1.01, 1))
+    plt.tight_layout()
+    plt.savefig(f"{save_dir}/KL_mode_variance_ratio.png", dpi=save_dpi, bbox_inches='tight')
+    plt.close()
 
 
 # ---------------------------------------------------Temporal PSD---------------------------------------------------#
